@@ -18,6 +18,7 @@ mod datastep;
 mod libname;
 mod library;
 mod macros;
+mod sas_sql;
 mod split;
 
 pub use library::{ColumnInfo, DatasetInfo, DirFormat, Library, LibraryKind};
@@ -770,7 +771,7 @@ enum StmtResult {
 }
 
 fn run_one(conn: &Connection, sql: &str) -> Result<StmtResult, EngineError> {
-    let trimmed = rewrite_sas_sql(sql.trim());
+    let trimmed = sas_sql::rewrite(sql.trim());
     let trimmed = trimmed.as_str();
     if trimmed.is_empty() {
         return Ok(StmtResult::Done);
@@ -828,33 +829,6 @@ fn run_query(conn: &Connection, sql: &str, max_rows: usize) -> Result<StmtResult
         .collect();
 
     Ok(StmtResult::Rows(ResultBlock { columns, rows, truncated }))
-}
-
-fn rewrite_sas_sql(sql: &str) -> String {
-    let lower = sql.to_ascii_lowercase();
-    let stripped = lower.trim_start();
-    let leading_ws = sql.len() - sql.trim_start().len();
-
-    if stripped.starts_with("create or replace") {
-        return sql.to_string();
-    }
-
-    let (matched_prefix_lower, replacement) = if stripped.starts_with("create table") {
-        ("create table", "CREATE OR REPLACE TABLE")
-    } else if stripped.starts_with("create temp table") {
-        ("create temp table", "CREATE OR REPLACE TEMP TABLE")
-    } else if stripped.starts_with("create temporary table") {
-        ("create temporary table", "CREATE OR REPLACE TEMPORARY TABLE")
-    } else if stripped.starts_with("create view") {
-        ("create view", "CREATE OR REPLACE VIEW")
-    } else {
-        return sql.to_string();
-    };
-
-    let rest_start = leading_ws + matched_prefix_lower.len();
-    let leading = &sql[..leading_ws];
-    let rest = &sql[rest_start..];
-    format!("{}{}{}", leading, replacement, rest)
 }
 
 fn is_query(sql: &str) -> bool {
@@ -1177,6 +1151,52 @@ mod tests {
         }).collect();
         assert_eq!(names, vec!["alice", "bob", "carol"]);
         assert_eq!(ages, vec![30.0, 25.0, 41.0]);
+    }
+
+    #[test]
+    fn proc_sql_calculated_keyword() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select * from (values (10), (20), (30)) as t(x);");
+        let evs = s.submit(
+            "proc sql; create table o as select x, x*2 as doubled, calculated doubled + 1 as plus1 from src; quit;",
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        assert_eq!(page.total_rows, 3);
+    }
+
+    #[test]
+    fn proc_sql_monotonic_function() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select * from (values ('a'),('b'),('c')) as t(letter);");
+        let evs = s.submit(
+            "proc sql; create table o as select monotonic() as rn, letter from src; quit;",
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        assert_eq!(page.total_rows, 3);
+        let rn_idx = page.columns.iter().position(|c| c.name == "rn").unwrap();
+        // First row's rn should be 1.
+        match &page.rows[0][rn_idx] {
+            crate::Value::Int(n) => assert_eq!(*n, 1),
+            other => panic!("expected int rn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn proc_sql_outer_union_corr_aligns_by_name() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table a as select 1 as id, 'ada' as name;");
+        s.submit("create table b as select 'alan' as name, 2 as id;");
+        let evs = s.submit(
+            "proc sql; create table merged as select * from a outer union corr select * from b; quit;",
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "merged", 0, 10, None).unwrap();
+        // Two rows, columns id + name regardless of declaration order.
+        assert_eq!(page.total_rows, 2);
+        let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"id") && names.contains(&"name"));
     }
 
     #[test]

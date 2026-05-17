@@ -1,0 +1,7 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.indexed": { "rows": 3, "columns": ["rn", "id", "name", "label", "alias"] },
+    "work.unioned": { "rows": 5, "columns": ["id", "name", "score"] }
+  }
+}

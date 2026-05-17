@@ -89,13 +89,13 @@ are listed in §1.2 of `SPEC.md`.
 | **PAS** | DATA step currently materializes all input rows (`Vec<SourceRow>`) and all output rows before writing. Memory usage scales with row count. |
 | **Why** | Iteration semantics are easier to reason about when materialized. A streaming refactor is the headline item for v1.x. |
 
-### 2.2 PROC SQL pass-through
+### 2.2 PROC SQL extensions
 
 | | |
 |---|---|
-| **SAS** | Implements SAS SQL with extensions (`calculated`, `outer union corr`, three-part names, automatic remerging, `monotonic()`, truncated comparisons `eqt`/`gtt`). |
-| **PAS** | Passes the SQL verbatim to DuckDB, with a minimal rewrite that adds `OR REPLACE` to bare `CREATE TABLE` / `CREATE VIEW` statements (and routes `CREATE TABLE libref.ds AS …` into `COPY ... TO` for DIR libraries). DuckDB SQL is mostly a superset, but the SAS-specific extensions are not yet emulated. |
-| **Why** | DuckDB does the heavy lifting. The full SAS-SQL rewriter is planned but non-trivial. |
+| **SAS** | PROC SQL with `calculated`, `outer union [corr]`, three-part names (`libref.table`), automatic remerging, `monotonic()`, truncated comparisons (`eqt`, `gtt`, `lt:` colon-modifier). |
+| **PAS** | DuckDB-backed PROC SQL with a token-aware rewriter (`crates/pas-engine/src/sas_sql.rs`) handling: `calculated <col>` → `<col>`; `monotonic()` → `row_number() over ()`; `outer union corr` → `union all by name`; `outer union` → `union all`; `CREATE TABLE` → `CREATE OR REPLACE TABLE`; and `CREATE TABLE libref.ds AS …` for DIR libraries → `COPY (…) TO 'path' (FORMAT …)`. Three-part names are resolved by the libref rewriter. |
+| **Not yet** | Automatic remerging (e.g. `select id, max(score) from t` without GROUP BY) and truncated comparisons (`eqt`/`gtt`). Both require fuller query parsing than a token-aware pass. |
 
 ### 2.3 CREATE TABLE overwrite
 
