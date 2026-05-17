@@ -1,0 +1,714 @@
+//! Recursive-descent parser for the v0.4 DATA step.
+
+use super::ast::*;
+use super::lex::{Lexer, Tok};
+
+pub fn parse_data_step(src: &str) -> Result<DataStep, String> {
+    parse_data_step_with_datalines(src, Vec::new())
+}
+
+pub fn parse_data_step_with_datalines(
+    src: &str,
+    datalines: Vec<String>,
+) -> Result<DataStep, String> {
+    let toks = Lexer::new(src).tokens()?;
+    let mut p = Parser { toks, pos: 0 };
+    let mut ds = p.parse_data_step()?;
+    ds.datalines = datalines;
+    Ok(ds)
+}
+
+struct Parser {
+    toks: Vec<Tok>,
+    pos: usize,
+}
+
+impl Parser {
+    fn peek(&self) -> &Tok { &self.toks[self.pos] }
+    fn bump(&mut self) -> Tok {
+        let t = self.toks[self.pos].clone();
+        self.pos += 1;
+        t
+    }
+    fn eat(&mut self, t: &Tok) -> bool {
+        if self.peek() == t { self.pos += 1; true } else { false }
+    }
+    fn expect(&mut self, t: &Tok, ctx: &str) -> Result<(), String> {
+        if self.eat(t) { Ok(()) }
+        else { Err(format!("expected {:?} in {}, found {:?}", t, ctx, self.peek())) }
+    }
+    fn at_keyword(&self, kw: &str) -> bool {
+        matches!(self.peek(), Tok::Ident(s) if s == kw)
+    }
+    fn eat_keyword(&mut self, kw: &str) -> bool {
+        if self.at_keyword(kw) { self.pos += 1; true } else { false }
+    }
+
+    fn parse_data_step(&mut self) -> Result<DataStep, String> {
+        if !self.eat_keyword("data") {
+            return Err(format!("DATA step must start with `data`, got {:?}", self.peek()));
+        }
+        let outputs = self.parse_table_list()?;
+        self.expect(&Tok::Semi, "data header")?;
+
+        let mut ds = DataStep {
+            outputs,
+            input: None,
+            by: Vec::new(),
+            where_expr: None,
+            keep: None,
+            drop: None,
+            lengths: Vec::new(),
+            retain: Vec::new(),
+            arrays: Vec::new(),
+            input_vars: Vec::new(),
+            datalines: Vec::new(),
+            infile: None,
+            body: Vec::new(),
+        };
+
+        loop {
+            while self.eat(&Tok::Semi) {}
+            if matches!(self.peek(), Tok::Eof) || self.at_keyword("run") {
+                self.eat_keyword("run");
+                self.eat(&Tok::Semi);
+                break;
+            }
+            self.parse_top_stmt(&mut ds)?;
+        }
+
+        Ok(ds)
+    }
+
+    fn parse_table_list(&mut self) -> Result<Vec<TableRef>, String> {
+        let mut out = vec![self.parse_table_ref()?];
+        while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+            out.push(self.parse_table_ref()?);
+        }
+        Ok(out)
+    }
+
+    fn parse_table_ref(&mut self) -> Result<TableRef, String> {
+        let first = match self.bump() {
+            Tok::Ident(s) => s,
+            other => return Err(format!("expected dataset name, got {:?}", other)),
+        };
+        if self.eat(&Tok::Dot) {
+            let name = match self.bump() {
+                Tok::Ident(s) => s,
+                other => return Err(format!("expected table name after dot, got {:?}", other)),
+            };
+            Ok(TableRef { libref: Some(first), name })
+        } else {
+            Ok(TableRef { libref: None, name: first })
+        }
+    }
+
+    fn parse_top_stmt(&mut self, ds: &mut DataStep) -> Result<(), String> {
+        if self.eat_keyword("set") {
+            let mut sources = vec![self.parse_table_ref()?];
+            while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+                sources.push(self.parse_table_ref()?);
+            }
+            self.expect(&Tok::Semi, "set")?;
+            if ds.input.is_some() {
+                return Err("multiple set/merge statements in one data step are not supported".into());
+            }
+            ds.input = Some(DataInput::Set(sources));
+            return Ok(());
+        }
+        if self.eat_keyword("merge") {
+            let mut sources = vec![self.parse_table_ref()?];
+            while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+                sources.push(self.parse_table_ref()?);
+            }
+            self.expect(&Tok::Semi, "merge")?;
+            if ds.input.is_some() {
+                return Err("multiple set/merge statements in one data step are not supported".into());
+            }
+            if sources.len() < 2 {
+                return Err("merge requires at least two datasets".into());
+            }
+            ds.input = Some(DataInput::Merge(sources));
+            return Ok(());
+        }
+        if self.eat_keyword("by") {
+            let names = self.parse_name_list()?;
+            self.expect(&Tok::Semi, "by")?;
+            ds.by = names;
+            return Ok(());
+        }
+        if self.eat_keyword("where") {
+            let e = self.parse_expr()?;
+            self.expect(&Tok::Semi, "where")?;
+            ds.where_expr = Some(e);
+            return Ok(());
+        }
+        if self.eat_keyword("keep") {
+            let names = self.parse_name_list()?;
+            self.expect(&Tok::Semi, "keep")?;
+            ds.keep = Some(names);
+            return Ok(());
+        }
+        if self.eat_keyword("drop") {
+            let names = self.parse_name_list()?;
+            self.expect(&Tok::Semi, "drop")?;
+            ds.drop = Some(names);
+            return Ok(());
+        }
+        if self.eat_keyword("length") {
+            let decls = self.parse_length_decls()?;
+            self.expect(&Tok::Semi, "length")?;
+            ds.lengths.extend(decls);
+            return Ok(());
+        }
+        if self.eat_keyword("retain") {
+            let decls = self.parse_retain_decls()?;
+            self.expect(&Tok::Semi, "retain")?;
+            ds.retain.extend(decls);
+            return Ok(());
+        }
+        if self.eat_keyword("array") {
+            let decl = self.parse_array_decl()?;
+            self.expect(&Tok::Semi, "array")?;
+            ds.arrays.push(decl);
+            return Ok(());
+        }
+        if self.eat_keyword("input") {
+            let vars = self.parse_input_vars()?;
+            self.expect(&Tok::Semi, "input")?;
+            ds.input_vars.extend(vars);
+            return Ok(());
+        }
+        if self.eat_keyword("infile") {
+            ds.infile = Some(self.parse_infile_spec()?);
+            self.expect(&Tok::Semi, "infile")?;
+            return Ok(());
+        }
+        // `datalines;` / `cards;` / `lines;` are placeholders here — the
+        // actual data text was extracted before parsing. Just consume.
+        if self.at_keyword("datalines") || self.at_keyword("cards") || self.at_keyword("lines") {
+            self.bump();
+            self.expect(&Tok::Semi, "datalines")?;
+            return Ok(());
+        }
+
+        let s = self.parse_stmt()?;
+        ds.body.push(s);
+        Ok(())
+    }
+
+    fn parse_name_list(&mut self) -> Result<Vec<String>, String> {
+        let mut out = Vec::new();
+        loop {
+            match self.peek() {
+                Tok::Ident(_) => {
+                    if let Tok::Ident(s) = self.bump() { out.push(s); }
+                }
+                Tok::Semi | Tok::Eof => break,
+                Tok::Comma => { self.bump(); }
+                other => return Err(format!("expected name, got {:?}", other)),
+            }
+        }
+        Ok(out)
+    }
+
+    fn parse_length_decls(&mut self) -> Result<Vec<LengthDecl>, String> {
+        let mut out = Vec::new();
+        while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+            let name = match self.bump() {
+                Tok::Ident(s) => s,
+                other => return Err(format!("expected name in length, got {:?}", other)),
+            };
+            let is_char = self.eat(&Tok::Dollar);
+            let width = match self.peek() {
+                Tok::Number(n) => { let n = *n; self.bump(); n as u32 }
+                _ => if is_char { 8 } else { 8 },
+            };
+            out.push(LengthDecl { name, is_char, width });
+            if matches!(self.peek(), Tok::Comma) { self.bump(); }
+        }
+        Ok(out)
+    }
+
+    fn parse_retain_decls(&mut self) -> Result<Vec<RetainDecl>, String> {
+        let mut out = Vec::new();
+        while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+            let name = match self.bump() {
+                Tok::Ident(s) => s,
+                Tok::Comma => continue,
+                other => return Err(format!("expected name in retain, got {:?}", other)),
+            };
+            let initial = match self.peek() {
+                Tok::Number(n) => { let n = *n; self.bump(); Some(n) }
+                _ => None,
+            };
+            out.push(RetainDecl { name, initial });
+        }
+        Ok(out)
+    }
+
+    fn parse_infile_spec(&mut self) -> Result<InfileSpec, String> {
+        let path = match self.bump() {
+            Tok::Str(s) => s,
+            other => return Err(format!("expected quoted path after infile, got {:?}", other)),
+        };
+        let mut spec = InfileSpec { path, dlm: None, dsd: false, firstobs: 1 };
+        loop {
+            match self.peek().clone() {
+                Tok::Semi | Tok::Eof => break,
+                Tok::Ident(kw) => {
+                    let kwl = kw.to_ascii_lowercase();
+                    self.bump();
+                    match kwl.as_str() {
+                        "dsd" => spec.dsd = true,
+                        "truncover" | "missover" | "stopover" | "flowover" => { /* tolerated; defaults match truncover */ }
+                        "dlm" | "delimiter" => {
+                            self.expect(&Tok::Eq, "dlm")?;
+                            spec.dlm = Some(match self.bump() {
+                                Tok::Str(s) => s,
+                                other => return Err(format!("expected dlm value, got {:?}", other)),
+                            });
+                        }
+                        "firstobs" => {
+                            self.expect(&Tok::Eq, "firstobs")?;
+                            spec.firstobs = match self.bump() {
+                                Tok::Number(n) => n as u64,
+                                other => return Err(format!("expected number for firstobs, got {:?}", other)),
+                            };
+                        }
+                        other => return Err(format!("unknown infile option {:?}", other)),
+                    }
+                }
+                other => return Err(format!("unexpected token in infile: {:?}", other)),
+            }
+        }
+        Ok(spec)
+    }
+
+    fn parse_input_vars(&mut self) -> Result<Vec<InputVar>, String> {
+        let mut out = Vec::new();
+        while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+            let name = match self.bump() {
+                Tok::Ident(s) => s,
+                Tok::Comma => continue,
+                other => return Err(format!("expected variable name in input, got {:?}", other)),
+            };
+            let is_char = self.eat(&Tok::Dollar);
+            out.push(InputVar { name, is_char });
+        }
+        Ok(out)
+    }
+
+    fn parse_array_decl(&mut self) -> Result<ArrayDecl, String> {
+        // array <name>{<size> | *} [$] [<width>] [<element list>]
+        let name = match self.bump() {
+            Tok::Ident(s) => s,
+            other => return Err(format!("expected array name, got {:?}", other)),
+        };
+        // Subscript opener.
+        let close = if self.eat(&Tok::LBrace) {
+            Tok::RBrace
+        } else if self.eat(&Tok::LBracket) {
+            Tok::RBracket
+        } else if self.eat(&Tok::LParen) {
+            Tok::RParen
+        } else {
+            return Err(format!("expected '{{' / '[' / '(' after array name, got {:?}", self.peek()));
+        };
+
+        let size_tok = self.bump();
+        let explicit_size: Option<usize> = match size_tok {
+            Tok::Number(n) => Some(n as usize),
+            Tok::Star => None, // {*} — size inferred from element list
+            other => return Err(format!("expected size or '*' in array, got {:?}", other)),
+        };
+        self.expect(&close, "array size")?;
+
+        let is_char = self.eat(&Tok::Dollar);
+        // Optional width — skip if next is number followed by an identifier or end.
+        if matches!(self.peek(), Tok::Number(_)) {
+            // Treat as width and discard for v0.4; engine doesn't enforce widths yet.
+            self.bump();
+        }
+
+        let mut elements = Vec::new();
+        while let Tok::Ident(s) = self.peek().clone() {
+            self.bump();
+            elements.push(s);
+            if matches!(self.peek(), Tok::Comma) { self.bump(); }
+        }
+
+        let size = explicit_size.unwrap_or(elements.len());
+        if size == 0 {
+            return Err(format!("array {} has size 0", name));
+        }
+        if !elements.is_empty() && elements.len() != size {
+            return Err(format!(
+                "array {} declared size {} but {} elements listed",
+                name,
+                size,
+                elements.len()
+            ));
+        }
+        Ok(ArrayDecl { name, size, is_char, elements })
+    }
+
+    fn parse_stmt(&mut self) -> Result<Stmt, String> {
+        if self.eat_keyword("if") {
+            return self.parse_if();
+        }
+        if self.eat_keyword("output") {
+            let target = if matches!(self.peek(), Tok::Ident(_)) {
+                Some(self.parse_table_ref()?)
+            } else {
+                None
+            };
+            self.expect(&Tok::Semi, "output")?;
+            return Ok(Stmt::Output { dataset: target });
+        }
+        if self.eat_keyword("delete") {
+            self.expect(&Tok::Semi, "delete")?;
+            return Ok(Stmt::Delete);
+        }
+        if self.eat_keyword("select") {
+            let switch = if self.eat(&Tok::LParen) {
+                let e = self.parse_expr()?;
+                self.expect(&Tok::RParen, "select expression")?;
+                Some(e)
+            } else {
+                None
+            };
+            self.expect(&Tok::Semi, "select")?;
+            let mut branches = Vec::new();
+            let mut otherwise: Option<Box<Stmt>> = None;
+            loop {
+                while self.eat(&Tok::Semi) {}
+                if self.at_keyword("end") {
+                    self.bump();
+                    self.expect(&Tok::Semi, "select end")?;
+                    break;
+                }
+                if self.eat_keyword("when") {
+                    self.expect(&Tok::LParen, "when")?;
+                    let mut values = vec![self.parse_expr()?];
+                    while self.eat(&Tok::Comma) {
+                        values.push(self.parse_expr()?);
+                    }
+                    self.expect(&Tok::RParen, "when")?;
+                    let stmt = Box::new(self.parse_stmt()?);
+                    branches.push(SelectBranch { values, stmt });
+                    continue;
+                }
+                if self.eat_keyword("otherwise") {
+                    otherwise = Some(Box::new(self.parse_stmt()?));
+                    continue;
+                }
+                return Err(format!(
+                    "expected when/otherwise/end inside select, got {:?}",
+                    self.peek()
+                ));
+            }
+            return Ok(Stmt::Select { switch, branches, otherwise });
+        }
+        if self.eat_keyword("do") {
+            // Either `do; ... end;` (block) or `do var = a to b [by c]; ... end;`.
+            if self.eat(&Tok::Semi) {
+                return Ok(Stmt::Block(self.parse_do_body()?));
+            }
+            // Iterative form.
+            let var = match self.bump() {
+                Tok::Ident(s) => s,
+                other => return Err(format!("expected loop var, got {:?}", other)),
+            };
+            self.expect(&Tok::Eq, "iterative do")?;
+            let start = self.parse_expr()?;
+            if !self.eat_keyword("to") {
+                return Err(format!("expected 'to' in iterative do, got {:?}", self.peek()));
+            }
+            let stop = self.parse_expr()?;
+            let step = if self.eat_keyword("by") {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            self.expect(&Tok::Semi, "iterative do header")?;
+            let body = self.parse_do_body()?;
+            return Ok(Stmt::DoLoop { var, start, stop, step, body });
+        }
+        // Assignment: ident [`{expr}` | `[expr]`] = expr ;
+        let name = match self.peek().clone() {
+            Tok::Ident(s) => { self.bump(); s }
+            other => return Err(format!("unexpected statement start: {:?}", other)),
+        };
+        let target = if self.eat(&Tok::LBrace) {
+            let idx = self.parse_expr()?;
+            self.expect(&Tok::RBrace, "array index")?;
+            AssignTarget::ArrayElem { name, index: idx }
+        } else if self.eat(&Tok::LBracket) {
+            let idx = self.parse_expr()?;
+            self.expect(&Tok::RBracket, "array index")?;
+            AssignTarget::ArrayElem { name, index: idx }
+        } else {
+            AssignTarget::Var(name)
+        };
+        self.expect(&Tok::Eq, "assignment")?;
+        let expr = self.parse_expr()?;
+        self.expect(&Tok::Semi, "assignment")?;
+        Ok(Stmt::Assign { target, expr })
+    }
+
+    fn parse_do_body(&mut self) -> Result<Vec<Stmt>, String> {
+        let mut body = Vec::new();
+        while !self.at_keyword("end") {
+            if matches!(self.peek(), Tok::Eof) {
+                return Err("unterminated do/end".into());
+            }
+            while self.eat(&Tok::Semi) {}
+            if self.at_keyword("end") { break; }
+            body.push(self.parse_stmt()?);
+        }
+        self.eat_keyword("end");
+        self.expect(&Tok::Semi, "end")?;
+        Ok(body)
+    }
+
+    fn parse_if(&mut self) -> Result<Stmt, String> {
+        let cond = self.parse_expr()?;
+        if self.eat_keyword("then") {
+            let then_stmt = Box::new(self.parse_stmt()?);
+            let else_stmt = if self.eat_keyword("else") {
+                Some(Box::new(self.parse_stmt()?))
+            } else {
+                None
+            };
+            return Ok(Stmt::IfThen { cond, then_stmt, else_stmt });
+        }
+        self.expect(&Tok::Semi, "subsetting if")?;
+        Ok(Stmt::SubsetIf { cond })
+    }
+
+    fn parse_expr(&mut self) -> Result<Expr, String> { self.parse_or() }
+
+    fn parse_or(&mut self) -> Result<Expr, String> {
+        let mut lhs = self.parse_and()?;
+        while self.eat_keyword("or") {
+            let rhs = self.parse_and()?;
+            lhs = Expr::Binary { op: BinOp::Or, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+        Ok(lhs)
+    }
+    fn parse_and(&mut self) -> Result<Expr, String> {
+        let mut lhs = self.parse_not()?;
+        while self.eat_keyword("and") {
+            let rhs = self.parse_not()?;
+            lhs = Expr::Binary { op: BinOp::And, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+        Ok(lhs)
+    }
+    fn parse_not(&mut self) -> Result<Expr, String> {
+        if self.eat_keyword("not") {
+            let e = self.parse_not()?;
+            Ok(Expr::Unary { op: UnaryOp::Not, expr: Box::new(e) })
+        } else {
+            self.parse_cmp()
+        }
+    }
+    fn parse_cmp(&mut self) -> Result<Expr, String> {
+        let lhs = self.parse_concat()?;
+        let op = match self.peek() {
+            Tok::Eq => Some(BinOp::Eq),
+            Tok::NotEq => Some(BinOp::Ne),
+            Tok::Lt => Some(BinOp::Lt),
+            Tok::Le => Some(BinOp::Le),
+            Tok::Gt => Some(BinOp::Gt),
+            Tok::Ge => Some(BinOp::Ge),
+            _ => None,
+        };
+        if let Some(op) = op {
+            self.bump();
+            let rhs = self.parse_concat()?;
+            return Ok(Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) });
+        }
+        Ok(lhs)
+    }
+    fn parse_concat(&mut self) -> Result<Expr, String> {
+        let mut lhs = self.parse_add()?;
+        while self.eat(&Tok::Concat) {
+            let rhs = self.parse_add()?;
+            lhs = Expr::Binary { op: BinOp::Concat, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+        Ok(lhs)
+    }
+    fn parse_add(&mut self) -> Result<Expr, String> {
+        let mut lhs = self.parse_mul()?;
+        loop {
+            let op = if self.eat(&Tok::Plus) { BinOp::Add }
+                else if self.eat(&Tok::Minus) { BinOp::Sub }
+                else { break; };
+            let rhs = self.parse_mul()?;
+            lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+        Ok(lhs)
+    }
+    fn parse_mul(&mut self) -> Result<Expr, String> {
+        let mut lhs = self.parse_power()?;
+        loop {
+            let op = if self.eat(&Tok::Star) { BinOp::Mul }
+                else if self.eat(&Tok::Slash) { BinOp::Div }
+                else { break; };
+            let rhs = self.parse_power()?;
+            lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        }
+        Ok(lhs)
+    }
+    fn parse_power(&mut self) -> Result<Expr, String> {
+        let lhs = self.parse_unary()?;
+        if self.eat(&Tok::Power) {
+            let rhs = self.parse_power()?;
+            return Ok(Expr::Binary { op: BinOp::Pow, lhs: Box::new(lhs), rhs: Box::new(rhs) });
+        }
+        Ok(lhs)
+    }
+    fn parse_unary(&mut self) -> Result<Expr, String> {
+        if self.eat(&Tok::Minus) {
+            let e = self.parse_unary()?;
+            return Ok(Expr::Unary { op: UnaryOp::Neg, expr: Box::new(e) });
+        }
+        if self.eat(&Tok::Plus) {
+            return self.parse_unary();
+        }
+        self.parse_primary()
+    }
+    fn parse_primary(&mut self) -> Result<Expr, String> {
+        match self.peek().clone() {
+            Tok::Number(n) => { self.bump(); Ok(Expr::NumLit(n)) }
+            Tok::Str(s) => { self.bump(); Ok(Expr::StrLit(s)) }
+            Tok::LParen => {
+                self.bump();
+                let e = self.parse_expr()?;
+                self.expect(&Tok::RParen, "parenthesized expression")?;
+                Ok(e)
+            }
+            Tok::Ident(mut name) => {
+                self.bump();
+                // Compose qualified names like `first.grp` / `last.grp` into
+                // a single PDV identifier ("first.grp").
+                while matches!(self.peek(), Tok::Dot) {
+                    let saved = self.pos;
+                    self.bump();
+                    match self.peek().clone() {
+                        Tok::Ident(rhs) => {
+                            self.bump();
+                            name.push('.');
+                            name.push_str(&rhs);
+                        }
+                        _ => {
+                            self.pos = saved;
+                            break;
+                        }
+                    }
+                }
+                if self.eat(&Tok::LParen) {
+                    let mut args = Vec::new();
+                    if !matches!(self.peek(), Tok::RParen) {
+                        args.push(self.parse_expr()?);
+                        while self.eat(&Tok::Comma) {
+                            args.push(self.parse_expr()?);
+                        }
+                    }
+                    self.expect(&Tok::RParen, "call args")?;
+                    Ok(Expr::Call { name, args })
+                } else if self.eat(&Tok::LBrace) {
+                    let idx = self.parse_expr()?;
+                    self.expect(&Tok::RBrace, "array index")?;
+                    Ok(Expr::ArrayRef { name, index: Box::new(idx) })
+                } else if self.eat(&Tok::LBracket) {
+                    let idx = self.parse_expr()?;
+                    self.expect(&Tok::RBracket, "array index")?;
+                    Ok(Expr::ArrayRef { name, index: Box::new(idx) })
+                } else {
+                    Ok(Expr::Ident(name))
+                }
+            }
+            other => Err(format!("unexpected token in expression: {:?}", other)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_minimal_data_step() {
+        let ds = parse_data_step("data out; set in; x = 1 + 2; run;").unwrap();
+        assert_eq!(ds.outputs[0].name, "out");
+        assert!(matches!(ds.input, Some(DataInput::Set(ref v)) if v.len() == 1));
+    }
+
+    #[test]
+    fn parses_if_then_else() {
+        let ds = parse_data_step(
+            "data o; set i; if x > 1 then y = 'big'; else y = 'small'; run;",
+        )
+        .unwrap();
+        assert_eq!(ds.body.len(), 1);
+        assert!(matches!(ds.body[0], Stmt::IfThen { else_stmt: Some(_), .. }));
+    }
+
+    #[test]
+    fn parses_subsetting_if() {
+        let ds = parse_data_step("data o; set i; if x > 0; run;").unwrap();
+        assert!(matches!(ds.body[0], Stmt::SubsetIf { .. }));
+    }
+
+    #[test]
+    fn parses_keep_drop_length() {
+        let ds = parse_data_step(
+            "data o; set i; keep a b c; drop z; length name $ 20 age 8; run;",
+        )
+        .unwrap();
+        assert_eq!(ds.keep.as_ref().unwrap().len(), 3);
+        assert_eq!(ds.drop.as_ref().unwrap()[0], "z");
+        assert_eq!(ds.lengths.len(), 2);
+    }
+
+    #[test]
+    fn parses_merge_with_by() {
+        let ds = parse_data_step("data o; merge a b; by id; run;").unwrap();
+        assert!(matches!(ds.input, Some(DataInput::Merge(ref v)) if v.len() == 2));
+        assert_eq!(ds.by, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn parses_retain_with_initial() {
+        let ds = parse_data_step("data o; set i; retain total 0; total = total + x; run;").unwrap();
+        assert_eq!(ds.retain.len(), 1);
+        assert_eq!(ds.retain[0].name, "total");
+        assert_eq!(ds.retain[0].initial, Some(0.0));
+    }
+
+    #[test]
+    fn parses_array_and_index() {
+        let ds = parse_data_step(
+            "data o; set i; array a{3} a1 a2 a3; a{1} = 10; x = a[2]; run;",
+        )
+        .unwrap();
+        assert_eq!(ds.arrays.len(), 1);
+        assert_eq!(ds.arrays[0].size, 3);
+        assert!(matches!(
+            ds.body[0],
+            Stmt::Assign { target: AssignTarget::ArrayElem { .. }, .. }
+        ));
+    }
+
+    #[test]
+    fn parses_iterative_do() {
+        let ds = parse_data_step(
+            "data o; set i; do i = 1 to 5 by 2; y = y + i; end; run;",
+        )
+        .unwrap();
+        assert!(matches!(ds.body[0], Stmt::DoLoop { .. }));
+    }
+}
