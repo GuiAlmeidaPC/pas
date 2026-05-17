@@ -531,9 +531,11 @@ A "SAS divergence" doc tracks every known deviation from SAS behaviour, with rat
 
 ### v2 (post-1.0)
 - Full macro language (`%macro`, `%if`, `%do`).
-- `PROC IMPORT`/`PROC EXPORT`, `PROC TRANSPOSE`, `PROC SORT` (most users use `proc sort` heavily).
+- `PROC IMPORT`/`PROC EXPORT`.
 - ODS-lite for HTML output.
 - Optional: scripting hooks (run a `.sas` from CLI without UI).
+
+*Note: `PROC SORT`, `PROC PRINT`, and `PROC TRANSPOSE` shipped in v1.1.*
 
 ---
 

@@ -18,6 +18,7 @@ mod datastep;
 mod libname;
 mod library;
 mod macros;
+mod procs;
 mod sas_sql;
 mod split;
 
@@ -302,6 +303,10 @@ impl Session {
                     events.push(Event::Source { text: body.clone() });
                     self.run_data_step(&conn, &body, datalines, &mut events);
                 }
+                Block::Proc { name, body } => {
+                    events.push(Event::Source { text: format!("proc {}; {} run;", name, body) });
+                    self.run_proc(&conn, &name, &body, &mut events);
+                }
             }
         }
 
@@ -341,6 +346,63 @@ impl Session {
             Ok(StmtResult::Done) => events.push(Event::Note { text: "Statement executed.".into() }),
             Err(e) => events.push(Event::Error { text: e.to_string(), source_line: None }),
         }
+    }
+
+    fn run_proc(&self, conn: &Connection, name: &str, body: &str, events: &mut Vec<Event>) {
+        let result = match name {
+            "sort" => self.proc_sort(conn, body),
+            "print" => self.proc_print(conn, body),
+            "transpose" => self.proc_transpose(conn, body),
+            other => Err(EngineError::Other(format!(
+                "PROC {} is not implemented in PAS",
+                other.to_uppercase()
+            ))),
+        };
+        match result {
+            Ok(notes) => {
+                for n in notes {
+                    events.push(n);
+                }
+            }
+            Err(e) => events.push(Event::Error { text: e.to_string(), source_line: None }),
+        }
+    }
+
+    fn proc_sort(&self, conn: &Connection, body: &str) -> Result<Vec<Event>, EngineError> {
+        let spec = procs::sort::parse(body).map_err(EngineError::Other)?;
+        let from = self.resolve_read(&spec.data_in)?;
+        let target = self.resolve_write(&spec.data_out)?;
+        let select_sql = procs::sort::build_select_sql(&from, &spec);
+        let rows = materialize_select_into(conn, &target, &select_sql)?;
+        Ok(vec![Event::Note {
+            text: format!("The data set {} has {} observations.", target.display(), rows),
+        }])
+    }
+
+    fn proc_print(&self, conn: &Connection, body: &str) -> Result<Vec<Event>, EngineError> {
+        let spec = procs::print::parse(body).map_err(EngineError::Other)?;
+        let from = self.resolve_read(&spec.data)?;
+        let sql = procs::print::build_select_sql(&from, &spec);
+        match run_query(conn, &sql, MAX_PREVIEW_ROWS)? {
+            StmtResult::Rows(block) => Ok(vec![
+                Event::Note {
+                    text: format!("PROC PRINT showing {} row(s).", block.rows.len()),
+                },
+                Event::Output { block },
+            ]),
+            _ => Ok(vec![]),
+        }
+    }
+
+    fn proc_transpose(&self, conn: &Connection, body: &str) -> Result<Vec<Event>, EngineError> {
+        let spec = procs::transpose::parse(body).map_err(EngineError::Other)?;
+        let from = self.resolve_read(&spec.data_in)?;
+        let target = self.resolve_write(&spec.data_out)?;
+        let select_sql = procs::transpose::build_select_sql(&from, &spec);
+        let rows = materialize_select_into(conn, &target, &select_sql)?;
+        Ok(vec![Event::Note {
+            text: format!("The data set {} has {} observations.", target.display(), rows),
+        }])
     }
 
     fn run_data_step(
@@ -831,6 +893,61 @@ fn run_query(conn: &Connection, sql: &str, max_rows: usize) -> Result<StmtResult
     Ok(StmtResult::Rows(ResultBlock { columns, rows, truncated }))
 }
 
+/// Run `select_sql` and route the result rows into `target`. Returns the
+/// number of rows written. Used by PROC SORT and PROC TRANSPOSE; shaped to
+/// match the data-step writer's contract (CREATE OR REPLACE for DuckDB
+/// targets, COPY (...) TO 'path' for DIR libraries).
+fn materialize_select_into(
+    conn: &Connection,
+    target: &datastep::exec::WriteTarget,
+    select_sql: &str,
+) -> Result<u64, EngineError> {
+    use datastep::exec::WriteTarget;
+    match target {
+        WriteTarget::DuckDb { schema, name } => {
+            let qualified = format!("\"{}\".\"{}\"", schema, name);
+            let create = format!("CREATE OR REPLACE TABLE {} AS {}", qualified, select_sql);
+            conn.execute(&create, [])?;
+            let count_sql = format!("SELECT count(*) FROM {}", qualified);
+            let mut stmt = conn.prepare(&count_sql)?;
+            let mut rows = stmt.query([])?;
+            Ok(match rows.next()? {
+                Some(r) => r.get::<_, i64>(0).unwrap_or(0).max(0) as u64,
+                None => 0,
+            })
+        }
+        WriteTarget::Parquet { path, .. } | WriteTarget::Csv { path, .. } => {
+            let fmt = match target {
+                WriteTarget::Parquet { .. } => "PARQUET",
+                WriteTarget::Csv { .. } => "CSV",
+                _ => unreachable!(),
+            };
+            // Stage into a temp table so we can count rows before writing.
+            let temp = format!("pas_proc_tmp_{}", uuid::Uuid::new_v4().simple());
+            let qualified = format!("\"main\".\"{}\"", temp);
+            let create = format!("CREATE OR REPLACE TABLE {} AS {}", qualified, select_sql);
+            conn.execute(&create, [])?;
+            let count_sql = format!("SELECT count(*) FROM {}", qualified);
+            let mut stmt = conn.prepare(&count_sql)?;
+            let mut rows = stmt.query([])?;
+            let n = match rows.next()? {
+                Some(r) => r.get::<_, i64>(0).unwrap_or(0).max(0) as u64,
+                None => 0,
+            };
+            drop(stmt);
+            let copy = format!(
+                "COPY (SELECT * FROM {}) TO '{}' (FORMAT {})",
+                qualified,
+                path.replace('\'', "''"),
+                fmt
+            );
+            conn.execute(&copy, [])?;
+            conn.execute(&format!("DROP TABLE {}", qualified), [])?;
+            Ok(n)
+        }
+    }
+}
+
 fn is_query(sql: &str) -> bool {
     let s = sql.trim_start();
     let head: String = s
@@ -1151,6 +1268,60 @@ mod tests {
         }).collect();
         assert_eq!(names, vec!["alice", "bob", "carol"]);
         assert_eq!(ages, vec![30.0, 25.0, 41.0]);
+    }
+
+    #[test]
+    fn proc_sort_orders_with_nodupkey() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit(
+            "create table src as select * from (values \
+             ('b', 2),('a', 1),('a', 3),('c', 5)) as t(grp, val);",
+        );
+        let evs = s.submit(
+            "proc sort data=src out=sorted nodupkey; by grp; run;",
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "sorted", 0, 10, None).unwrap();
+        // nodupkey keeps one row per by-group (grp): a, b, c → 3 rows.
+        assert_eq!(page.total_rows, 3);
+        let grp_idx = page.columns.iter().position(|c| c.name == "grp").unwrap();
+        if let crate::Value::Text(g) = &page.rows[0][grp_idx] {
+            assert_eq!(g, "a");
+        }
+    }
+
+    #[test]
+    fn proc_print_emits_output_block() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select * from (values (1),(2),(3)) as t(x);");
+        let evs = s.submit("proc print data=src obs=2; var x; run;");
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let outputs: Vec<_> = evs.iter().filter(|e| matches!(e, Event::Output { .. })).collect();
+        assert_eq!(outputs.len(), 1);
+        if let Some(Event::Output { block }) = outputs.first() {
+            assert_eq!(block.rows.len(), 2);
+            assert_eq!(block.columns[0].name, "x");
+        }
+    }
+
+    #[test]
+    fn proc_transpose_pivots_long_to_wide() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit(
+            "create table sales as select * from (values \
+             ('east','q1',10),('east','q2',20),('west','q1',5),('west','q2',8)) as t(region, qtr, amount);",
+        );
+        let evs = s.submit(
+            "proc transpose data=sales out=wide; by region; id qtr; var amount; run;",
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "wide", 0, 10, None).unwrap();
+        // 2 regions × (region + q1 + q2) = 2 rows, 3 columns
+        assert_eq!(page.total_rows, 2);
+        let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"region"));
+        assert!(names.contains(&"q1"));
+        assert!(names.contains(&"q2"));
     }
 
     #[test]

@@ -1,0 +1,7 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.sorted": { "rows": 5, "columns": ["region", "qtr", "amount"] },
+    "work.wide": { "rows": 2, "columns": ["region", "q1", "q2"] }
+  }
+}

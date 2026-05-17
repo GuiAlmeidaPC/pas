@@ -74,8 +74,9 @@ are listed in §1.2 of `SPEC.md`.
 | | |
 |---|---|
 | **SAS** | Many PROCs: `PROC SORT`, `PROC TRANSPOSE`, `PROC FREQ`, `PROC PRINT`, `PROC MEANS`, `PROC IMPORT`, etc. |
-| **PAS** | Only `PROC SQL` (passed through to DuckDB). All others raise an error. |
-| **Why** | Data wrangling fits inside DATA step + PROC SQL. `PROC SORT` is the most common gap and is planned for v2. |
+| **PAS** | `PROC SQL`, `PROC SORT`, `PROC PRINT`, `PROC TRANSPOSE`. Everything else errors with "PROC X is not implemented in PAS". |
+| **Notes** | `PROC SORT` supports `data=`, `out=` (in-place if omitted), `by … descending …`, `nodupkey` (one row per by-key), `noduprecs` (drop exact duplicates). `PROC PRINT` supports `data=`, `obs=`, `var`. `PROC TRANSPOSE` supports `data=`, `out=`, `by`, single-`id`, single-`var` (translated to DuckDB `PIVOT`). |
+| **Why** | Statistical procs (`MEANS`, `FREQ`, `REG`) remain explicitly out of scope per `SPEC.md` §1.2. |
 
 ---
 

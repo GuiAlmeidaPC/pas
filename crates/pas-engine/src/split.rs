@@ -11,6 +11,10 @@
 pub enum Block {
     /// A single statement that lived inside a `proc sql` wrapper.
     ProcSqlStmt(String),
+    /// Any non-SQL PROC. `name` is lowercased (e.g. "sort", "transpose").
+    /// `body` is the joined remainder of the proc's statements separated
+    /// by `;` — the proc name and final `run`/`quit` are stripped.
+    Proc { name: String, body: String },
     /// A DATA step: full body text plus any datalines payload that the
     /// preprocessor extracted from `datalines;` / `cards;` blocks.
     DataStep { body: String, datalines: Vec<String> },
@@ -70,6 +74,7 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
     enum State {
         Normal,
         ProcSql,
+        ProcOther { name: String, body: String },
         Data,
     }
     let mut state = State::Normal;
@@ -87,10 +92,27 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
             continue;
         }
 
-        match state {
+        match &mut state {
             State::Normal => {
                 if lower == "proc sql" || lower.starts_with("proc sql ") {
                     state = State::ProcSql;
+                    continue;
+                }
+                if lower.starts_with("proc ") {
+                    // `proc <name> [options...]` — capture name; body
+                    // accumulates everything else until run/quit.
+                    let after = trimmed[5..].trim_start();
+                    let name_end = after
+                        .find(|c: char| c.is_whitespace())
+                        .unwrap_or(after.len());
+                    let name = after[..name_end].to_ascii_lowercase();
+                    let rest_after_name = after[name_end..].trim();
+                    let mut body = String::new();
+                    if !rest_after_name.is_empty() {
+                        body.push_str(rest_after_name);
+                        body.push(';');
+                    }
+                    state = State::ProcOther { name, body };
                     continue;
                 }
                 if lower == "data" || lower.starts_with("data ") {
@@ -109,6 +131,18 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                     continue;
                 }
                 out.push(Block::ProcSqlStmt(trimmed.to_string()));
+            }
+            State::ProcOther { name, body } => {
+                if lower == "run" || lower == "quit" {
+                    out.push(Block::Proc {
+                        name: std::mem::take(name),
+                        body: std::mem::take(body),
+                    });
+                    state = State::Normal;
+                    continue;
+                }
+                body.push_str(trimmed);
+                body.push(';');
             }
             State::Data => {
                 if lower == "run" {
@@ -131,6 +165,11 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                 data_buf.push(';');
             }
         }
+    }
+
+    // Flush any unclosed PROC at EOF so the user sees a complete result.
+    if let State::ProcOther { name, body } = state {
+        out.push(Block::Proc { name, body });
     }
 
     if !data_buf.is_empty() {
@@ -187,7 +226,7 @@ pub fn extract_sql_statements(src: &str) -> Vec<String> {
         .into_iter()
         .filter_map(|b| match b {
             Block::ProcSqlStmt(s) | Block::Statement(s) => Some(s),
-            Block::DataStep { .. } => None,
+            Block::DataStep { .. } | Block::Proc { .. } => None,
         })
         .collect()
 }
@@ -285,6 +324,17 @@ mod tests {
         );
         assert!(matches!(blocks[0], Block::Statement(_)));
         assert!(matches!(blocks[1], Block::DataStep { .. }));
-        assert!(matches!(blocks[2], Block::ProcSqlStmt(_)));
+    }
+
+    #[test]
+    fn block_split_proc_sort() {
+        let blocks = split_blocks("proc sort data=in out=out nodupkey; by x; run;");
+        assert_eq!(blocks.len(), 1);
+        let Block::Proc { name, body } = &blocks[0] else {
+            panic!("expected Proc, got {:?}", blocks);
+        };
+        assert_eq!(name, "sort");
+        assert!(body.contains("data=in"));
+        assert!(body.contains("by x"));
     }
 }
