@@ -1,0 +1,6 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.prices": { "rows": 2, "columns": ["q1", "q2", "q3", "q4", "item", "total"] }
+  }
+}

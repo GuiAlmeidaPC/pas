@@ -1,0 +1,6 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.tagged": { "rows": 3, "columns": ["id", "raw_date", "d", "yr", "era", "formatted"] }
+  }
+}

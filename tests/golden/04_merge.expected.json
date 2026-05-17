@@ -1,0 +1,6 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.joined": { "rows": 4, "columns": ["id", "name", "amount"] }
+  }
+}

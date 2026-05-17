@@ -1,0 +1,6 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.totals": { "rows": 2, "columns": ["total", "region", "item", "qty"] }
+  }
+}

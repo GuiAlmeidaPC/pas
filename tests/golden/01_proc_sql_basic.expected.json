@@ -1,0 +1,6 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.letters": { "rows": 3, "columns": ["letter", "ord"] }
+  }
+}

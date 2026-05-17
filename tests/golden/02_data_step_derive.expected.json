@@ -1,0 +1,6 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.ages": { "rows": 2, "columns": ["name", "born", "age", "bucket"] }
+  }
+}
