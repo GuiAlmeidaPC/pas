@@ -54,5 +54,5 @@ jobs:
         with:
           name: PAS-Windows-Executable
           path: |
-            crates/pas-app/target/release/bundle/nsis/*.exe
-            crates/pas-app/target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
