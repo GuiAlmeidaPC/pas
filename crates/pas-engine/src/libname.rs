@@ -58,7 +58,7 @@ pub fn parse(stmt: &str) -> Result<Option<LibnameDef>, LibnameError> {
     }
 
     // Next non-option token is the path (must be quoted in our v0.2 syntax).
-    while let Some(tok) = toks.next() {
+    for tok in toks {
         if let Some(eq) = tok.find('=') {
             let key = tok[..eq].to_ascii_lowercase();
             let val = &tok[eq + 1..];

@@ -8,6 +8,7 @@ license.workspace = true
 duckdb.workspace = true
 arrow.workspace = true
 chrono.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

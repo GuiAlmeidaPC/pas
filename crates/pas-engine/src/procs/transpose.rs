@@ -19,6 +19,7 @@ use super::parse::{parse_name_list, parse_options, split_body};
 use super::parse_table_ref;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct TransposeSpec {
     pub data_in: TableRef,
     pub data_out: TableRef,

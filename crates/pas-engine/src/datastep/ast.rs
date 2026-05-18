@@ -145,6 +145,7 @@ pub enum UnaryOp {
     Not,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
     Add, Sub, Mul, Div, Pow, Mod,

@@ -839,14 +839,13 @@ fn walk_stmt(
     seen: &mut std::collections::HashSet<String>,
 ) {
     match s {
-        Stmt::Assign { target, expr } => {
-            if let AssignTarget::Var(name) = target {
-                let key = name.to_ascii_lowercase();
-                if seen.insert(key.clone()) {
-                    order.push((key, infer_expr_is_char(expr)));
-                }
+        Stmt::Assign { target: AssignTarget::Var(name), expr } => {
+            let key = name.to_ascii_lowercase();
+            if seen.insert(key.clone()) {
+                order.push((key, infer_expr_is_char(expr)));
             }
         }
+        Stmt::Assign { .. } => {}
         Stmt::IfThen { then_stmt, else_stmt, .. } => {
             walk_stmt(then_stmt, order, seen);
             if let Some(e) = else_stmt {

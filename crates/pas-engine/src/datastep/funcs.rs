@@ -169,7 +169,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             } else {
                 " \t\n\r,.;:!?()/&|\"'".chars().collect()
             };
-            let is_delim = |c: char| delim.iter().any(|&d| d == c);
+            let is_delim = |c: char| delim.contains(&c);
             let words: Vec<&str> = s
                 .split(|c: char| is_delim(c))
                 .filter(|w| !w.is_empty())
@@ -370,6 +370,38 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             let b = arg_num(args, 2)?;
             Ok(intck(&interval, a, b))
         }
+        // ── regex (PRX) ────────────────────────────────────────────────
+        // SAS PRX functions accept a "perl regex" string in the form
+        //   '/<pattern>/<flags>'           (prxmatch / m-form)
+        //   's/<pattern>/<replacement>/<flags>'   (prxchange)
+        // Backed by the `regex` crate. Lookaround and backreferences
+        // aren't supported (regex crate limitation); everything else is.
+        "prxmatch" => {
+            let pat = arg_str(args, 0)?;
+            let src = arg_str(args, 1)?;
+            let (re_pat, flags) = parse_prx_match(&pat)?;
+            let re = build_regex(&re_pat, &flags)?;
+            Ok(RtValue::Num(match re.find(&src) {
+                Some(m) => (src[..m.start()].chars().count() + 1) as f64,
+                None => 0.0,
+            }))
+        }
+        "prxchange" => {
+            // SAS: prxchange(pattern, times, source); times = -1 → all.
+            let pat = arg_str(args, 0)?;
+            let times = arg_num(args, 1)? as i64;
+            let src = arg_str(args, 2)?;
+            let (re_pat, repl, flags) = parse_prx_change(&pat)?;
+            let re = build_regex(&re_pat, &flags)?;
+            let rust_repl = convert_repl(&repl);
+            let result = if times < 0 || flags.contains('g') {
+                re.replace_all(&src, rust_repl.as_str()).into_owned()
+            } else {
+                re.replacen(&src, times as usize, rust_repl.as_str())
+                    .into_owned()
+            };
+            Ok(RtValue::Str(result))
+        }
         "yrdif" => {
             // yrdif(d1, d2, basis) — fractional years between two SAS
             // dates. Supported bases: 'act/act' (default — exact day
@@ -391,7 +423,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         "put" => {
             let v = args.first().cloned().unwrap_or_else(RtValue::missing);
             let spec = arg_str(args, 1)?;
-            put_value(&v, &spec).map(RtValue::Str).map_err(|e| e)
+            put_value(&v, &spec).map(RtValue::Str)
         }
         "input" => {
             let s = arg_str(args, 0)?;
@@ -517,7 +549,7 @@ fn input_value(s: &str, spec: &str) -> Result<RtValue, String> {
 
 fn parse_slashed_date(s: &str, order: &str) -> Result<f64, String> {
     use chrono::NaiveDate;
-    let parts: Vec<&str> = s.split(|c| c == '/' || c == '-' || c == '.').collect();
+    let parts: Vec<&str> = s.split(['/', '-', '.']).collect();
     if parts.len() != 3 { return Err("expected 3 parts".into()); }
     let (y, m, d) = match order {
         "mmddyy" => (parts[2], parts[0], parts[1]),
@@ -732,3 +764,52 @@ fn arg_str(args: &[RtValue], i: usize) -> Result<String, String> {
         .map(|v| v.as_str().to_string())
         .ok_or_else(|| format!("expected string argument at position {}", i + 1))
 }
+
+fn parse_prx_match(pat: &str) -> Result<(String, String), String> {
+    if pat.is_empty() {
+        return Err("Empty PRX pattern".into());
+    }
+    let d = pat.chars().next().unwrap();
+    let parts: Vec<&str> = pat.split(d).collect();
+    if parts.len() < 3 {
+        return Err(format!("Invalid PRX pattern: {}", pat));
+    }
+    let re_pat = parts[1].to_string();
+    let flags = parts[2].to_string();
+    Ok((re_pat, flags))
+}
+
+fn parse_prx_change(pat: &str) -> Result<(String, String, String), String> {
+    if !pat.starts_with('s') {
+        return Err("PRX change pattern must start with 's'".into());
+    }
+    let d = pat.chars().nth(1).unwrap_or('/');
+    let parts: Vec<&str> = pat[1..].split(d).collect();
+    if parts.len() < 4 {
+        return Err(format!("Invalid PRX change pattern: {}", pat));
+    }
+    let re_pat = parts[1].to_string();
+    let repl = parts[2].to_string();
+    let flags = parts[3].to_string();
+    Ok((re_pat, repl, flags))
+}
+
+fn build_regex(re_pat: &str, flags: &str) -> Result<regex::Regex, String> {
+    let mut builder = regex::RegexBuilder::new(re_pat);
+    for c in flags.chars() {
+        match c {
+            'i' => { builder.case_insensitive(true); }
+            'm' => { builder.multi_line(true); }
+            's' => { builder.dot_matches_new_line(true); }
+            'x' => { builder.ignore_whitespace(true); }
+            'o' | 'g' => {}
+            _ => return Err(format!("Unsupported PRX flag: {}", c)),
+        }
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+fn convert_repl(repl: &str) -> String {
+    repl.to_string()
+}
+

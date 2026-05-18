@@ -17,6 +17,7 @@ impl std::fmt::Display for ParseError {
     }
 }
 
+#[allow(dead_code)]
 pub fn parse_data_step(src: &str) -> Result<DataStep, ParseError> {
     parse_data_step_with_datalines(src, Vec::new())
 }
@@ -246,7 +247,7 @@ impl Parser {
             let is_char = self.eat(&Tok::Dollar);
             let width = match self.peek() {
                 Tok::Number(n) => { let n = *n; self.bump(); n as u32 }
-                _ => if is_char { 8 } else { 8 },
+                _ => 8,
             };
             out.push(LengthDecl { name, is_char, width });
             if matches!(self.peek(), Tok::Comma) { self.bump(); }

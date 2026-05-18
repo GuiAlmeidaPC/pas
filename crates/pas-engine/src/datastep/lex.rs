@@ -48,7 +48,8 @@ impl<'a> Lexer<'a> {
         Self { src: src.as_bytes(), pos: 0 }
     }
 
-    pub fn tokens(mut self) -> Result<Vec<Tok>, String> {
+    #[allow(dead_code)]
+    pub fn tokens(self) -> Result<Vec<Tok>, String> {
         Ok(self.tokens_with_spans()?.into_iter().map(|(t, _)| t).collect())
     }
 

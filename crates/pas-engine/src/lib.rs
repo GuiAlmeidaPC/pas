@@ -946,10 +946,10 @@ fn run_query(conn: &Connection, sql: &str, max_rows: usize) -> Result<StmtResult
             break;
         }
         let mut vals = Vec::with_capacity(col_count);
-        for i in 0..col_count {
+        for (i, ty) in col_types.iter_mut().enumerate() {
             let v: duckdb::types::Value = row.get(i)?;
             if !types_filled {
-                col_types[i] = type_name(&v).to_string();
+                *ty = type_name(&v).to_string();
             }
             vals.push(value_from_duckdb(v));
         }
@@ -1064,9 +1064,8 @@ fn duckdb_error_span(
     for ch in stmt.chars() {
         if current_line == line_no {
             // Walk forward `col - 1` columns on this line.
-            let mut col_count = 1u32;
             let mut sub = 0usize;
-            for ch2 in stmt[byte..].chars() {
+            for (col_count, ch2) in (1u32..).zip(stmt[byte..].chars()) {
                 if col_count == col {
                     break;
                 }
@@ -1074,7 +1073,6 @@ fn duckdb_error_span(
                     break;
                 }
                 sub += ch2.len_utf8();
-                col_count += 1;
             }
             let abs = src_offset + byte + sub;
             let (sl, sc) = split::byte_to_line_col(program, abs);

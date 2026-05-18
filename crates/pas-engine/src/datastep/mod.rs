@@ -10,8 +10,7 @@ pub mod funcs;
 pub mod lex;
 pub mod parse;
 
-pub use ast::*;
-pub use exec::{run_data_step, DataStepResult};
+pub use exec::run_data_step;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DataStepError {

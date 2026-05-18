@@ -228,7 +228,7 @@ pub fn extract_datalines(src: &str) -> (String, std::collections::VecDeque<Vec<S
         out.push_str(line);
         if is_datalines {
             let mut data: Vec<String> = Vec::new();
-            while let Some(d) = lines.next() {
+            for d in lines.by_ref() {
                 let dt = d.trim_end_matches(['\n', '\r']);
                 if dt.trim() == ";" {
                     // Replace the terminator line with whitespace.

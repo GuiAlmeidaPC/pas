@@ -144,7 +144,7 @@ fn is_whitespace_or_comment(t: &Tok) -> bool {
 
 /// Find the index of the next `Word` token, skipping over whitespace and
 /// comments. Returns `None` if the next significant token isn't a word.
-fn next_word<'a>(toks: &'a [Tok], from: usize) -> Option<(usize, &'a str)> {
+fn next_word(toks: &[Tok], from: usize) -> Option<(usize, &str)> {
     let mut i = from;
     while i < toks.len() {
         match &toks[i] {
