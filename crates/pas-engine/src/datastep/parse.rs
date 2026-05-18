@@ -1,17 +1,33 @@
 //! Recursive-descent parser for the v0.4 DATA step.
 
 use super::ast::*;
-use super::lex::{Lexer, Tok};
+use super::lex::{Lexer, Span, Tok};
 
-pub fn parse_data_step(src: &str) -> Result<DataStep, String> {
+/// Parse error with a source span (byte offsets relative to the body text
+/// passed to the parser).
+#[derive(Debug, Clone)]
+pub struct ParseError {
+    pub message: String,
+    pub span: Span,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+pub fn parse_data_step(src: &str) -> Result<DataStep, ParseError> {
     parse_data_step_with_datalines(src, Vec::new())
 }
 
 pub fn parse_data_step_with_datalines(
     src: &str,
     datalines: Vec<String>,
-) -> Result<DataStep, String> {
-    let toks = Lexer::new(src).tokens()?;
+) -> Result<DataStep, ParseError> {
+    let toks = Lexer::new(src)
+        .tokens_with_spans()
+        .map_err(|m| ParseError { message: m, span: Span::point(0) })?;
     let mut p = Parser { toks, pos: 0 };
     let mut ds = p.parse_data_step()?;
     ds.datalines = datalines;
@@ -19,23 +35,27 @@ pub fn parse_data_step_with_datalines(
 }
 
 struct Parser {
-    toks: Vec<Tok>,
+    toks: Vec<(Tok, Span)>,
     pos: usize,
 }
 
 impl Parser {
-    fn peek(&self) -> &Tok { &self.toks[self.pos] }
+    fn peek(&self) -> &Tok { &self.toks[self.pos].0 }
+    fn current_span(&self) -> Span { self.toks[self.pos].1 }
     fn bump(&mut self) -> Tok {
-        let t = self.toks[self.pos].clone();
+        let t = self.toks[self.pos].0.clone();
         self.pos += 1;
         t
     }
     fn eat(&mut self, t: &Tok) -> bool {
         if self.peek() == t { self.pos += 1; true } else { false }
     }
-    fn expect(&mut self, t: &Tok, ctx: &str) -> Result<(), String> {
-        if self.eat(t) { Ok(()) }
-        else { Err(format!("expected {:?} in {}, found {:?}", t, ctx, self.peek())) }
+    fn expect(&mut self, t: &Tok, ctx: &str) -> Result<(), ParseError> {
+        if self.eat(t) {
+            Ok(())
+        } else {
+            Err(self.err(format!("expected {:?} in {}, found {:?}", t, ctx, self.peek())))
+        }
     }
     fn at_keyword(&self, kw: &str) -> bool {
         matches!(self.peek(), Tok::Ident(s) if s == kw)
@@ -43,10 +63,13 @@ impl Parser {
     fn eat_keyword(&mut self, kw: &str) -> bool {
         if self.at_keyword(kw) { self.pos += 1; true } else { false }
     }
+    fn err(&self, message: String) -> ParseError {
+        ParseError { message, span: self.current_span() }
+    }
 
-    fn parse_data_step(&mut self) -> Result<DataStep, String> {
+    fn parse_data_step(&mut self) -> Result<DataStep, ParseError> {
         if !self.eat_keyword("data") {
-            return Err(format!("DATA step must start with `data`, got {:?}", self.peek()));
+            return Err(self.err(format!("DATA step must start with `data`, got {:?}", self.peek())));
         }
         let outputs = self.parse_table_list()?;
         self.expect(&Tok::Semi, "data header")?;
@@ -80,7 +103,7 @@ impl Parser {
         Ok(ds)
     }
 
-    fn parse_table_list(&mut self) -> Result<Vec<TableRef>, String> {
+    fn parse_table_list(&mut self) -> Result<Vec<TableRef>, ParseError> {
         let mut out = vec![self.parse_table_ref()?];
         while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
             out.push(self.parse_table_ref()?);
@@ -88,15 +111,15 @@ impl Parser {
         Ok(out)
     }
 
-    fn parse_table_ref(&mut self) -> Result<TableRef, String> {
+    fn parse_table_ref(&mut self) -> Result<TableRef, ParseError> {
         let first = match self.bump() {
             Tok::Ident(s) => s,
-            other => return Err(format!("expected dataset name, got {:?}", other)),
+            other => return Err(self.err(format!("expected dataset name, got {:?}", other))),
         };
         if self.eat(&Tok::Dot) {
             let name = match self.bump() {
                 Tok::Ident(s) => s,
-                other => return Err(format!("expected table name after dot, got {:?}", other)),
+                other => return Err(self.err(format!("expected table name after dot, got {:?}", other))),
             };
             Ok(TableRef { libref: Some(first), name })
         } else {
@@ -104,7 +127,7 @@ impl Parser {
         }
     }
 
-    fn parse_top_stmt(&mut self, ds: &mut DataStep) -> Result<(), String> {
+    fn parse_top_stmt(&mut self, ds: &mut DataStep) -> Result<(), ParseError> {
         if self.eat_keyword("set") {
             let mut sources = vec![self.parse_table_ref()?];
             while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
@@ -112,7 +135,7 @@ impl Parser {
             }
             self.expect(&Tok::Semi, "set")?;
             if ds.input.is_some() {
-                return Err("multiple set/merge statements in one data step are not supported".into());
+                return Err(ParseError { message: "multiple set/merge statements in one data step are not supported".into(), span: self.current_span() });
             }
             ds.input = Some(DataInput::Set(sources));
             return Ok(());
@@ -124,10 +147,10 @@ impl Parser {
             }
             self.expect(&Tok::Semi, "merge")?;
             if ds.input.is_some() {
-                return Err("multiple set/merge statements in one data step are not supported".into());
+                return Err(ParseError { message: "multiple set/merge statements in one data step are not supported".into(), span: self.current_span() });
             }
             if sources.len() < 2 {
-                return Err("merge requires at least two datasets".into());
+                return Err(ParseError { message: "merge requires at least two datasets".into(), span: self.current_span() });
             }
             ds.input = Some(DataInput::Merge(sources));
             return Ok(());
@@ -198,7 +221,7 @@ impl Parser {
         Ok(())
     }
 
-    fn parse_name_list(&mut self) -> Result<Vec<String>, String> {
+    fn parse_name_list(&mut self) -> Result<Vec<String>, ParseError> {
         let mut out = Vec::new();
         loop {
             match self.peek() {
@@ -207,18 +230,18 @@ impl Parser {
                 }
                 Tok::Semi | Tok::Eof => break,
                 Tok::Comma => { self.bump(); }
-                other => return Err(format!("expected name, got {:?}", other)),
+                other => return Err(self.err(format!("expected name, got {:?}", other))),
             }
         }
         Ok(out)
     }
 
-    fn parse_length_decls(&mut self) -> Result<Vec<LengthDecl>, String> {
+    fn parse_length_decls(&mut self) -> Result<Vec<LengthDecl>, ParseError> {
         let mut out = Vec::new();
         while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
             let name = match self.bump() {
                 Tok::Ident(s) => s,
-                other => return Err(format!("expected name in length, got {:?}", other)),
+                other => return Err(self.err(format!("expected name in length, got {:?}", other))),
             };
             let is_char = self.eat(&Tok::Dollar);
             let width = match self.peek() {
@@ -231,13 +254,13 @@ impl Parser {
         Ok(out)
     }
 
-    fn parse_retain_decls(&mut self) -> Result<Vec<RetainDecl>, String> {
+    fn parse_retain_decls(&mut self) -> Result<Vec<RetainDecl>, ParseError> {
         let mut out = Vec::new();
         while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
             let name = match self.bump() {
                 Tok::Ident(s) => s,
                 Tok::Comma => continue,
-                other => return Err(format!("expected name in retain, got {:?}", other)),
+                other => return Err(self.err(format!("expected name in retain, got {:?}", other))),
             };
             let initial = match self.peek() {
                 Tok::Number(n) => { let n = *n; self.bump(); Some(n) }
@@ -248,10 +271,10 @@ impl Parser {
         Ok(out)
     }
 
-    fn parse_infile_spec(&mut self) -> Result<InfileSpec, String> {
+    fn parse_infile_spec(&mut self) -> Result<InfileSpec, ParseError> {
         let path = match self.bump() {
             Tok::Str(s) => s,
-            other => return Err(format!("expected quoted path after infile, got {:?}", other)),
+            other => return Err(self.err(format!("expected quoted path after infile, got {:?}", other))),
         };
         let mut spec = InfileSpec { path, dlm: None, dsd: false, firstobs: 1 };
         loop {
@@ -267,32 +290,32 @@ impl Parser {
                             self.expect(&Tok::Eq, "dlm")?;
                             spec.dlm = Some(match self.bump() {
                                 Tok::Str(s) => s,
-                                other => return Err(format!("expected dlm value, got {:?}", other)),
+                                other => return Err(self.err(format!("expected dlm value, got {:?}", other))),
                             });
                         }
                         "firstobs" => {
                             self.expect(&Tok::Eq, "firstobs")?;
                             spec.firstobs = match self.bump() {
                                 Tok::Number(n) => n as u64,
-                                other => return Err(format!("expected number for firstobs, got {:?}", other)),
+                                other => return Err(self.err(format!("expected number for firstobs, got {:?}", other))),
                             };
                         }
-                        other => return Err(format!("unknown infile option {:?}", other)),
+                        other => return Err(self.err(format!("unknown infile option {:?}", other))),
                     }
                 }
-                other => return Err(format!("unexpected token in infile: {:?}", other)),
+                other => return Err(self.err(format!("unexpected token in infile: {:?}", other))),
             }
         }
         Ok(spec)
     }
 
-    fn parse_input_vars(&mut self) -> Result<Vec<InputVar>, String> {
+    fn parse_input_vars(&mut self) -> Result<Vec<InputVar>, ParseError> {
         let mut out = Vec::new();
         while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
             let name = match self.bump() {
                 Tok::Ident(s) => s,
                 Tok::Comma => continue,
-                other => return Err(format!("expected variable name in input, got {:?}", other)),
+                other => return Err(self.err(format!("expected variable name in input, got {:?}", other))),
             };
             let is_char = self.eat(&Tok::Dollar);
             out.push(InputVar { name, is_char });
@@ -300,11 +323,11 @@ impl Parser {
         Ok(out)
     }
 
-    fn parse_array_decl(&mut self) -> Result<ArrayDecl, String> {
+    fn parse_array_decl(&mut self) -> Result<ArrayDecl, ParseError> {
         // array <name>{<size> | *} [$] [<width>] [<element list>]
         let name = match self.bump() {
             Tok::Ident(s) => s,
-            other => return Err(format!("expected array name, got {:?}", other)),
+            other => return Err(self.err(format!("expected array name, got {:?}", other))),
         };
         // Subscript opener.
         let close = if self.eat(&Tok::LBrace) {
@@ -314,14 +337,14 @@ impl Parser {
         } else if self.eat(&Tok::LParen) {
             Tok::RParen
         } else {
-            return Err(format!("expected '{{' / '[' / '(' after array name, got {:?}", self.peek()));
+            return Err(self.err(format!("expected '{{' / '[' / '(' after array name, got {:?}", self.peek())));
         };
 
         let size_tok = self.bump();
         let explicit_size: Option<usize> = match size_tok {
             Tok::Number(n) => Some(n as usize),
             Tok::Star => None, // {*} — size inferred from element list
-            other => return Err(format!("expected size or '*' in array, got {:?}", other)),
+            other => return Err(self.err(format!("expected size or '*' in array, got {:?}", other))),
         };
         self.expect(&close, "array size")?;
 
@@ -341,20 +364,20 @@ impl Parser {
 
         let size = explicit_size.unwrap_or(elements.len());
         if size == 0 {
-            return Err(format!("array {} has size 0", name));
+            return Err(self.err(format!("array {} has size 0", name)));
         }
         if !elements.is_empty() && elements.len() != size {
-            return Err(format!(
+            return Err(self.err(format!(
                 "array {} declared size {} but {} elements listed",
                 name,
                 size,
                 elements.len()
-            ));
+            )));
         }
         Ok(ArrayDecl { name, size, is_char, elements })
     }
 
-    fn parse_stmt(&mut self) -> Result<Stmt, String> {
+    fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         if self.eat_keyword("if") {
             return self.parse_if();
         }
@@ -404,10 +427,10 @@ impl Parser {
                     otherwise = Some(Box::new(self.parse_stmt()?));
                     continue;
                 }
-                return Err(format!(
+                return Err(self.err(format!(
                     "expected when/otherwise/end inside select, got {:?}",
                     self.peek()
-                ));
+                )));
             }
             return Ok(Stmt::Select { switch, branches, otherwise });
         }
@@ -419,12 +442,12 @@ impl Parser {
             // Iterative form.
             let var = match self.bump() {
                 Tok::Ident(s) => s,
-                other => return Err(format!("expected loop var, got {:?}", other)),
+                other => return Err(self.err(format!("expected loop var, got {:?}", other))),
             };
             self.expect(&Tok::Eq, "iterative do")?;
             let start = self.parse_expr()?;
             if !self.eat_keyword("to") {
-                return Err(format!("expected 'to' in iterative do, got {:?}", self.peek()));
+                return Err(self.err(format!("expected 'to' in iterative do, got {:?}", self.peek())));
             }
             let stop = self.parse_expr()?;
             let step = if self.eat_keyword("by") {
@@ -439,7 +462,7 @@ impl Parser {
         // Assignment: ident [`{expr}` | `[expr]`] = expr ;
         let name = match self.peek().clone() {
             Tok::Ident(s) => { self.bump(); s }
-            other => return Err(format!("unexpected statement start: {:?}", other)),
+            other => return Err(self.err(format!("unexpected statement start: {:?}", other))),
         };
         let target = if self.eat(&Tok::LBrace) {
             let idx = self.parse_expr()?;
@@ -458,11 +481,11 @@ impl Parser {
         Ok(Stmt::Assign { target, expr })
     }
 
-    fn parse_do_body(&mut self) -> Result<Vec<Stmt>, String> {
+    fn parse_do_body(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut body = Vec::new();
         while !self.at_keyword("end") {
             if matches!(self.peek(), Tok::Eof) {
-                return Err("unterminated do/end".into());
+                return Err(ParseError { message: "unterminated do/end".into(), span: self.current_span() });
             }
             while self.eat(&Tok::Semi) {}
             if self.at_keyword("end") { break; }
@@ -473,7 +496,7 @@ impl Parser {
         Ok(body)
     }
 
-    fn parse_if(&mut self) -> Result<Stmt, String> {
+    fn parse_if(&mut self) -> Result<Stmt, ParseError> {
         let cond = self.parse_expr()?;
         if self.eat_keyword("then") {
             let then_stmt = Box::new(self.parse_stmt()?);
@@ -488,9 +511,9 @@ impl Parser {
         Ok(Stmt::SubsetIf { cond })
     }
 
-    fn parse_expr(&mut self) -> Result<Expr, String> { self.parse_or() }
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> { self.parse_or() }
 
-    fn parse_or(&mut self) -> Result<Expr, String> {
+    fn parse_or(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_and()?;
         while self.eat_keyword("or") {
             let rhs = self.parse_and()?;
@@ -498,7 +521,7 @@ impl Parser {
         }
         Ok(lhs)
     }
-    fn parse_and(&mut self) -> Result<Expr, String> {
+    fn parse_and(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_not()?;
         while self.eat_keyword("and") {
             let rhs = self.parse_not()?;
@@ -506,7 +529,7 @@ impl Parser {
         }
         Ok(lhs)
     }
-    fn parse_not(&mut self) -> Result<Expr, String> {
+    fn parse_not(&mut self) -> Result<Expr, ParseError> {
         if self.eat_keyword("not") {
             let e = self.parse_not()?;
             Ok(Expr::Unary { op: UnaryOp::Not, expr: Box::new(e) })
@@ -514,7 +537,7 @@ impl Parser {
             self.parse_cmp()
         }
     }
-    fn parse_cmp(&mut self) -> Result<Expr, String> {
+    fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
         let lhs = self.parse_concat()?;
         let op = match self.peek() {
             Tok::Eq => Some(BinOp::Eq),
@@ -532,7 +555,7 @@ impl Parser {
         }
         Ok(lhs)
     }
-    fn parse_concat(&mut self) -> Result<Expr, String> {
+    fn parse_concat(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_add()?;
         while self.eat(&Tok::Concat) {
             let rhs = self.parse_add()?;
@@ -540,7 +563,7 @@ impl Parser {
         }
         Ok(lhs)
     }
-    fn parse_add(&mut self) -> Result<Expr, String> {
+    fn parse_add(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_mul()?;
         loop {
             let op = if self.eat(&Tok::Plus) { BinOp::Add }
@@ -551,7 +574,7 @@ impl Parser {
         }
         Ok(lhs)
     }
-    fn parse_mul(&mut self) -> Result<Expr, String> {
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_power()?;
         loop {
             let op = if self.eat(&Tok::Star) { BinOp::Mul }
@@ -562,7 +585,7 @@ impl Parser {
         }
         Ok(lhs)
     }
-    fn parse_power(&mut self) -> Result<Expr, String> {
+    fn parse_power(&mut self) -> Result<Expr, ParseError> {
         let lhs = self.parse_unary()?;
         if self.eat(&Tok::Power) {
             let rhs = self.parse_power()?;
@@ -570,7 +593,7 @@ impl Parser {
         }
         Ok(lhs)
     }
-    fn parse_unary(&mut self) -> Result<Expr, String> {
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         if self.eat(&Tok::Minus) {
             let e = self.parse_unary()?;
             return Ok(Expr::Unary { op: UnaryOp::Neg, expr: Box::new(e) });
@@ -580,7 +603,7 @@ impl Parser {
         }
         self.parse_primary()
     }
-    fn parse_primary(&mut self) -> Result<Expr, String> {
+    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match self.peek().clone() {
             Tok::Number(n) => { self.bump(); Ok(Expr::NumLit(n)) }
             Tok::Str(s) => { self.bump(); Ok(Expr::StrLit(s)) }
@@ -631,7 +654,7 @@ impl Parser {
                     Ok(Expr::Ident(name))
                 }
             }
-            other => Err(format!("unexpected token in expression: {:?}", other)),
+            other => Err(self.err(format!("unexpected token in expression: {:?}", other))),
         }
     }
 }

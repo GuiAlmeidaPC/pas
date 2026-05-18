@@ -1,5 +1,21 @@
 //! Tokenizer for the DATA step body.
 
+/// Half-open byte range in the body text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+    pub fn point(pos: usize) -> Self {
+        Self { start: pos, end: pos }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     Ident(String),
@@ -33,11 +49,18 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn tokens(mut self) -> Result<Vec<Tok>, String> {
+        Ok(self.tokens_with_spans()?.into_iter().map(|(t, _)| t).collect())
+    }
+
+    pub fn tokens_with_spans(mut self) -> Result<Vec<(Tok, Span)>, String> {
         let mut out = Vec::new();
         loop {
+            self.skip_ws();
+            let start = self.pos;
             let t = self.next_token()?;
+            let span = Span::new(start, self.pos);
             let is_eof = matches!(t, Tok::Eof);
-            out.push(t);
+            out.push((t, span));
             if is_eof {
                 break;
             }
@@ -66,7 +89,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_token(&mut self) -> Result<Tok, String> {
-        self.skip_ws();
         if self.pos >= self.src.len() {
             return Ok(Tok::Eof);
         }

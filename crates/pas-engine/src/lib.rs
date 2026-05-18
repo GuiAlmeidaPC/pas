@@ -43,9 +43,19 @@ pub enum Event {
     Source { text: String },
     Note { text: String },
     Warning { text: String },
-    Error { text: String, source_line: Option<u32> },
+    Error { text: String, source_span: Option<SourceSpan> },
     Output { block: ResultBlock },
     Done,
+}
+
+/// 1-based line/column range in the submitted program (after macro
+/// expansion). `start` and `end` mark the offending token.
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceSpan {
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -287,23 +297,30 @@ impl Session {
                 break;
             }
             match block {
-                Block::Statement(stmt) => {
-                    events.push(Event::Source { text: stmt.clone() });
-                    if let Some(handled) = self.try_libname(&conn, &stmt) {
+                Block::Statement { text, .. } => {
+                    events.push(Event::Source { text: text.clone() });
+                    if let Some(handled) = self.try_libname(&conn, &text) {
                         events.extend(handled);
                         continue;
                     }
-                    self.run_sql_with_rewrites(&conn, &stmt, &mut events);
+                    self.run_sql_with_rewrites(&conn, &text, &mut events);
                 }
-                Block::ProcSqlStmt(stmt) => {
-                    events.push(Event::Source { text: stmt.clone() });
-                    self.run_sql_with_rewrites(&conn, &stmt, &mut events);
+                Block::ProcSqlStmt { text, .. } => {
+                    events.push(Event::Source { text: text.clone() });
+                    self.run_sql_with_rewrites(&conn, &text, &mut events);
                 }
-                Block::DataStep { body, datalines } => {
+                Block::DataStep { body, datalines, body_src_offset } => {
                     events.push(Event::Source { text: body.clone() });
-                    self.run_data_step(&conn, &body, datalines, &mut events);
+                    self.run_data_step(
+                        &conn,
+                        &body,
+                        datalines,
+                        body_src_offset,
+                        &macro_result.expanded,
+                        &mut events,
+                    );
                 }
-                Block::Proc { name, body } => {
+                Block::Proc { name, body, .. } => {
                     events.push(Event::Source { text: format!("proc {}; {} run;", name, body) });
                     self.run_proc(&conn, &name, &body, &mut events);
                 }
@@ -318,10 +335,10 @@ impl Session {
         match libname::parse(stmt) {
             Ok(Some(def)) => Some(match self.apply_libname(conn, &def) {
                 Ok(msg) => vec![Event::Note { text: msg }],
-                Err(e) => vec![Event::Error { text: e.to_string(), source_line: None }],
+                Err(e) => vec![Event::Error { text: e.to_string(), source_span: None }],
             }),
             Ok(None) => None,
-            Err(e) => Some(vec![Event::Error { text: e.to_string(), source_line: None }]),
+            Err(e) => Some(vec![Event::Error { text: e.to_string(), source_span: None }]),
         }
     }
 
@@ -344,7 +361,7 @@ impl Session {
                 text: format!("Statement executed ({} row(s) affected).", n),
             }),
             Ok(StmtResult::Done) => events.push(Event::Note { text: "Statement executed.".into() }),
-            Err(e) => events.push(Event::Error { text: e.to_string(), source_line: None }),
+            Err(e) => events.push(Event::Error { text: e.to_string(), source_span: None }),
         }
     }
 
@@ -364,7 +381,7 @@ impl Session {
                     events.push(n);
                 }
             }
-            Err(e) => events.push(Event::Error { text: e.to_string(), source_line: None }),
+            Err(e) => events.push(Event::Error { text: e.to_string(), source_span: None }),
         }
     }
 
@@ -410,12 +427,26 @@ impl Session {
         conn: &Connection,
         body: &str,
         datalines: Vec<String>,
+        body_src_offset: usize,
+        program: &str,
         events: &mut Vec<Event>,
     ) {
         let ds = match datastep::parse::parse_data_step_with_datalines(body, datalines) {
             Ok(ds) => ds,
             Err(e) => {
-                events.push(Event::Error { text: format!("data step parse: {}", e), source_line: None });
+                let abs_start = body_src_offset + e.span.start;
+                let abs_end = body_src_offset + e.span.end.max(e.span.start);
+                let (sl, sc) = split::byte_to_line_col(program, abs_start);
+                let (el, ec) = split::byte_to_line_col(program, abs_end);
+                events.push(Event::Error {
+                    text: format!("data step parse: {}", e),
+                    source_span: Some(SourceSpan {
+                        start_line: sl,
+                        start_col: sc,
+                        end_line: el,
+                        end_col: ec.max(sc + 1),
+                    }),
+                });
                 return;
             }
         };
@@ -426,7 +457,7 @@ impl Session {
                 match tables.iter().map(|t| self.resolve_read(t)).collect::<Result<Vec<_>, _>>() {
                     Ok(v) => Some(datastep::exec::ResolvedInput::Set(v)),
                     Err(e) => {
-                        events.push(Event::Error { text: e.to_string(), source_line: None });
+                        events.push(Event::Error { text: e.to_string(), source_span: None });
                         return;
                     }
                 }
@@ -435,7 +466,7 @@ impl Session {
                 match tables.iter().map(|t| self.resolve_read(t)).collect::<Result<Vec<_>, _>>() {
                     Ok(v) => Some(datastep::exec::ResolvedInput::Merge(v)),
                     Err(e) => {
-                        events.push(Event::Error { text: e.to_string(), source_line: None });
+                        events.push(Event::Error { text: e.to_string(), source_span: None });
                         return;
                     }
                 }
@@ -446,7 +477,7 @@ impl Session {
             match self.resolve_write(t) {
                 Ok(w) => outputs.push(w),
                 Err(e) => {
-                    events.push(Event::Error { text: e.to_string(), source_line: None });
+                    events.push(Event::Error { text: e.to_string(), source_span: None });
                     return;
                 }
             }
@@ -464,7 +495,7 @@ impl Session {
                     text: format!("DATA statement read {} observation(s).", res.rows_in),
                 });
             }
-            Err(e) => events.push(Event::Error { text: e.to_string(), source_line: None }),
+            Err(e) => events.push(Event::Error { text: e.to_string(), source_span: None }),
         }
     }
 
@@ -1290,6 +1321,24 @@ mod tests {
         assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
         let page = s.dataset_page("work", "merged", 0, 1, None).unwrap();
         assert_eq!(page.total_rows, 200000);
+    }
+
+    #[test]
+    fn data_step_parse_error_carries_source_span() {
+        let s = Session::new_in_memory().unwrap();
+        // Bad syntax inside the body: missing semicolon after the assignment.
+        let program = "data out;\n  set src;\n  x = 1\n  y = 2;\nrun;\n";
+        let evs = s.submit(program);
+        let err_span = evs.iter().find_map(|e| match e {
+            Event::Error { source_span, .. } => source_span.clone(),
+            _ => None,
+        });
+        let span = err_span.expect("expected an Event::Error with a source_span");
+        // The offending token should land somewhere on or after the buggy
+        // line 3 (which is the assignment without a trailing semicolon).
+        assert!(span.start_line >= 3, "span at line {} should be >= 3", span.start_line);
+        assert!(span.end_line >= span.start_line);
+        assert!(span.start_col >= 1);
     }
 
     #[test]

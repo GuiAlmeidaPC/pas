@@ -104,6 +104,26 @@ export default function App() {
         applyEvent(event, setLog, setOutputs, setRunning, setPane, () =>
           setRefreshToken((t) => t + 1),
         );
+        // Pin parse-error markers on the editor.
+        if (event.kind === "error" && event.source_span) {
+          const monaco = monacoRef.current;
+          const editor = editorRef.current;
+          if (monaco && editor) {
+            const model = editor.getModel();
+            if (model) {
+              monaco.editor.setModelMarkers(model, "pas", [
+                {
+                  startLineNumber: event.source_span.start_line,
+                  startColumn: event.source_span.start_col,
+                  endLineNumber: event.source_span.end_line,
+                  endColumn: event.source_span.end_col,
+                  message: event.text,
+                  severity: monaco.MarkerSeverity.Error,
+                },
+              ]);
+            }
+          }
+        }
       });
       if (cancelled) fn();
       else unlisten = fn;
@@ -152,6 +172,15 @@ export default function App() {
     setOutputs([]);
     setRunning(true);
     setPane("log");
+    // Clear any prior error markers before the new submission.
+    {
+      const monaco = monacoRef.current;
+      const editor = editorRef.current;
+      if (monaco && editor) {
+        const model = editor.getModel();
+        if (model) monaco.editor.setModelMarkers(model, "pas", []);
+      }
+    }
     try {
       await invoke<string>("submit", { program, submissionId: id });
     } catch (e) {

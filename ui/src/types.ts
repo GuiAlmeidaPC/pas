@@ -15,7 +15,7 @@ export type EngineEvent =
   | { kind: "source"; text: string }
   | { kind: "note"; text: string }
   | { kind: "warning"; text: string }
-  | { kind: "error"; text: string; source_line: number | null }
+  | { kind: "error"; text: string; source_span: SourceSpan | null }
   | { kind: "output"; block: ResultBlock }
   | { kind: "done" };
 
@@ -27,6 +27,13 @@ export interface SubmitEventPayload {
 export interface LogLine {
   level: "source" | "note" | "warning" | "error";
   text: string;
+}
+
+export interface SourceSpan {
+  start_line: number;
+  start_col: number;
+  end_line: number;
+  end_col: number;
 }
 
 export interface Library {
