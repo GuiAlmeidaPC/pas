@@ -17,8 +17,20 @@ pub use exec::{run_data_step, DataStepResult};
 pub enum DataStepError {
     #[error("parse: {0}")]
     Parse(String),
+    /// Runtime error with an optional span pointing at the offending
+    /// expression in the data step body. Span is in body byte offsets;
+    /// the caller (Session) maps to absolute source position.
     #[error("runtime: {0}")]
-    Runtime(String),
+    Runtime(String, Option<lex::Span>),
     #[error("duckdb: {0}")]
     DuckDb(#[from] duckdb::Error),
+}
+
+impl DataStepError {
+    pub fn runtime(msg: impl Into<String>) -> Self {
+        Self::Runtime(msg.into(), None)
+    }
+    pub fn runtime_at(msg: impl Into<String>, span: lex::Span) -> Self {
+        Self::Runtime(msg.into(), Some(span))
+    }
 }

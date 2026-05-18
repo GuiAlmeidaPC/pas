@@ -297,17 +297,29 @@ impl Session {
                 break;
             }
             match block {
-                Block::Statement { text, .. } => {
+                Block::Statement { text, src_offset } => {
                     events.push(Event::Source { text: text.clone() });
                     if let Some(handled) = self.try_libname(&conn, &text) {
                         events.extend(handled);
                         continue;
                     }
-                    self.run_sql_with_rewrites(&conn, &text, &mut events);
+                    self.run_sql_with_rewrites(
+                        &conn,
+                        &text,
+                        src_offset,
+                        &macro_result.expanded,
+                        &mut events,
+                    );
                 }
-                Block::ProcSqlStmt { text, .. } => {
+                Block::ProcSqlStmt { text, src_offset } => {
                     events.push(Event::Source { text: text.clone() });
-                    self.run_sql_with_rewrites(&conn, &text, &mut events);
+                    self.run_sql_with_rewrites(
+                        &conn,
+                        &text,
+                        src_offset,
+                        &macro_result.expanded,
+                        &mut events,
+                    );
                 }
                 Block::DataStep { body, datalines, body_src_offset } => {
                     events.push(Event::Source { text: body.clone() });
@@ -342,7 +354,14 @@ impl Session {
         }
     }
 
-    fn run_sql_with_rewrites(&self, conn: &Connection, stmt: &str, events: &mut Vec<Event>) {
+    fn run_sql_with_rewrites(
+        &self,
+        conn: &Connection,
+        stmt: &str,
+        src_offset: usize,
+        program: &str,
+        events: &mut Vec<Event>,
+    ) {
         let after_create = self.rewrite_create_for_dir(stmt);
         let rewritten = self.rewrite_librefs(&after_create);
         match run_one(conn, &rewritten) {
@@ -361,7 +380,11 @@ impl Session {
                 text: format!("Statement executed ({} row(s) affected).", n),
             }),
             Ok(StmtResult::Done) => events.push(Event::Note { text: "Statement executed.".into() }),
-            Err(e) => events.push(Event::Error { text: e.to_string(), source_span: None }),
+            Err(e) => {
+                let text = e.to_string();
+                let source_span = duckdb_error_span(&text, stmt, src_offset, program);
+                events.push(Event::Error { text, source_span });
+            }
         }
     }
 
@@ -495,7 +518,26 @@ impl Session {
                     text: format!("DATA statement read {} observation(s).", res.rows_in),
                 });
             }
-            Err(e) => events.push(Event::Error { text: e.to_string(), source_span: None }),
+            Err(e) => {
+                // Runtime errors may carry a span pointing at the offending
+                // expression in the body. Convert to absolute source span.
+                let source_span = match &e {
+                    datastep::DataStepError::Runtime(_, Some(s)) => {
+                        let abs_start = body_src_offset + s.start;
+                        let abs_end = body_src_offset + s.end.max(s.start);
+                        let (sl, sc) = split::byte_to_line_col(program, abs_start);
+                        let (el, ec) = split::byte_to_line_col(program, abs_end);
+                        Some(SourceSpan {
+                            start_line: sl,
+                            start_col: sc,
+                            end_line: el,
+                            end_col: ec.max(sc + 1),
+                        })
+                    }
+                    _ => None,
+                };
+                events.push(Event::Error { text: e.to_string(), source_span });
+            }
         }
     }
 
@@ -979,6 +1021,79 @@ fn materialize_select_into(
     }
 }
 
+/// Parse the `LINE N: ... ^` pointer that DuckDB embeds in parser /
+/// catalog errors into an absolute source span in `program`.
+///
+/// The format we look for:
+///
+/// ```text
+/// LINE 1: SELECT * FRM users
+///                  ^
+/// ```
+///
+/// Returns `None` if the marker isn't present (e.g. runtime error with
+/// no position info).
+fn duckdb_error_span(
+    err: &str,
+    stmt: &str,
+    src_offset: usize,
+    program: &str,
+) -> Option<SourceSpan> {
+    // Find the LINE N marker.
+    let prefix = "LINE ";
+    let line_idx = err.find(prefix)?;
+    let after = &err[line_idx + prefix.len()..];
+    let colon = after.find(':')?;
+    let line_no: u32 = after[..colon].trim().parse().ok()?;
+    let after_colon = &after[colon + 1..];
+    // The remainder of that line is the source fragment DuckDB echoed
+    // (starting with a single space). The line below it is the `^`
+    // pointer line.
+    let mut lines = after_colon.lines();
+    let _echo_line = lines.next()?;
+    let caret_line = lines.next()?;
+    // Column = position of `^` in the caret line (1-based, byte-counted).
+    // The echoed source line lives in the original source verbatim, so the
+    // caret position lines up with that source's character offset.
+    let col = caret_line.find('^').map(|p| p as u32 + 1)?;
+
+    // Convert (line_no, col) in `stmt` to an absolute byte offset inside
+    // `stmt`, then add `src_offset` and convert back to program (line, col).
+    let mut byte = 0usize;
+    let mut current_line = 1u32;
+    for ch in stmt.chars() {
+        if current_line == line_no {
+            // Walk forward `col - 1` columns on this line.
+            let mut col_count = 1u32;
+            let mut sub = 0usize;
+            for ch2 in stmt[byte..].chars() {
+                if col_count == col {
+                    break;
+                }
+                if ch2 == '\n' {
+                    break;
+                }
+                sub += ch2.len_utf8();
+                col_count += 1;
+            }
+            let abs = src_offset + byte + sub;
+            let (sl, sc) = split::byte_to_line_col(program, abs);
+            return Some(SourceSpan {
+                start_line: sl,
+                start_col: sc,
+                end_line: sl,
+                end_col: sc + 1,
+            });
+        }
+        let len = ch.len_utf8();
+        byte += len;
+        if ch == '\n' {
+            current_line += 1;
+        }
+    }
+    None
+}
+
 fn is_query(sql: &str) -> bool {
     let s = sql.trim_start();
     let head: String = s
@@ -1321,6 +1436,55 @@ mod tests {
         assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
         let page = s.dataset_page("work", "merged", 0, 1, None).unwrap();
         assert_eq!(page.total_rows, 200000);
+    }
+
+    #[test]
+    fn runtime_call_error_carries_span() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let program = "data o;\n  set src;\n  y = some_function_that_doesnt_exist(x);\nrun;\n";
+        let evs = s.submit(program);
+        let span = evs.iter().find_map(|e| match e {
+            Event::Error { source_span, .. } => source_span.clone(),
+            _ => None,
+        });
+        let span = span.expect("expected runtime error span");
+        // Line 3 is the assignment with the bad function.
+        assert_eq!(span.start_line, 3);
+        assert!(span.start_col >= 5, "expected the call to be past the indent, got col {}", span.start_col);
+    }
+
+    #[test]
+    fn runtime_array_out_of_range_carries_span() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let program = "data o;\n  set src;\n  array a{3} a1 a2 a3;\n  y = a{5};\nrun;\n";
+        let evs = s.submit(program);
+        let span = evs.iter().find_map(|e| match e {
+            Event::Error { source_span, .. } => source_span.clone(),
+            _ => None,
+        });
+        let span = span.expect("expected runtime error span");
+        // Line 4 is `y = a{5};`.
+        assert_eq!(span.start_line, 4);
+    }
+
+    #[test]
+    fn proc_sql_error_carries_source_span() {
+        let s = Session::new_in_memory().unwrap();
+        // FRM instead of FROM — DuckDB emits `LINE 1: SELECT * FRM ...^`.
+        let evs = s.submit("select * frm sqlite_master;\n");
+        let span = evs.iter().find_map(|e| match e {
+            Event::Error { source_span, .. } => source_span.clone(),
+            _ => None,
+        });
+        let span = span.expect("expected PROC SQL error span");
+        assert_eq!(span.start_line, 1);
+        // Column should be somewhere around the offending `frm` token
+        // (col 10 in `select * frm ...` — DuckDB's caret tends to land
+        // there). Don't pin to an exact number to stay robust across
+        // DuckDB versions, but it must be past the first column.
+        assert!(span.start_col >= 5, "got col {}", span.start_col);
     }
 
     #[test]

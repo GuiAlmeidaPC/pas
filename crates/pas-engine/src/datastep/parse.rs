@@ -614,6 +614,7 @@ impl Parser {
                 Ok(e)
             }
             Tok::Ident(mut name) => {
+                let start = self.current_span().start;
                 self.bump();
                 // Compose qualified names like `first.grp` / `last.grp` into
                 // a single PDV identifier ("first.grp").
@@ -641,15 +642,18 @@ impl Parser {
                         }
                     }
                     self.expect(&Tok::RParen, "call args")?;
-                    Ok(Expr::Call { name, args })
+                    let end = self.toks[self.pos - 1].1.end;
+                    Ok(Expr::Call { name, args, span: Span::new(start, end) })
                 } else if self.eat(&Tok::LBrace) {
                     let idx = self.parse_expr()?;
                     self.expect(&Tok::RBrace, "array index")?;
-                    Ok(Expr::ArrayRef { name, index: Box::new(idx) })
+                    let end = self.toks[self.pos - 1].1.end;
+                    Ok(Expr::ArrayRef { name, index: Box::new(idx), span: Span::new(start, end) })
                 } else if self.eat(&Tok::LBracket) {
                     let idx = self.parse_expr()?;
                     self.expect(&Tok::RBracket, "array index")?;
-                    Ok(Expr::ArrayRef { name, index: Box::new(idx) })
+                    let end = self.toks[self.pos - 1].1.end;
+                    Ok(Expr::ArrayRef { name, index: Box::new(idx), span: Span::new(start, end) })
                 } else {
                     Ok(Expr::Ident(name))
                 }

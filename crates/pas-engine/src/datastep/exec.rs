@@ -271,7 +271,7 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
     ) -> Result<(), DataStepError> {
         use std::sync::atomic::Ordering;
         if self.cancel.load(Ordering::SeqCst) {
-            return Err(DataStepError::Runtime("cancelled".into()));
+            return Err(DataStepError::runtime("cancelled"));
         }
         self.rows_in += 1;
 
@@ -677,9 +677,7 @@ where
     }
     if let Some(infile) = &ds.infile {
         if ds.input_vars.is_empty() {
-            return Err(DataStepError::Runtime(
-                "infile requires an input statement".into(),
-            ));
+            return Err(DataStepError::runtime("infile requires an input statement"));
         }
         stream_infile_rows(infile, &ds.input_vars, &mut visit)?;
     }
@@ -740,7 +738,7 @@ where
     F: FnMut(SourceRow) -> Result<(), DataStepError>,
 {
     let file = std::fs::File::open(&infile.path)
-        .map_err(|e| DataStepError::Runtime(format!("infile open: {}: {}", infile.path, e)))?;
+        .map_err(|e| DataStepError::runtime(format!("infile open: {}: {}", infile.path, e)))?;
     let reader = BufReader::new(file);
     let firstobs = infile.firstobs.max(1) as usize;
     for (idx, line) in reader.lines().enumerate() {
@@ -748,7 +746,7 @@ where
             continue;
         }
         let line = line
-            .map_err(|e| DataStepError::Runtime(format!("infile read: {}: {}", infile.path, e)))?;
+            .map_err(|e| DataStepError::runtime(format!("infile read: {}: {}", infile.path, e)))?;
         let trimmed_line = line.trim_end_matches('\r');
         if trimmed_line.is_empty() {
             continue;
@@ -994,9 +992,7 @@ where
     F: FnMut(SourceRow) -> Result<(), DataStepError>,
 {
     if by.is_empty() {
-        return Err(DataStepError::Runtime(
-            "merge requires a `by` statement".into(),
-        ));
+        return Err(DataStepError::runtime("merge requires a `by` statement"));
     }
     let order_cols: Vec<String> = by.iter().map(|v| format!("\"{}\"", v)).collect();
     let order_clause = order_cols.join(", ");
@@ -1176,7 +1172,7 @@ fn exec_stmt(
                     .iter()
                     .position(|o| o.name.eq_ignore_ascii_case(&t.name))
                     .ok_or_else(|| {
-                        DataStepError::Runtime(format!(
+                        DataStepError::runtime(format!(
                             "`output {}` refers to a dataset not listed on the DATA statement",
                             t.qualified()
                         ))
@@ -1228,18 +1224,18 @@ fn exec_stmt(
         Stmt::DoLoop { var, start, stop, step, body } => {
             let start_v = eval(start, pdv, arrays)?
                 .as_num()
-                .ok_or_else(|| DataStepError::Runtime("do loop start is missing".into()))?;
+                .ok_or_else(|| DataStepError::runtime("do loop start is missing"))?;
             let stop_v = eval(stop, pdv, arrays)?
                 .as_num()
-                .ok_or_else(|| DataStepError::Runtime("do loop stop is missing".into()))?;
+                .ok_or_else(|| DataStepError::runtime("do loop stop is missing"))?;
             let step_v = match step {
                 Some(e) => eval(e, pdv, arrays)?
                     .as_num()
-                    .ok_or_else(|| DataStepError::Runtime("do loop step is missing".into()))?,
+                    .ok_or_else(|| DataStepError::runtime("do loop step is missing"))?,
                 None => 1.0,
             };
             if step_v == 0.0 {
-                return Err(DataStepError::Runtime("do loop step cannot be 0".into()));
+                return Err(DataStepError::runtime("do loop step cannot be 0"));
             }
             let ascending = step_v > 0.0;
             let mut i = start_v;
@@ -1261,6 +1257,14 @@ fn exec_stmt(
     }
 }
 
+/// Attach a span to a runtime error if it doesn't already have one.
+fn with_span(e: DataStepError, span: super::lex::Span) -> DataStepError {
+    match e {
+        DataStepError::Runtime(msg, None) => DataStepError::Runtime(msg, Some(span)),
+        other => other,
+    }
+}
+
 fn resolve_array_index(
     name: &str,
     index: &Expr,
@@ -1269,14 +1273,14 @@ fn resolve_array_index(
 ) -> Result<String, DataStepError> {
     let arr = arrays
         .get(&name.to_ascii_lowercase())
-        .ok_or_else(|| DataStepError::Runtime(format!("unknown array '{}'", name)))?;
+        .ok_or_else(|| DataStepError::runtime(format!("unknown array '{}'", name)))?;
     let idx_v = eval(index, pdv, arrays)?;
     let idx = idx_v
         .as_num()
-        .ok_or_else(|| DataStepError::Runtime(format!("array '{}' index is missing", name)))?;
+        .ok_or_else(|| DataStepError::runtime(format!("array '{}' index is missing", name)))?;
     let i = idx as isize;
     if i < 1 || (i as usize) > arr.elements.len() {
-        return Err(DataStepError::Runtime(format!(
+        return Err(DataStepError::runtime(format!(
             "array '{}' index {} out of range (1..{})",
             name,
             i,
@@ -1297,15 +1301,16 @@ fn eval(
         Expr::NumLit(n) => RtValue::Num(*n),
         Expr::StrLit(s) => RtValue::Str(s.clone()),
         Expr::Ident(name) => pdv.get(name),
-        Expr::Call { name, args } => {
+        Expr::Call { name, args, span } => {
             let evaluated: Vec<RtValue> = args
                 .iter()
                 .map(|a| eval(a, pdv, arrays))
                 .collect::<Result<_, _>>()?;
-            funcs::call(name, &evaluated).map_err(DataStepError::Runtime)?
+            funcs::call(name, &evaluated).map_err(|m| DataStepError::runtime_at(m, *span))?
         }
-        Expr::ArrayRef { name, index } => {
-            let element = resolve_array_index(name, index, pdv, arrays)?;
+        Expr::ArrayRef { name, index, span } => {
+            let element = resolve_array_index(name, index, pdv, arrays)
+                .map_err(|e| with_span(e, *span))?;
             pdv.get(&element)
         }
         Expr::Unary { op, expr } => {

@@ -131,10 +131,10 @@ pub enum Expr {
     NumLit(f64),
     StrLit(String),
     Ident(String),
-    /// `name(args...)`
-    Call { name: String, args: Vec<Expr> },
-    /// `name{index}` or `name[index]`
-    ArrayRef { name: String, index: Box<Expr> },
+    /// `name(args...)`. `span` covers the whole call (name through `)`).
+    Call { name: String, args: Vec<Expr>, span: super::lex::Span },
+    /// `name{index}` or `name[index]`. `span` covers `name { … }`.
+    ArrayRef { name: String, index: Box<Expr>, span: super::lex::Span },
     Unary { op: UnaryOp, expr: Box<Expr> },
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
 }
