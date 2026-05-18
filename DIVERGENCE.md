@@ -87,8 +87,7 @@ are listed in §1.2 of `SPEC.md`.
 | | |
 |---|---|
 | **SAS** | DATA step streams rows one at a time. Output is appended without holding all rows in memory. |
-| **PAS** | DATA step currently materializes all input rows (`Vec<SourceRow>`) and all output rows before writing. Memory usage scales with row count. |
-| **Why** | Iteration semantics are easier to reason about when materialized. A streaming refactor is the headline item for v1.x. |
+| **PAS** | DATA step streams source rows from DuckDB and writes output via the Appender API. The pipeline holds only the current row, a one-row lookahead (used for `last.var` detection), and the appender's own batch. **Exception:** `merge` still materializes its sources because k-way streaming across multiple DuckDB cursors requires self-referential lifetimes; merge's *output* is still streamed through the same pipeline. |
 
 ### 2.2 PROC SQL extensions
 

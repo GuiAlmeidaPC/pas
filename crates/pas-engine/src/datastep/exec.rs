@@ -1,13 +1,20 @@
-//! DATA step executor — v0.4.
+//! DATA step executor.
 //!
-//! Supports: `set` (1+ sources, concatenated), `merge` (match-merge with `by`),
-//! `by` + `first./last.`, `retain`, `array` declarations + indexed refs,
-//! iterative `do var = a to b [by c]`, plus everything from v0.3.
+//! Streams rows through the program data vector and writes output via the
+//! DuckDB Appender API. Memory stays bounded by the appender batch + one
+//! lookahead row (needed for `last.var` detection), regardless of input
+//! row count.
+//!
+//! For `merge`, the per-source materialization is intentionally retained
+//! — k-way streaming across multiple DuckDB cursors requires self-
+//! referential lifetimes that we sidestep here. The output side of merge
+//! is still streamed: merged rows flow through the same per-row pipeline.
 
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 
 use duckdb::types::Value as DV;
-use duckdb::Connection;
+use duckdb::{Appender, Connection};
 
 use super::ast::*;
 use super::funcs;
@@ -78,7 +85,6 @@ impl WriteTarget {
     }
 }
 
-/// Input resolved to concrete SQL FROM-expressions.
 pub enum ResolvedInput {
     Set(Vec<String>),
     Merge(Vec<String>),
@@ -101,11 +107,7 @@ struct Pdv {
     index: HashMap<String, usize>,
     is_char: Vec<bool>,
     vals: Vec<RtValue>,
-    /// Per-var: comes from a source row (not derived). Used for reset
-    /// semantics. Auto vars (first./last.) are also marked as "source"
-    /// because the executor sets them directly each iteration.
     from_source: Vec<bool>,
-    /// Per-var: retain — don't reset between iterations.
     retained: Vec<bool>,
 }
 
@@ -167,25 +169,228 @@ fn coerce_to(want_char: bool, v: RtValue) -> RtValue {
     }
 }
 
-/// One row sourced from an input — sparse map keyed by lowercased column name.
+/// A single input row keyed by lowercased column name. Allocations per row
+/// are unavoidable here since column sets can vary (merge / multi-source
+/// set with mismatched schemas).
 type SourceRow = HashMap<String, RtValue>;
 
 struct ArrayBinding {
-    /// Lowercase element variable names.
     elements: Vec<String>,
 }
+
+/// Output table created up front. For DIR libraries the table is a staging
+/// `pas_ds_tmp_*` whose contents get COPYed out at the end.
+struct WriterSpec {
+    schema: String,
+    name: String,
+    cols: Vec<(String, bool)>,
+    /// `Some(...)` when we have to COPY the staging table to a Parquet/CSV
+    /// file after streaming completes.
+    copy_to: Option<CopyToFile>,
+    target: WriteTarget,
+}
+
+struct CopyToFile {
+    path: String,
+    fmt: &'static str,
+}
+
+// ── Streaming runtime ──────────────────────────────────────────────────────
+
+/// Per-output appender + counter wired up to the writer specs. Lives only
+/// for the duration of the streaming row loop.
+struct OutputAppender<'conn> {
+    appender: Appender<'conn>,
+    cols: Vec<(String, bool)>,
+    count: u64,
+}
+
+impl<'conn> OutputAppender<'conn> {
+    fn append(&mut self, pdv: &Pdv) -> Result<(), DataStepError> {
+        let vals: Vec<DV> = self
+            .cols
+            .iter()
+            .map(|(name, is_char)| {
+                let v = pdv.index.get(name).map(|&i| &pdv.vals[i]);
+                value_for_appender(*is_char, v)
+            })
+            .collect();
+        self.appender
+            .append_row(duckdb::appender_params_from_iter(vals))?;
+        self.count += 1;
+        Ok(())
+    }
+}
+
+/// Mutable streaming state. Holds the PDV, array bindings, output
+/// appenders, and the one-row lookahead buffer that drives first./last..
+struct Runtime<'a, 'conn> {
+    pdv: Pdv,
+    arrays: HashMap<String, ArrayBinding>,
+    ds: &'a DataStep,
+    appenders: Vec<OutputAppender<'conn>>,
+    cancel: &'a std::sync::atomic::AtomicBool,
+    rows_in: u64,
+    prev_by: Option<Vec<RtValue>>,
+    pending: Option<SourceRow>,
+}
+
+impl<'a, 'conn> Runtime<'a, 'conn> {
+    /// Push one row into the pipeline. Implements a 1-row lookahead so the
+    /// processor can see the next row's by-values when computing `last.var`.
+    fn feed(&mut self, row: SourceRow) -> Result<(), DataStepError> {
+        match self.pending.take() {
+            None => {
+                self.pending = Some(row);
+                Ok(())
+            }
+            Some(prev) => {
+                self.process(&prev, Some(&row))?;
+                self.pending = Some(row);
+                Ok(())
+            }
+        }
+    }
+
+    /// Flush the last pending row (no lookahead).
+    fn finish(&mut self) -> Result<(), DataStepError> {
+        if let Some(last) = self.pending.take() {
+            self.process(&last, None)?;
+        }
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        current: &SourceRow,
+        next: Option<&SourceRow>,
+    ) -> Result<(), DataStepError> {
+        use std::sync::atomic::Ordering;
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err(DataStepError::Runtime("cancelled".into()));
+        }
+        self.rows_in += 1;
+
+        // Reset non-retained, non-source-bound vars.
+        for i in 0..self.pdv.vals.len() {
+            if !self.pdv.retained[i] && !self.pdv.from_source[i] {
+                self.pdv.vals[i] = if self.pdv.is_char[i] {
+                    RtValue::Str(String::new())
+                } else {
+                    RtValue::missing()
+                };
+            }
+        }
+        // Clear source-bound vars that the current row doesn't provide.
+        for i in 0..self.pdv.names.len() {
+            let name = &self.pdv.names[i];
+            if self.pdv.retained[i] || !self.pdv.from_source[i] {
+                continue;
+            }
+            if name.starts_with("first.") || name.starts_with("last.") {
+                continue;
+            }
+            if !current.contains_key(name) {
+                self.pdv.vals[i] = if self.pdv.is_char[i] {
+                    RtValue::Str(String::new())
+                } else {
+                    RtValue::missing()
+                };
+            }
+        }
+        // Populate from row.
+        for (name, val) in current.iter() {
+            if let Some(&i) = self.pdv.index.get(name) {
+                self.pdv.vals[i] = coerce_to(self.pdv.is_char[i], val.clone());
+            }
+        }
+
+        // first./last. for by vars.
+        if !self.ds.by.is_empty() {
+            let this_by: Vec<RtValue> =
+                self.ds.by.iter().map(|v| self.pdv.get(v)).collect();
+            for (j, by_var) in self.ds.by.iter().enumerate() {
+                let is_first = match &self.prev_by {
+                    None => true,
+                    Some(p) => any_changed(&p[..=j], &this_by[..=j]),
+                };
+                let fi = self.pdv.index[&format!("first.{}", by_var)];
+                self.pdv.vals[fi] = RtValue::Num(if is_first { 1.0 } else { 0.0 });
+            }
+            let next_by: Option<Vec<RtValue>> = next.map(|nr| {
+                self.ds
+                    .by
+                    .iter()
+                    .map(|v| nr.get(v).cloned().unwrap_or_else(RtValue::missing))
+                    .collect()
+            });
+            for (j, by_var) in self.ds.by.iter().enumerate() {
+                let is_last = match &next_by {
+                    None => true,
+                    Some(nb) => any_changed(&nb[..=j], &this_by[..=j]),
+                };
+                let li = self.pdv.index[&format!("last.{}", by_var)];
+                self.pdv.vals[li] = RtValue::Num(if is_last { 1.0 } else { 0.0 });
+            }
+            self.prev_by = Some(this_by);
+        }
+
+        // where filter.
+        if let Some(w) = &self.ds.where_expr {
+            if !eval(w, &self.pdv, &self.arrays)?.truthy() {
+                return Ok(());
+            }
+        }
+
+        // Body.
+        let mut explicit_outputs: Vec<usize> = Vec::new();
+        let mut deleted = false;
+        for s in &self.ds.body {
+            match exec_stmt(
+                s,
+                &mut self.pdv,
+                &self.arrays,
+                &self.ds.outputs,
+                &mut explicit_outputs,
+            )? {
+                StmtFlow::Continue => {}
+                StmtFlow::Delete => {
+                    deleted = true;
+                    break;
+                }
+            }
+        }
+        if deleted {
+            return Ok(());
+        }
+
+        // Emit.
+        if explicit_outputs.is_empty() {
+            for i in 0..self.appenders.len() {
+                self.appenders[i].append(&self.pdv)?;
+            }
+        } else {
+            for i in explicit_outputs {
+                if let Some(a) = self.appenders.get_mut(i) {
+                    a.append(&self.pdv)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────
 
 pub fn run_data_step(
     conn: &Connection,
     plan: &ResolvedDataStep,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<DataStepResult, DataStepError> {
-    use std::sync::atomic::Ordering;
-
     let ds = plan.ast;
     let mut pdv = Pdv::new();
 
-    // 1. Pre-declare PDV layout from length / retain / array declarations.
+    // 1. PDV declarations from length / array / retain.
     for d in &ds.lengths {
         pdv.ensure(&d.name, d.is_char);
     }
@@ -201,7 +406,6 @@ pub fn run_data_step(
         }
         arrays.insert(a.name.to_ascii_lowercase(), ArrayBinding { elements });
     }
-    // 2. Retain (and apply initial values once).
     for r in &ds.retain {
         let i = pdv.ensure(&r.name, false);
         pdv.retained[i] = true;
@@ -209,10 +413,7 @@ pub fn run_data_step(
             pdv.vals[i] = RtValue::Num(init);
         }
     }
-    // Variables in `by` get first./last. auto-vars — declared lazily once
-    // we know we'll actually be iterating with `by`.
-    let by_active = !ds.by.is_empty();
-    if by_active {
+    if !ds.by.is_empty() {
         for v in &ds.by {
             let i_first = pdv.ensure(&format!("first.{}", v), false);
             pdv.from_source[i_first] = true;
@@ -220,179 +421,653 @@ pub fn run_data_step(
             pdv.from_source[i_last] = true;
         }
     }
-
-    // 3. Pre-declare input vars from the `input` statement so they appear
-    //    in PDV order regardless of whether datalines lines populate them.
     for iv in &ds.input_vars {
         let i = pdv.ensure(&iv.name, iv.is_char);
         pdv.from_source[i] = true;
     }
 
-    // 4. Load + materialize input rows.
-    let input_rows: Vec<SourceRow> = if let Some(infile) = &ds.infile {
+    // 2. Discover source schemas via DESCRIBE (cheap, no row scan).
+    let source_schemas = discover_source_schemas(conn, &plan.input)?;
+    for schema in &source_schemas {
+        for (name, is_char) in schema {
+            let i = pdv.ensure(name, *is_char);
+            pdv.from_source[i] = true;
+        }
+    }
+
+    // 3. Static analysis: pre-declare body-assigned vars so the output
+    //    table schema is finalized before streaming begins.
+    let analyzed = analyze_body_assignments(&ds.body);
+    for (name, is_char) in &analyzed {
+        pdv.ensure(name, *is_char);
+    }
+    // do-loop counter vars are introduced by the static analyzer; mark them
+    // as transient so they aren't preserved between iterations.
+    // (They're already declared with `retained=false`, which is correct.)
+
+    // 4. Create output tables (or staging tables for DIR targets).
+    let writer_specs = create_output_tables(conn, &plan.outputs, &pdv, ds)?;
+
+    // 5. Stream rows through the runtime.
+    let (rows_in, counts) = {
+        let mut appenders: Vec<OutputAppender> = Vec::with_capacity(writer_specs.len());
+        for spec in &writer_specs {
+            let app = conn.appender_to_db(&spec.name, &spec.schema)?;
+            appenders.push(OutputAppender {
+                appender: app,
+                cols: spec.cols.clone(),
+                count: 0,
+            });
+        }
+        let mut rt = Runtime {
+            pdv,
+            arrays,
+            ds,
+            appenders,
+            cancel,
+            rows_in: 0,
+            prev_by: None,
+            pending: None,
+        };
+        iterate_input(conn, plan, &source_schemas, |row| rt.feed(row))?;
+        rt.finish()?;
+        let counts: Vec<u64> = rt.appenders.iter().map(|a| a.count).collect();
+        (rt.rows_in, counts)
+        // appenders dropped here → flushed automatically
+    };
+
+    // 6. Finalize: COPY staging tables to files for DIR libraries.
+    let mut results = Vec::with_capacity(writer_specs.len());
+    for (i, spec) in writer_specs.into_iter().enumerate() {
+        if let Some(copy) = &spec.copy_to {
+            let qualified = format!("\"{}\".\"{}\"", spec.schema, spec.name);
+            let copy_sql = format!(
+                "COPY (SELECT * FROM {}) TO '{}' (FORMAT {})",
+                qualified,
+                copy.path.replace('\'', "''"),
+                copy.fmt
+            );
+            conn.execute(&copy_sql, [])?;
+            conn.execute(&format!("DROP TABLE {}", qualified), [])?;
+        }
+        results.push((ds.outputs[i].clone(), spec.target, counts[i]));
+    }
+    Ok(DataStepResult { outputs: results, rows_in })
+}
+
+// ── Output table setup ────────────────────────────────────────────────────
+
+fn create_output_tables(
+    conn: &Connection,
+    targets: &[WriteTarget],
+    pdv: &Pdv,
+    ds: &DataStep,
+) -> Result<Vec<WriterSpec>, DataStepError> {
+    let cols = pdv_output_columns(pdv, ds);
+    let mut out = Vec::with_capacity(targets.len());
+    for target in targets {
+        let spec = match target {
+            WriteTarget::DuckDb { schema, name } => {
+                create_table_with_schema(conn, schema, name, &cols)?;
+                WriterSpec {
+                    schema: schema.clone(),
+                    name: name.clone(),
+                    cols: cols.clone(),
+                    copy_to: None,
+                    target: target.clone(),
+                }
+            }
+            WriteTarget::Parquet { path, .. } | WriteTarget::Csv { path, .. } => {
+                let temp = format!("pas_ds_tmp_{}", uuid::Uuid::new_v4().simple());
+                create_table_with_schema(conn, "main", &temp, &cols)?;
+                let fmt = match target {
+                    WriteTarget::Parquet { .. } => "PARQUET",
+                    WriteTarget::Csv { .. } => "CSV",
+                    _ => unreachable!(),
+                };
+                WriterSpec {
+                    schema: "main".into(),
+                    name: temp,
+                    cols: cols.clone(),
+                    copy_to: Some(CopyToFile { path: path.clone(), fmt }),
+                    target: target.clone(),
+                }
+            }
+        };
+        out.push(spec);
+    }
+    Ok(out)
+}
+
+fn pdv_output_columns(pdv: &Pdv, ds: &DataStep) -> Vec<(String, bool)> {
+    pdv.names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            if n.starts_with("first.") || n.starts_with("last.") {
+                return false;
+            }
+            if let Some(keep) = &ds.keep {
+                if !keep.iter().any(|k| k.eq_ignore_ascii_case(n)) {
+                    return false;
+                }
+            }
+            if let Some(drop) = &ds.drop {
+                if drop.iter().any(|d| d.eq_ignore_ascii_case(n)) {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|(i, n)| (n.clone(), pdv.is_char[i]))
+        .collect()
+}
+
+fn create_table_with_schema(
+    conn: &Connection,
+    schema: &str,
+    name: &str,
+    cols: &[(String, bool)],
+) -> Result<(), DataStepError> {
+    let qualified = format!("\"{}\".\"{}\"", schema, name);
+    let mut create = format!("CREATE OR REPLACE TABLE {} (", qualified);
+    if cols.is_empty() {
+        // DuckDB rejects empty column lists; insert a placeholder column we
+        // never write to. This only happens for empty DATA steps.
+        create.push_str("\"__pas_empty\" INTEGER");
+    } else {
+        for (i, (n, is_char)) in cols.iter().enumerate() {
+            if i > 0 {
+                create.push_str(", ");
+            }
+            create.push('"');
+            create.push_str(n);
+            create.push('"');
+            create.push(' ');
+            create.push_str(if *is_char { "VARCHAR" } else { "DOUBLE" });
+        }
+    }
+    create.push(')');
+    conn.execute(&create, [])?;
+    Ok(())
+}
+
+// ── Input streaming ───────────────────────────────────────────────────────
+
+fn discover_source_schemas(
+    conn: &Connection,
+    input: &Option<ResolvedInput>,
+) -> Result<Vec<Vec<(String, bool)>>, DataStepError> {
+    let sources: Vec<&String> = match input {
+        Some(ResolvedInput::Set(s)) => s.iter().collect(),
+        Some(ResolvedInput::Merge(s)) => s.iter().collect(),
+        None => return Ok(Vec::new()),
+    };
+    let mut out = Vec::with_capacity(sources.len());
+    for from in sources {
+        out.push(describe_query(conn, from)?);
+    }
+    Ok(out)
+}
+
+fn describe_query(conn: &Connection, from: &str) -> Result<Vec<(String, bool)>, DataStepError> {
+    let sql = format!("DESCRIBE SELECT * FROM {}", from);
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(0)?;
+        let type_name: String = row.get(1)?;
+        out.push((name.to_ascii_lowercase(), is_char_type(&type_name)));
+    }
+    Ok(out)
+}
+
+fn is_char_type(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.contains("VARCHAR")
+        || upper.contains("CHAR")
+        || upper.contains("TEXT")
+        || upper.contains("STRING")
+        || upper.contains("BLOB")
+}
+
+/// Pump rows through `visit` for the configured input. The DuckDB
+/// statement / Rows iterator lives only inside this function, so its
+/// lifetime never escapes.
+fn iterate_input<F>(
+    conn: &Connection,
+    plan: &ResolvedDataStep,
+    source_schemas: &[Vec<(String, bool)>],
+    mut visit: F,
+) -> Result<(), DataStepError>
+where
+    F: FnMut(SourceRow) -> Result<(), DataStepError>,
+{
+    let ds = plan.ast;
+
+    match &plan.input {
+        None => {
+            // A sourceless DATA step still iterates once (unless datalines
+            // or infile take over below).
+            if ds.datalines.is_empty() && ds.infile.is_none() {
+                visit(SourceRow::new())?;
+            }
+        }
+        Some(ResolvedInput::Set(sources)) => {
+            for (src_idx, from) in sources.iter().enumerate() {
+                stream_set_source(conn, from, &ds.by, &source_schemas[src_idx], &mut visit)?;
+            }
+        }
+        Some(ResolvedInput::Merge(sources)) => {
+            // Merge keeps the per-source materialization because k-way
+            // streaming across multiple DuckDB cursors needs self-
+            // referential lifetimes. The output side still streams.
+            let mut per_source: Vec<(Vec<(String, bool)>, Vec<Vec<RtValue>>)> = Vec::new();
+            for from in sources {
+                per_source.push(load_source(conn, from, &ds.by)?);
+            }
+            let merged = merge_rows(&per_source, &ds.by)?;
+            for row in merged {
+                visit(row)?;
+            }
+        }
+    }
+
+    if !ds.datalines.is_empty() && !ds.input_vars.is_empty() {
+        for line in &ds.datalines {
+            if let Some(row) = parse_datalines_line(line, &ds.input_vars) {
+                visit(row)?;
+            }
+        }
+    }
+    if let Some(infile) = &ds.infile {
         if ds.input_vars.is_empty() {
             return Err(DataStepError::Runtime(
                 "infile requires an input statement".into(),
             ));
         }
-        rows_from_infile(infile, &ds.input_vars)?
-    } else if !ds.datalines.is_empty() && !ds.input_vars.is_empty() {
-        rows_from_datalines(&ds.datalines, &ds.input_vars)
-    } else { match &plan.input {
-        None => vec![SourceRow::new()],
-        Some(ResolvedInput::Set(sources)) => {
-            let mut all = Vec::new();
-            for from in sources {
-                let (cols, rows) = load_source(conn, from, &ds.by)?;
-                for (name, is_char) in &cols {
-                    let i = pdv.ensure(name, *is_char);
-                    pdv.from_source[i] = true;
-                }
-                for raw in rows {
-                    let mut m = SourceRow::new();
-                    for ((name, _), val) in cols.iter().zip(raw.into_iter()) {
-                        m.insert(name.clone(), val);
-                    }
-                    all.push(m);
-                }
-            }
-            all
-        }
-        Some(ResolvedInput::Merge(sources)) => {
-            // Load each source sorted by `by` vars.
-            let mut per_source: Vec<(Vec<(String, bool)>, Vec<Vec<RtValue>>)> = Vec::new();
-            for from in sources {
-                per_source.push(load_source(conn, from, &ds.by)?);
-            }
-            // Register all columns in the PDV.
-            for (cols, _) in &per_source {
-                for (name, is_char) in cols {
-                    let i = pdv.ensure(name, *is_char);
-                    pdv.from_source[i] = true;
-                }
-            }
-            merge_rows(&per_source, &ds.by)?
-        }
-    }};
+        stream_infile_rows(infile, &ds.input_vars, &mut visit)?;
+    }
 
-    // 4. Iterate.
-    let mut out_buffers: Vec<Vec<HashMap<String, RtValue>>> =
-        ds.outputs.iter().map(|_| Vec::new()).collect();
-    let mut rows_in = 0u64;
+    Ok(())
+}
 
-    let mut prev_by: Option<Vec<RtValue>> = None;
-    let n = input_rows.len();
-
-    for (idx, row) in input_rows.iter().enumerate() {
-        if cancel.load(Ordering::SeqCst) {
-            return Err(DataStepError::Runtime("cancelled".into()));
+fn stream_set_source<F>(
+    conn: &Connection,
+    from: &str,
+    by: &[String],
+    schema: &[(String, bool)],
+    visit: &mut F,
+) -> Result<(), DataStepError>
+where
+    F: FnMut(SourceRow) -> Result<(), DataStepError>,
+{
+    let order_sql = if by.is_empty() {
+        String::new()
+    } else {
+        let cols: Vec<String> = by.iter().map(|v| format!("\"{}\"", v)).collect();
+        format!(" ORDER BY {}", cols.join(", "))
+    };
+    let sql = format!("SELECT * FROM {}{}", from, order_sql);
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    let col_count = rows.as_ref().map(|s| s.column_count()).unwrap_or(0);
+    while let Some(row) = rows.next()? {
+        let mut src_row = SourceRow::with_capacity(col_count);
+        for i in 0..col_count {
+            let v: DV = row.get(i)?;
+            let name = schema
+                .get(i)
+                .map(|(n, _)| n.clone())
+                .unwrap_or_else(|| format!("col{}", i));
+            src_row.insert(name, rt_from_duckdb(v));
         }
-        // Reset non-retained, non-source-bound vars to missing/empty.
-        for i in 0..pdv.vals.len() {
-            if !pdv.retained[i] && !pdv.from_source[i] {
-                pdv.vals[i] = if pdv.is_char[i] {
-                    RtValue::Str(String::new())
+        visit(src_row)?;
+    }
+    Ok(())
+}
+
+fn parse_datalines_line(line: &str, input_vars: &[InputVar]) -> Option<SourceRow> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let toks: Vec<String> = trimmed.split_whitespace().map(|s| s.to_string()).collect();
+    Some(input_vars_to_row(input_vars, &toks))
+}
+
+fn stream_infile_rows<F>(
+    infile: &InfileSpec,
+    input_vars: &[InputVar],
+    visit: &mut F,
+) -> Result<(), DataStepError>
+where
+    F: FnMut(SourceRow) -> Result<(), DataStepError>,
+{
+    let file = std::fs::File::open(&infile.path)
+        .map_err(|e| DataStepError::Runtime(format!("infile open: {}: {}", infile.path, e)))?;
+    let reader = BufReader::new(file);
+    let firstobs = infile.firstobs.max(1) as usize;
+    for (idx, line) in reader.lines().enumerate() {
+        if idx + 1 < firstobs {
+            continue;
+        }
+        let line = line
+            .map_err(|e| DataStepError::Runtime(format!("infile read: {}: {}", infile.path, e)))?;
+        let trimmed_line = line.trim_end_matches('\r');
+        if trimmed_line.is_empty() {
+            continue;
+        }
+        let toks: Vec<String> = match &infile.dlm {
+            None => trimmed_line.split_whitespace().map(|s| s.to_string()).collect(),
+            Some(d) if infile.dsd => split_dsd(trimmed_line, d.chars().next().unwrap_or(',')),
+            Some(d) => trimmed_line.split(d.as_str()).map(|s| s.to_string()).collect(),
+        };
+        visit(input_vars_to_row(input_vars, &toks))?;
+    }
+    Ok(())
+}
+
+fn split_dsd(line: &str, dlm: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    cur.push('"');
+                    chars.next();
                 } else {
-                    RtValue::missing()
-                };
-            }
-        }
-        // Also clear source-bound vars not present in this particular row
-        // (sparse case e.g. merge / concat with mismatched schemas).
-        for (i, name) in pdv.names.iter().enumerate() {
-            if pdv.retained[i] || !pdv.from_source[i] { continue; }
-            if name.starts_with("first.") || name.starts_with("last.") { continue; }
-            if !row.contains_key(name) {
-                pdv.vals[i] = if pdv.is_char[i] {
-                    RtValue::Str(String::new())
-                } else {
-                    RtValue::missing()
-                };
-            }
-        }
-        // Populate from input row.
-        for (name, val) in row.iter() {
-            if let Some(&i) = pdv.index.get(name) {
-                pdv.vals[i] = coerce_to(pdv.is_char[i], val.clone());
-            }
-        }
-        rows_in += 1;
-
-        // first./last. for by vars.
-        if by_active {
-            let this_by: Vec<RtValue> = ds.by.iter().map(|v| pdv.get(v)).collect();
-            for (j, by_var) in ds.by.iter().enumerate() {
-                let is_first = match &prev_by {
-                    None => true,
-                    Some(p) => any_changed(&p[..=j], &this_by[..=j]),
-                };
-                let fi = pdv.index[&format!("first.{}", by_var)];
-                pdv.vals[fi] = RtValue::Num(if is_first { 1.0 } else { 0.0 });
-            }
-            // Look ahead one row for last.
-            let next_by: Option<Vec<RtValue>> = if idx + 1 < n {
-                let next = &input_rows[idx + 1];
-                Some(ds.by.iter().map(|v| {
-                    next.get(v).cloned().unwrap_or_else(RtValue::missing)
-                }).collect())
+                    in_quotes = false;
+                }
             } else {
-                None
-            };
-            for (j, by_var) in ds.by.iter().enumerate() {
-                let is_last = match &next_by {
-                    None => true,
-                    Some(nb) => any_changed(&nb[..=j], &this_by[..=j]),
-                };
-                let li = pdv.index[&format!("last.{}", by_var)];
-                pdv.vals[li] = RtValue::Num(if is_last { 1.0 } else { 0.0 });
+                cur.push(c);
             }
-            prev_by = Some(this_by);
+        } else if c == '"' && cur.is_empty() {
+            in_quotes = true;
+        } else if c == dlm {
+            out.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
         }
+    }
+    out.push(cur);
+    out
+}
 
-        // `where` filter.
-        if let Some(w) = &ds.where_expr {
-            let v = eval(w, &pdv, &arrays)?;
-            if !v.truthy() {
+fn input_vars_to_row(input_vars: &[InputVar], toks: &[String]) -> SourceRow {
+    let mut row = SourceRow::with_capacity(input_vars.len());
+    for (i, iv) in input_vars.iter().enumerate() {
+        let key = iv.name.to_ascii_lowercase();
+        let tok = toks.get(i).map(|s| s.trim());
+        let val = match (iv.is_char, tok) {
+            (true, Some(t)) => RtValue::Str(t.to_string()),
+            (true, None) => RtValue::Str(String::new()),
+            (false, Some(t)) if !t.is_empty() => match t.parse::<f64>() {
+                Ok(n) => RtValue::Num(n),
+                Err(_) => RtValue::missing(),
+            },
+            (false, _) => RtValue::missing(),
+        };
+        row.insert(key, val);
+    }
+    row
+}
+
+// ── Static analysis ───────────────────────────────────────────────────────
+
+/// Walk the body collecting `(name, is_char)` for every assignment target
+/// that isn't already declared by `length`, `array`, `retain`, `input`,
+/// or the source schema. Type is inferred from the right-hand side.
+/// Insertion order is preserved so the output table's columns appear in
+/// source order, matching SAS PDV semantics.
+fn analyze_body_assignments(body: &[Stmt]) -> Vec<(String, bool)> {
+    let mut order: Vec<(String, bool)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    walk_stmts(body, &mut order, &mut seen);
+    order
+}
+
+fn walk_stmts(
+    stmts: &[Stmt],
+    order: &mut Vec<(String, bool)>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for s in stmts {
+        walk_stmt(s, order, seen);
+    }
+}
+
+fn walk_stmt(
+    s: &Stmt,
+    order: &mut Vec<(String, bool)>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match s {
+        Stmt::Assign { target, expr } => {
+            if let AssignTarget::Var(name) = target {
+                let key = name.to_ascii_lowercase();
+                if seen.insert(key.clone()) {
+                    order.push((key, infer_expr_is_char(expr)));
+                }
+            }
+        }
+        Stmt::IfThen { then_stmt, else_stmt, .. } => {
+            walk_stmt(then_stmt, order, seen);
+            if let Some(e) = else_stmt {
+                walk_stmt(e, order, seen);
+            }
+        }
+        Stmt::Block(stmts) => walk_stmts(stmts, order, seen),
+        Stmt::DoLoop { var, body, .. } => {
+            let key = var.to_ascii_lowercase();
+            if seen.insert(key.clone()) {
+                order.push((key, false));
+            }
+            walk_stmts(body, order, seen);
+        }
+        Stmt::Select { branches, otherwise, .. } => {
+            for b in branches {
+                walk_stmt(&b.stmt, order, seen);
+            }
+            if let Some(o) = otherwise {
+                walk_stmt(o, order, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn infer_expr_is_char(e: &Expr) -> bool {
+    match e {
+        Expr::StrLit(_) => true,
+        Expr::Binary { op: BinOp::Concat, .. } => true,
+        Expr::Call { name, .. } => is_char_returning_function(name),
+        _ => false,
+    }
+}
+
+fn is_char_returning_function(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "substr"
+            | "upcase"
+            | "lowcase"
+            | "trim"
+            | "strip"
+            | "left"
+            | "right"
+            | "cats"
+            | "catx"
+            | "compress"
+            | "tranwrd"
+            | "translate"
+            | "put"
+            | "coalescec"
+            | "propcase"
+            | "reverse"
+            | "repeat"
+    )
+}
+
+// ── Helpers reused for merge ──────────────────────────────────────────────
+
+fn load_source(
+    conn: &Connection,
+    from: &str,
+    by: &[String],
+) -> Result<(Vec<(String, bool)>, Vec<Vec<RtValue>>), DataStepError> {
+    let order = if by.is_empty() {
+        String::new()
+    } else {
+        let cols: Vec<String> = by.iter().map(|v| format!("\"{}\"", v)).collect();
+        format!(" ORDER BY {}", cols.join(", "))
+    };
+    let sql = format!("SELECT * FROM {}{}", from, order);
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows_iter = stmt.query([])?;
+    let col_count = rows_iter.as_ref().map(|s| s.column_count()).unwrap_or(0);
+    let col_names: Vec<String> = (0..col_count)
+        .map(|i| {
+            rows_iter
+                .as_ref()
+                .and_then(|s| s.column_name(i).ok())
+                .map(|n| n.to_ascii_lowercase())
+                .unwrap_or_else(|| format!("col{}", i))
+        })
+        .collect();
+
+    let mut rows: Vec<Vec<RtValue>> = Vec::new();
+    let mut col_types: Vec<bool> = vec![false; col_count];
+    let mut types_set = false;
+
+    while let Some(row) = rows_iter.next()? {
+        let mut vals = Vec::with_capacity(col_count);
+        for i in 0..col_count {
+            let v: DV = row.get(i)?;
+            if !types_set {
+                col_types[i] = matches!(v, DV::Text(_) | DV::Blob(_));
+            }
+            vals.push(rt_from_duckdb(v));
+        }
+        types_set = true;
+        rows.push(vals);
+    }
+    Ok((col_names.into_iter().zip(col_types).collect(), rows))
+}
+
+fn merge_rows(
+    sources: &[(Vec<(String, bool)>, Vec<Vec<RtValue>>)],
+    by: &[String],
+) -> Result<Vec<SourceRow>, DataStepError> {
+    if by.is_empty() {
+        return Err(DataStepError::Runtime(
+            "merge requires a `by` statement".into(),
+        ));
+    }
+
+    let per_source_keys: Vec<Vec<Vec<RtValue>>> = sources
+        .iter()
+        .map(|(cols, rows)| {
+            let by_idx: Vec<Option<usize>> = by
+                .iter()
+                .map(|b| cols.iter().position(|(c, _)| c.eq_ignore_ascii_case(b)))
+                .collect();
+            rows.iter()
+                .map(|r| {
+                    by_idx
+                        .iter()
+                        .map(|opt| match opt {
+                            Some(i) => r[*i].clone(),
+                            None => RtValue::missing(),
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+        .collect();
+
+    let mut cursors = vec![0usize; sources.len()];
+    let mut out: Vec<SourceRow> = Vec::new();
+
+    loop {
+        let mut min_key: Option<Vec<RtValue>> = None;
+        for (i, cur) in cursors.iter().enumerate() {
+            if *cur >= sources[i].1.len() {
                 continue;
             }
+            let key = &per_source_keys[i][*cur];
+            min_key = Some(match min_key {
+                None => key.clone(),
+                Some(mk) => {
+                    if compare_keys(key, &mk) < 0 {
+                        key.clone()
+                    } else {
+                        mk
+                    }
+                }
+            });
+        }
+        let Some(group_key) = min_key else { break };
+
+        let mut group_rows_per_src: Vec<Vec<usize>> = Vec::with_capacity(sources.len());
+        for i in 0..sources.len() {
+            let mut indices = Vec::new();
+            while cursors[i] < sources[i].1.len()
+                && compare_keys(&per_source_keys[i][cursors[i]], &group_key) == 0
+            {
+                indices.push(cursors[i]);
+                cursors[i] += 1;
+            }
+            group_rows_per_src.push(indices);
+        }
+        let group_size = group_rows_per_src
+            .iter()
+            .map(|v| v.len())
+            .max()
+            .unwrap_or(0);
+        if group_size == 0 {
+            break;
         }
 
-        // Body.
-        let mut explicit_outputs: Vec<usize> = Vec::new();
-        let mut deleted = false;
-        for s in &ds.body {
-            match exec_stmt(s, &mut pdv, &arrays, &ds.outputs, &mut explicit_outputs)? {
-                StmtFlow::Continue => {}
-                StmtFlow::Delete => { deleted = true; break; }
+        for r in 0..group_size {
+            let mut merged = SourceRow::new();
+            for (i, (cols, rows)) in sources.iter().enumerate() {
+                let indices = &group_rows_per_src[i];
+                if indices.is_empty() {
+                    continue;
+                }
+                let idx = indices[r.min(indices.len() - 1)];
+                for ((name, _), val) in cols.iter().zip(rows[idx].iter()) {
+                    merged.insert(name.clone(), val.clone());
+                }
             }
-        }
-        if deleted { continue; }
-
-        if explicit_outputs.is_empty() {
-            for (i, _) in ds.outputs.iter().enumerate() {
-                emit(&pdv, ds, &mut out_buffers[i]);
+            for (j, var) in by.iter().enumerate() {
+                merged.insert(var.to_ascii_lowercase(), group_key[j].clone());
             }
-        } else {
-            for i in explicit_outputs {
-                emit(&pdv, ds, &mut out_buffers[i]);
-            }
+            out.push(merged);
         }
     }
 
-    // 5. Write outputs.
-    let mut result_outputs = Vec::new();
-    for ((out_ref, target), buf) in ds
-        .outputs
-        .iter()
-        .zip(plan.outputs.iter())
-        .zip(out_buffers.into_iter())
-    {
-        let n = write_output(conn, target, &pdv, ds, &buf)?;
-        result_outputs.push((out_ref.clone(), target.clone(), n));
-    }
-
-    Ok(DataStepResult { outputs: result_outputs, rows_in })
+    Ok(out)
 }
+
+fn compare_keys(a: &[RtValue], b: &[RtValue]) -> i32 {
+    for i in 0..a.len().max(b.len()) {
+        let av = a.get(i).cloned().unwrap_or_else(RtValue::missing);
+        let bv = b.get(i).cloned().unwrap_or_else(RtValue::missing);
+        let c = compare(&av, &bv);
+        if c != 0 {
+            return c;
+        }
+    }
+    0
+}
+
+// ── Statement execution ───────────────────────────────────────────────────
 
 fn any_changed(a: &[RtValue], b: &[RtValue]) -> bool {
     a.len() != b.len() || a.iter().zip(b.iter()).any(|(x, y)| !values_equal(x, y))
@@ -441,25 +1116,35 @@ fn exec_stmt(
         }
         Stmt::SubsetIf { cond } => {
             let v = eval(cond, pdv, arrays)?;
-            if v.truthy() { Ok(StmtFlow::Continue) } else { Ok(StmtFlow::Delete) }
+            if v.truthy() {
+                Ok(StmtFlow::Continue)
+            } else {
+                Ok(StmtFlow::Delete)
+            }
         }
         Stmt::Output { dataset } => {
             let idx = match dataset {
                 None => {
                     for i in 0..outs.len() {
-                        if !explicit.contains(&i) { explicit.push(i); }
+                        if !explicit.contains(&i) {
+                            explicit.push(i);
+                        }
                     }
                     return Ok(StmtFlow::Continue);
                 }
                 Some(t) => outs
                     .iter()
                     .position(|o| o.name.eq_ignore_ascii_case(&t.name))
-                    .ok_or_else(|| DataStepError::Runtime(format!(
-                        "`output {}` refers to a dataset not listed on the DATA statement",
-                        t.qualified()
-                    )))?,
+                    .ok_or_else(|| {
+                        DataStepError::Runtime(format!(
+                            "`output {}` refers to a dataset not listed on the DATA statement",
+                            t.qualified()
+                        ))
+                    })?,
             };
-            if !explicit.contains(&idx) { explicit.push(idx); }
+            if !explicit.contains(&idx) {
+                explicit.push(idx);
+            }
             Ok(StmtFlow::Continue)
         }
         Stmt::Delete => Ok(StmtFlow::Delete),
@@ -501,12 +1186,15 @@ fn exec_stmt(
             Ok(StmtFlow::Continue)
         }
         Stmt::DoLoop { var, start, stop, step, body } => {
-            let start_v = eval(start, pdv, arrays)?.as_num()
+            let start_v = eval(start, pdv, arrays)?
+                .as_num()
                 .ok_or_else(|| DataStepError::Runtime("do loop start is missing".into()))?;
-            let stop_v = eval(stop, pdv, arrays)?.as_num()
+            let stop_v = eval(stop, pdv, arrays)?
+                .as_num()
                 .ok_or_else(|| DataStepError::Runtime("do loop stop is missing".into()))?;
             let step_v = match step {
-                Some(e) => eval(e, pdv, arrays)?.as_num()
+                Some(e) => eval(e, pdv, arrays)?
+                    .as_num()
                     .ok_or_else(|| DataStepError::Runtime("do loop step is missing".into()))?,
                 None => 1.0,
             };
@@ -539,38 +1227,30 @@ fn resolve_array_index(
     pdv: &Pdv,
     arrays: &HashMap<String, ArrayBinding>,
 ) -> Result<String, DataStepError> {
-    let arr = arrays.get(&name.to_ascii_lowercase())
+    let arr = arrays
+        .get(&name.to_ascii_lowercase())
         .ok_or_else(|| DataStepError::Runtime(format!("unknown array '{}'", name)))?;
     let idx_v = eval(index, pdv, arrays)?;
-    let idx = idx_v.as_num()
+    let idx = idx_v
+        .as_num()
         .ok_or_else(|| DataStepError::Runtime(format!("array '{}' index is missing", name)))?;
     let i = idx as isize;
     if i < 1 || (i as usize) > arr.elements.len() {
         return Err(DataStepError::Runtime(format!(
             "array '{}' index {} out of range (1..{})",
-            name, i, arr.elements.len()
+            name,
+            i,
+            arr.elements.len()
         )));
     }
     Ok(arr.elements[i as usize - 1].clone())
 }
 
-fn emit(pdv: &Pdv, ds: &DataStep, buf: &mut Vec<HashMap<String, RtValue>>) {
-    let mut row = HashMap::new();
-    for (i, name) in pdv.names.iter().enumerate() {
-        // Skip auto vars (first./last.) from output.
-        if name.starts_with("first.") || name.starts_with("last.") { continue; }
-        if let Some(keep) = &ds.keep {
-            if !keep.iter().any(|k| k.eq_ignore_ascii_case(name)) { continue; }
-        }
-        if let Some(drop) = &ds.drop {
-            if drop.iter().any(|d| d.eq_ignore_ascii_case(name)) { continue; }
-        }
-        row.insert(name.clone(), pdv.vals[i].clone());
-    }
-    buf.push(row);
-}
-
-fn eval(e: &Expr, pdv: &Pdv, arrays: &HashMap<String, ArrayBinding>) -> Result<RtValue, DataStepError> {
+fn eval(
+    e: &Expr,
+    pdv: &Pdv,
+    arrays: &HashMap<String, ArrayBinding>,
+) -> Result<RtValue, DataStepError> {
     use BinOp::*;
     use UnaryOp::*;
     Ok(match e {
@@ -641,244 +1321,18 @@ fn eval(e: &Expr, pdv: &Pdv, arrays: &HashMap<String, ArrayBinding>) -> Result<R
 
 fn compare(a: &RtValue, b: &RtValue) -> i32 {
     if let (Some(x), Some(y)) = (a.as_num(), b.as_num()) {
-        if x < y { -1 } else if x > y { 1 } else { 0 }
+        if x < y {
+            -1
+        } else if x > y {
+            1
+        } else {
+            0
+        }
     } else {
         let sa = a.as_str();
         let sb = b.as_str();
         sa.cmp(&sb) as i32
     }
-}
-
-fn load_source(
-    conn: &Connection,
-    from: &str,
-    by: &[String],
-) -> Result<(Vec<(String, bool)>, Vec<Vec<RtValue>>), DataStepError> {
-    let order = if by.is_empty() {
-        String::new()
-    } else {
-        let cols: Vec<String> = by.iter().map(|v| format!("\"{}\"", v)).collect();
-        format!(" ORDER BY {}", cols.join(", "))
-    };
-    let sql = format!("SELECT * FROM {}{}", from, order);
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows_iter = stmt.query([])?;
-    let col_count = rows_iter.as_ref().map(|s| s.column_count()).unwrap_or(0);
-    let col_names: Vec<String> = (0..col_count)
-        .map(|i| {
-            rows_iter
-                .as_ref()
-                .and_then(|s| s.column_name(i).ok())
-                .map(|n| n.to_ascii_lowercase())
-                .unwrap_or_else(|| format!("col{}", i))
-        })
-        .collect();
-
-    let mut rows: Vec<Vec<RtValue>> = Vec::new();
-    let mut col_types: Vec<bool> = vec![false; col_count];
-    let mut types_set = false;
-
-    while let Some(row) = rows_iter.next()? {
-        let mut vals = Vec::with_capacity(col_count);
-        for i in 0..col_count {
-            let v: DV = row.get(i)?;
-            if !types_set {
-                col_types[i] = matches!(v, DV::Text(_) | DV::Blob(_));
-            }
-            vals.push(rt_from_duckdb(v));
-        }
-        types_set = true;
-        rows.push(vals);
-    }
-    Ok((col_names.into_iter().zip(col_types).collect(), rows))
-}
-
-/// K-way match-merge by `by` variables. Within each group, emits
-/// max(rows_in_each_source) rows; smaller sources pad with their last value
-/// in the group (broadcast).
-fn merge_rows(
-    sources: &[(Vec<(String, bool)>, Vec<Vec<RtValue>>)],
-    by: &[String],
-) -> Result<Vec<SourceRow>, DataStepError> {
-    if by.is_empty() {
-        return Err(DataStepError::Runtime(
-            "merge requires a `by` statement".into(),
-        ));
-    }
-
-    // Precompute (sorted) by-key per row, per source.
-    let mut per_source_keys: Vec<Vec<Vec<RtValue>>> = sources
-        .iter()
-        .map(|(cols, rows)| {
-            let by_idx: Vec<Option<usize>> = by
-                .iter()
-                .map(|b| cols.iter().position(|(c, _)| c.eq_ignore_ascii_case(b)))
-                .collect();
-            rows.iter()
-                .map(|r| {
-                    by_idx
-                        .iter()
-                        .map(|opt| match opt {
-                            Some(i) => r[*i].clone(),
-                            None => RtValue::missing(),
-                        })
-                        .collect()
-                })
-                .collect()
-        })
-        .collect();
-
-    // Cursors per source.
-    let mut cursors = vec![0usize; sources.len()];
-    let mut out: Vec<SourceRow> = Vec::new();
-
-    loop {
-        // Find smallest current key across all sources that still have rows.
-        let mut min_key: Option<Vec<RtValue>> = None;
-        for (i, cur) in cursors.iter().enumerate() {
-            if *cur >= sources[i].1.len() { continue; }
-            let key = &per_source_keys[i][*cur];
-            min_key = Some(match min_key {
-                None => key.clone(),
-                Some(mk) => if compare_keys(key, &mk) < 0 { key.clone() } else { mk },
-            });
-        }
-        let Some(group_key) = min_key else { break; };
-
-        // For each source, take contiguous rows matching this group_key.
-        let mut group_rows_per_src: Vec<Vec<usize>> = Vec::with_capacity(sources.len());
-        for i in 0..sources.len() {
-            let mut indices = Vec::new();
-            while cursors[i] < sources[i].1.len()
-                && compare_keys(&per_source_keys[i][cursors[i]], &group_key) == 0
-            {
-                indices.push(cursors[i]);
-                cursors[i] += 1;
-            }
-            group_rows_per_src.push(indices);
-        }
-        let group_size = group_rows_per_src.iter().map(|v| v.len()).max().unwrap_or(0);
-        if group_size == 0 { break; }
-
-        for r in 0..group_size {
-            let mut merged = SourceRow::new();
-            for (i, (cols, rows)) in sources.iter().enumerate() {
-                let indices = &group_rows_per_src[i];
-                if indices.is_empty() { continue; }
-                // Broadcast: clamp to last row of group.
-                let idx = indices[r.min(indices.len() - 1)];
-                for ((name, _), val) in cols.iter().zip(rows[idx].iter()) {
-                    merged.insert(name.clone(), val.clone());
-                }
-            }
-            // Also force by-vars into the row (in case schema mismatch).
-            for (j, var) in by.iter().enumerate() {
-                merged.insert(var.to_ascii_lowercase(), group_key[j].clone());
-            }
-            out.push(merged);
-        }
-    }
-
-    Ok(out)
-}
-
-fn compare_keys(a: &[RtValue], b: &[RtValue]) -> i32 {
-    for i in 0..a.len().max(b.len()) {
-        let av = a.get(i).cloned().unwrap_or_else(RtValue::missing);
-        let bv = b.get(i).cloned().unwrap_or_else(RtValue::missing);
-        let c = compare(&av, &bv);
-        if c != 0 { return c; }
-    }
-    0
-}
-
-/// Read rows from a delimited or whitespace-separated file via `infile`.
-fn rows_from_infile(
-    infile: &InfileSpec,
-    input_vars: &[InputVar],
-) -> Result<Vec<SourceRow>, DataStepError> {
-    let text = std::fs::read_to_string(&infile.path)
-        .map_err(|e| DataStepError::Runtime(format!("infile read: {}: {}", infile.path, e)))?;
-    let mut rows = Vec::new();
-    let firstobs = infile.firstobs.max(1) as usize;
-    for (idx, line) in text.lines().enumerate() {
-        if idx + 1 < firstobs { continue; }
-        let trimmed_line = line.trim_end_matches('\r');
-        if trimmed_line.is_empty() { continue; }
-        let toks: Vec<String> = match &infile.dlm {
-            None => trimmed_line.split_whitespace().map(|s| s.to_string()).collect(),
-            Some(d) if infile.dsd => split_dsd(trimmed_line, d.chars().next().unwrap_or(',')),
-            Some(d) => trimmed_line
-                .split(d.as_str())
-                .map(|s| s.to_string())
-                .collect(),
-        };
-        rows.push(input_vars_to_row(input_vars, &toks));
-    }
-    Ok(rows)
-}
-
-/// RFC-4180-ish parser: respect double-quoted fields with `""` escape.
-fn split_dsd(line: &str, dlm: char) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut in_quotes = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if in_quotes {
-            if c == '"' {
-                if chars.peek() == Some(&'"') {
-                    cur.push('"');
-                    chars.next();
-                } else {
-                    in_quotes = false;
-                }
-            } else {
-                cur.push(c);
-            }
-        } else if c == '"' && cur.is_empty() {
-            in_quotes = true;
-        } else if c == dlm {
-            out.push(std::mem::take(&mut cur));
-        } else {
-            cur.push(c);
-        }
-    }
-    out.push(cur);
-    out
-}
-
-fn input_vars_to_row(input_vars: &[InputVar], toks: &[String]) -> SourceRow {
-    let mut row = SourceRow::new();
-    for (i, iv) in input_vars.iter().enumerate() {
-        let key = iv.name.to_ascii_lowercase();
-        let tok = toks.get(i).map(|s| s.trim());
-        let val = match (iv.is_char, tok) {
-            (true, Some(t)) => RtValue::Str(t.to_string()),
-            (true, None) => RtValue::Str(String::new()),
-            (false, Some(t)) if !t.is_empty() => match t.parse::<f64>() {
-                Ok(n) => RtValue::Num(n),
-                Err(_) => RtValue::missing(),
-            },
-            (false, _) => RtValue::missing(),
-        };
-        row.insert(key, val);
-    }
-    row
-}
-
-/// Parse free-form datalines: split each line on whitespace, map tokens to
-/// input variables in order. Empty rows are skipped. A line with fewer
-/// tokens than vars pads the rest with missing.
-fn rows_from_datalines(lines: &[String], input_vars: &[InputVar]) -> Vec<SourceRow> {
-    let mut rows = Vec::new();
-    for line in lines {
-        let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-        let toks: Vec<String> = trimmed.split_whitespace().map(|s| s.to_string()).collect();
-        rows.push(input_vars_to_row(input_vars, &toks));
-    }
-    rows
 }
 
 fn rt_from_duckdb(v: DV) -> RtValue {
@@ -898,90 +1352,6 @@ fn rt_from_duckdb(v: DV) -> RtValue {
         DV::Text(s) => RtValue::Str(s),
         other => RtValue::Str(format!("{:?}", other)),
     }
-}
-
-fn write_output(
-    conn: &Connection,
-    target: &WriteTarget,
-    pdv: &Pdv,
-    ds: &DataStep,
-    rows: &[HashMap<String, RtValue>],
-) -> Result<u64, DataStepError> {
-    let cols: Vec<(String, bool)> = pdv
-        .names
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| {
-            if n.starts_with("first.") || n.starts_with("last.") { return false; }
-            if let Some(keep) = &ds.keep {
-                if !keep.iter().any(|k| k.eq_ignore_ascii_case(n)) { return false; }
-            }
-            if let Some(drop) = &ds.drop {
-                if drop.iter().any(|d| d.eq_ignore_ascii_case(n)) { return false; }
-            }
-            true
-        })
-        .map(|(i, n)| (n.clone(), pdv.is_char[i]))
-        .collect();
-
-    match target {
-        WriteTarget::DuckDb { schema, name } => write_duckdb_table(conn, schema, name, &cols, rows),
-        WriteTarget::Parquet { path, .. } | WriteTarget::Csv { path, .. } => {
-            let temp = format!("pas_ds_tmp_{}", uuid::Uuid::new_v4().simple());
-            let n = write_duckdb_table(conn, "main", &temp, &cols, rows)?;
-            let fmt = match target {
-                WriteTarget::Parquet { .. } => "PARQUET",
-                WriteTarget::Csv { .. } => "CSV",
-                _ => unreachable!(),
-            };
-            let qualified = format!("\"main\".\"{}\"", temp);
-            let copy = format!(
-                "COPY (SELECT * FROM {}) TO '{}' (FORMAT {})",
-                qualified,
-                path.replace('\'', "''"),
-                fmt
-            );
-            conn.execute(&copy, [])?;
-            conn.execute(&format!("DROP TABLE {}", qualified), [])?;
-            Ok(n)
-        }
-    }
-}
-
-fn write_duckdb_table(
-    conn: &Connection,
-    schema: &str,
-    name: &str,
-    cols: &[(String, bool)],
-    rows: &[HashMap<String, RtValue>],
-) -> Result<u64, DataStepError> {
-    let qualified = format!("\"{}\".\"{}\"", schema, name);
-    let mut create = format!("CREATE OR REPLACE TABLE {} (", qualified);
-    for (i, (n, is_char)) in cols.iter().enumerate() {
-        if i > 0 { create.push_str(", "); }
-        create.push('"');
-        create.push_str(n);
-        create.push('"');
-        create.push(' ');
-        create.push_str(if *is_char { "VARCHAR" } else { "DOUBLE" });
-    }
-    create.push(')');
-    conn.execute(&create, [])?;
-
-    if rows.is_empty() {
-        return Ok(0);
-    }
-
-    let mut app = conn.appender_to_db(name, schema)?;
-    for row in rows {
-        let vals: Vec<DV> = cols
-            .iter()
-            .map(|(n, is_char)| value_for_appender(*is_char, row.get(n)))
-            .collect();
-        app.append_row(duckdb::appender_params_from_iter(vals))?;
-    }
-    app.flush()?;
-    Ok(rows.len() as u64)
 }
 
 fn value_for_appender(is_char: bool, v: Option<&RtValue>) -> DV {

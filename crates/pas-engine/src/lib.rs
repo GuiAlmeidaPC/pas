@@ -1271,6 +1271,29 @@ mod tests {
     }
 
     #[test]
+    fn data_step_streams_large_input() {
+        // 500K rows × a couple of derived columns. Materializing this as
+        // Vec<HashMap<String, RtValue>> would cost ~150-200 MB. With the
+        // streaming pipeline it should fit easily in normal test memory
+        // and finish in a few seconds.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table big as select * from range(0, 500000) t(x);");
+        let evs = s.submit(
+            r#"
+            data work.big_out;
+                set big;
+                y = x * 2;
+                bucket = mod(x, 100);
+                if bucket = 0;
+            run;
+            "#,
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "big_out", 0, 1, None).unwrap();
+        assert_eq!(page.total_rows, 5000);
+    }
+
+    #[test]
     fn proc_sort_orders_with_nodupkey() {
         let s = Session::new_in_memory().unwrap();
         s.submit(
