@@ -87,7 +87,7 @@ are listed in §1.2 of `SPEC.md`.
 | | |
 |---|---|
 | **SAS** | DATA step streams rows one at a time. Output is appended without holding all rows in memory. |
-| **PAS** | DATA step streams source rows from DuckDB and writes output via the Appender API. The pipeline holds only the current row, a one-row lookahead (used for `last.var` detection), and the appender's own batch. **Exception:** `merge` still materializes its sources because k-way streaming across multiple DuckDB cursors requires self-referential lifetimes; merge's *output* is still streamed through the same pipeline. |
+| **PAS** | DATA step streams source rows from DuckDB and writes output via the Appender API. The pipeline holds only the current row, a one-row lookahead (used for `last.var` detection), and the appender's own batch. `merge` snapshots each source into a sorted DuckDB TEMP table once, then walks the snapshots through paged cursors that refill 4K rows at a time — so the Rust process holds at most `N_sources × 4096` rows even for million-row merges. |
 
 ### 2.2 PROC SQL extensions
 

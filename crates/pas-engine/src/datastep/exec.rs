@@ -10,11 +10,15 @@
 //! referential lifetimes that we sidestep here. The output side of merge
 //! is still streamed: merged rows flow through the same per-row pipeline.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 
 use duckdb::types::Value as DV;
 use duckdb::{Appender, Connection};
+
+/// Cursor batch size used by the streaming merge. Each source holds at
+/// most this many rows in memory at a time.
+const MERGE_CURSOR_BATCH: usize = 4096;
 
 use super::ast::*;
 use super::funcs;
@@ -660,17 +664,7 @@ where
             }
         }
         Some(ResolvedInput::Merge(sources)) => {
-            // Merge keeps the per-source materialization because k-way
-            // streaming across multiple DuckDB cursors needs self-
-            // referential lifetimes. The output side still streams.
-            let mut per_source: Vec<(Vec<(String, bool)>, Vec<Vec<RtValue>>)> = Vec::new();
-            for from in sources {
-                per_source.push(load_source(conn, from, &ds.by)?);
-            }
-            let merged = merge_rows(&per_source, &ds.by)?;
-            for row in merged {
-                visit(row)?;
-            }
+            stream_merge(conn, sources, &ds.by, source_schemas, &mut visit)?;
         }
     }
 
@@ -913,146 +907,192 @@ fn is_char_returning_function(name: &str) -> bool {
     )
 }
 
-// ── Helpers reused for merge ──────────────────────────────────────────────
+// ── Streaming k-way merge ────────────────────────────────────────────────
+//
+// We don't keep DuckDB Rows iterators alive across the merge — the
+// self-referential lifetimes are awkward. Instead, each source is
+// snapshotted into a sorted TEMP table once, and a paged cursor refills
+// a small `VecDeque` from that temp table on demand. Memory per cursor
+// stays bounded by `MERGE_CURSOR_BATCH`; DuckDB owns the sort buffer
+// and spills to disk if needed.
 
-fn load_source(
-    conn: &Connection,
-    from: &str,
-    by: &[String],
-) -> Result<(Vec<(String, bool)>, Vec<Vec<RtValue>>), DataStepError> {
-    let order = if by.is_empty() {
-        String::new()
-    } else {
-        let cols: Vec<String> = by.iter().map(|v| format!("\"{}\"", v)).collect();
-        format!(" ORDER BY {}", cols.join(", "))
-    };
-    let sql = format!("SELECT * FROM {}{}", from, order);
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows_iter = stmt.query([])?;
-    let col_count = rows_iter.as_ref().map(|s| s.column_count()).unwrap_or(0);
-    let col_names: Vec<String> = (0..col_count)
-        .map(|i| {
-            rows_iter
-                .as_ref()
-                .and_then(|s| s.column_name(i).ok())
-                .map(|n| n.to_ascii_lowercase())
-                .unwrap_or_else(|| format!("col{}", i))
-        })
-        .collect();
-
-    let mut rows: Vec<Vec<RtValue>> = Vec::new();
-    let mut col_types: Vec<bool> = vec![false; col_count];
-    let mut types_set = false;
-
-    while let Some(row) = rows_iter.next()? {
-        let mut vals = Vec::with_capacity(col_count);
-        for i in 0..col_count {
-            let v: DV = row.get(i)?;
-            if !types_set {
-                col_types[i] = matches!(v, DV::Text(_) | DV::Blob(_));
-            }
-            vals.push(rt_from_duckdb(v));
-        }
-        types_set = true;
-        rows.push(vals);
-    }
-    Ok((col_names.into_iter().zip(col_types).collect(), rows))
+struct MergeCursor {
+    table: String,
+    schema: Vec<(String, bool)>,
+    buffer: VecDeque<SourceRow>,
+    offset: usize,
+    exhausted: bool,
 }
 
-fn merge_rows(
-    sources: &[(Vec<(String, bool)>, Vec<Vec<RtValue>>)],
+impl MergeCursor {
+    fn refill(&mut self, conn: &Connection) -> Result<(), DataStepError> {
+        if self.exhausted {
+            return Ok(());
+        }
+        let sql = format!(
+            "SELECT * FROM \"main\".\"{}\" LIMIT {} OFFSET {}",
+            self.table, MERGE_CURSOR_BATCH, self.offset
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let col_count = rows.as_ref().map(|s| s.column_count()).unwrap_or(0);
+        let mut filled = 0usize;
+        while let Some(row) = rows.next()? {
+            let mut src_row = SourceRow::with_capacity(col_count);
+            for i in 0..col_count {
+                let v: DV = row.get(i)?;
+                let name = self
+                    .schema
+                    .get(i)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| format!("col{}", i));
+                src_row.insert(name, rt_from_duckdb(v));
+            }
+            self.buffer.push_back(src_row);
+            filled += 1;
+        }
+        self.offset += filled;
+        if filled == 0 {
+            self.exhausted = true;
+        }
+        Ok(())
+    }
+
+    fn peek(&mut self, conn: &Connection) -> Result<Option<&SourceRow>, DataStepError> {
+        if self.buffer.is_empty() {
+            self.refill(conn)?;
+        }
+        Ok(self.buffer.front())
+    }
+
+    fn pop(&mut self, conn: &Connection) -> Result<Option<SourceRow>, DataStepError> {
+        if self.buffer.is_empty() {
+            self.refill(conn)?;
+        }
+        Ok(self.buffer.pop_front())
+    }
+
+    fn extract_key(row: &SourceRow, by: &[String]) -> Vec<RtValue> {
+        by.iter()
+            .map(|b| {
+                row.get(&b.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_else(RtValue::missing)
+            })
+            .collect()
+    }
+}
+
+fn stream_merge<F>(
+    conn: &Connection,
+    sources: &[String],
     by: &[String],
-) -> Result<Vec<SourceRow>, DataStepError> {
+    source_schemas: &[Vec<(String, bool)>],
+    visit: &mut F,
+) -> Result<(), DataStepError>
+where
+    F: FnMut(SourceRow) -> Result<(), DataStepError>,
+{
     if by.is_empty() {
         return Err(DataStepError::Runtime(
             "merge requires a `by` statement".into(),
         ));
     }
+    let order_cols: Vec<String> = by.iter().map(|v| format!("\"{}\"", v)).collect();
+    let order_clause = order_cols.join(", ");
 
-    let per_source_keys: Vec<Vec<Vec<RtValue>>> = sources
-        .iter()
-        .map(|(cols, rows)| {
-            let by_idx: Vec<Option<usize>> = by
-                .iter()
-                .map(|b| cols.iter().position(|(c, _)| c.eq_ignore_ascii_case(b)))
-                .collect();
-            rows.iter()
-                .map(|r| {
-                    by_idx
-                        .iter()
-                        .map(|opt| match opt {
-                            Some(i) => r[*i].clone(),
-                            None => RtValue::missing(),
-                        })
-                        .collect()
-                })
-                .collect()
-        })
-        .collect();
-
-    let mut cursors = vec![0usize; sources.len()];
-    let mut out: Vec<SourceRow> = Vec::new();
-
-    loop {
-        let mut min_key: Option<Vec<RtValue>> = None;
-        for (i, cur) in cursors.iter().enumerate() {
-            if *cur >= sources[i].1.len() {
-                continue;
-            }
-            let key = &per_source_keys[i][*cur];
-            min_key = Some(match min_key {
-                None => key.clone(),
-                Some(mk) => {
-                    if compare_keys(key, &mk) < 0 {
-                        key.clone()
-                    } else {
-                        mk
-                    }
-                }
-            });
-        }
-        let Some(group_key) = min_key else { break };
-
-        let mut group_rows_per_src: Vec<Vec<usize>> = Vec::with_capacity(sources.len());
-        for i in 0..sources.len() {
-            let mut indices = Vec::new();
-            while cursors[i] < sources[i].1.len()
-                && compare_keys(&per_source_keys[i][cursors[i]], &group_key) == 0
-            {
-                indices.push(cursors[i]);
-                cursors[i] += 1;
-            }
-            group_rows_per_src.push(indices);
-        }
-        let group_size = group_rows_per_src
-            .iter()
-            .map(|v| v.len())
-            .max()
-            .unwrap_or(0);
-        if group_size == 0 {
-            break;
-        }
-
-        for r in 0..group_size {
-            let mut merged = SourceRow::new();
-            for (i, (cols, rows)) in sources.iter().enumerate() {
-                let indices = &group_rows_per_src[i];
-                if indices.is_empty() {
-                    continue;
-                }
-                let idx = indices[r.min(indices.len() - 1)];
-                for ((name, _), val) in cols.iter().zip(rows[idx].iter()) {
-                    merged.insert(name.clone(), val.clone());
-                }
-            }
-            for (j, var) in by.iter().enumerate() {
-                merged.insert(var.to_ascii_lowercase(), group_key[j].clone());
-            }
-            out.push(merged);
-        }
+    // 1. Snapshot each source into a TEMP table sorted by the by-vars.
+    let mut cursors: Vec<MergeCursor> = Vec::with_capacity(sources.len());
+    let mut temp_names: Vec<String> = Vec::with_capacity(sources.len());
+    for (i, from) in sources.iter().enumerate() {
+        let temp = format!("pas_merge_tmp_{}", uuid::Uuid::new_v4().simple());
+        let create = format!(
+            "CREATE OR REPLACE TEMP TABLE \"{}\" AS SELECT * FROM {} ORDER BY {}",
+            temp, from, order_clause
+        );
+        conn.execute(&create, [])?;
+        let schema = source_schemas
+            .get(i)
+            .cloned()
+            .unwrap_or_default();
+        cursors.push(MergeCursor {
+            table: temp.clone(),
+            schema,
+            buffer: VecDeque::new(),
+            offset: 0,
+            exhausted: false,
+        });
+        temp_names.push(temp);
     }
 
-    Ok(out)
+    // 2. K-way merge. Each iteration picks the smallest current key
+    //    across all cursors, gathers the matching group from each, and
+    //    emits the broadcast cross-product (shorter sides padded to the
+    //    longest with their last row in the group).
+    let merge_result = (|| -> Result<(), DataStepError> {
+        loop {
+            // Find smallest current key.
+            let mut min_key: Option<Vec<RtValue>> = None;
+            for cursor in cursors.iter_mut() {
+                if let Some(row) = cursor.peek(conn)? {
+                    let key = MergeCursor::extract_key(row, by);
+                    min_key = Some(match min_key {
+                        None => key,
+                        Some(mk) if compare_keys(&key, &mk) < 0 => key,
+                        Some(mk) => mk,
+                    });
+                }
+            }
+            let Some(group_key) = min_key else { break };
+
+            // Drain matching rows from each cursor.
+            let mut group_per_src: Vec<Vec<SourceRow>> = Vec::with_capacity(cursors.len());
+            for cursor in cursors.iter_mut() {
+                let mut group: Vec<SourceRow> = Vec::new();
+                loop {
+                    let matches = match cursor.peek(conn)? {
+                        Some(row) => {
+                            compare_keys(&MergeCursor::extract_key(row, by), &group_key) == 0
+                        }
+                        None => false,
+                    };
+                    if !matches {
+                        break;
+                    }
+                    if let Some(row) = cursor.pop(conn)? {
+                        group.push(row);
+                    }
+                }
+                group_per_src.push(group);
+            }
+
+            let group_size = group_per_src.iter().map(|g| g.len()).max().unwrap_or(0);
+            for r in 0..group_size {
+                let mut merged = SourceRow::new();
+                for group in &group_per_src {
+                    if group.is_empty() {
+                        continue;
+                    }
+                    let row = &group[r.min(group.len() - 1)];
+                    for (k, v) in row {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                }
+                for (j, var) in by.iter().enumerate() {
+                    merged.insert(var.to_ascii_lowercase(), group_key[j].clone());
+                }
+                visit(merged)?;
+            }
+        }
+        Ok(())
+    })();
+
+    // 3. Best-effort cleanup; ignore drop errors so we never mask the
+    //    real error from merge_result.
+    for temp in &temp_names {
+        let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"main\".\"{}\"", temp), []);
+    }
+    merge_result
 }
 
 fn compare_keys(a: &[RtValue], b: &[RtValue]) -> i32 {

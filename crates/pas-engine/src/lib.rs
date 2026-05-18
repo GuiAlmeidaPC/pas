@@ -1271,6 +1271,28 @@ mod tests {
     }
 
     #[test]
+    fn data_step_merge_streams_through_cursors() {
+        // 200K left + 200K right with overlapping by-keys. Old impl held
+        // both fully materialized in Rust HashMaps. New impl snapshots
+        // each to a DuckDB temp table and streams 4K rows at a time per
+        // cursor.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table lefts  as select x as id, x * 2  as a from range(0, 200000) t(x);");
+        s.submit("create table rights as select x as id, x * 10 as b from range(0, 200000) t(x);");
+        let evs = s.submit(
+            r#"
+            data merged;
+                merge lefts rights;
+                by id;
+            run;
+            "#,
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "merged", 0, 1, None).unwrap();
+        assert_eq!(page.total_rows, 200000);
+    }
+
+    #[test]
     fn data_step_streams_large_input() {
         // 500K rows × a couple of derived columns. Materializing this as
         // Vec<HashMap<String, RtValue>> would cost ~150-200 MB. With the
