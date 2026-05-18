@@ -1439,6 +1439,75 @@ mod tests {
     }
 
     #[test]
+    fn tier1_function_library() {
+        // One golden program that exercises every tier-1 addition end
+        // to end. Inputs are crafted so the expected outputs are easy to
+        // read off without computing dates by hand.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                /* string */
+                word3 = scan('alpha beta gamma delta', 3);
+                where_be = find('the quick brown fox', 'brown');
+                no_dashes = tranwrd('a-b-c', '-', ':');
+                masked = translate('hello', '*', 'l');
+                blamt = compbl('one   two    three');
+                title = propcase('the quick brown fox');
+                rev = reverse('abc');
+                rep = repeat('ab', 2);
+                /* numeric */
+                sgn_pos = sign(7);
+                sgn_neg = sign(-3);
+                largest_3 = largest(2, 5, 1, 9, 3);
+                smallest_2 = smallest(2, 5, 1, 9, 3);
+                ifn_val = ifn(x > 0, 100, -1);
+                ifc_val = ifc(x > 0, 'pos', 'neg');
+                pos = whichn(9, 5, 1, 9, 3);
+                cpos = whichc('b', 'a', 'b', 'c');
+                /* missing */
+                nm = notmissing(x);
+                /* date — yrdif from 1JAN2000 to 1JAN2025 ≈ 25.0 */
+                years = yrdif('01JAN2000'd, '01JAN2025'd, 'act/365');
+            run;
+            "#,
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
+        let txt = |n: &str| match &page.rows[0][by(n)] {
+            crate::Value::Text(s) => s.clone(),
+            other => panic!("{}: expected text, got {:?}", n, other),
+        };
+        let num = |n: &str| match &page.rows[0][by(n)] {
+            crate::Value::Float(f) => *f,
+            crate::Value::Int(i) => *i as f64,
+            other => panic!("{}: expected number, got {:?}", n, other),
+        };
+        assert_eq!(txt("word3"), "gamma");
+        assert_eq!(num("where_be"), 11.0);
+        assert_eq!(txt("no_dashes"), "a:b:c");
+        assert_eq!(txt("masked"), "he**o");
+        assert_eq!(txt("blamt"), "one two three");
+        assert_eq!(txt("title"), "The Quick Brown Fox");
+        assert_eq!(txt("rev"), "cba");
+        assert_eq!(txt("rep"), "ababab"); // repeat 'ab' with n=2 → 3 copies
+        assert_eq!(num("sgn_pos"), 1.0);
+        assert_eq!(num("sgn_neg"), -1.0);
+        assert_eq!(num("largest_3"), 5.0); // 2nd largest of {5,1,9,3}
+        assert_eq!(num("smallest_2"), 3.0); // 2nd smallest of {5,1,9,3}
+        assert_eq!(num("ifn_val"), 100.0);
+        assert_eq!(txt("ifc_val"), "pos");
+        assert_eq!(num("pos"), 3.0);
+        assert_eq!(num("cpos"), 2.0);
+        assert_eq!(num("nm"), 1.0);
+        // 25 years ÷ 365-basis ≈ 9131/365 = 25.0164…
+        assert!((num("years") - 25.0).abs() < 0.05, "got {}", num("years"));
+    }
+
+    #[test]
     fn runtime_call_error_carries_span() {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select 1 as x;");

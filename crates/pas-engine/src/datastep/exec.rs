@@ -895,6 +895,7 @@ fn is_char_returning_function(name: &str) -> bool {
             | "cats"
             | "catx"
             | "compress"
+            | "compbl"
             | "tranwrd"
             | "translate"
             | "put"
@@ -902,6 +903,8 @@ fn is_char_returning_function(name: &str) -> bool {
             | "propcase"
             | "reverse"
             | "repeat"
+            | "scan"
+            | "ifc"
     )
 }
 

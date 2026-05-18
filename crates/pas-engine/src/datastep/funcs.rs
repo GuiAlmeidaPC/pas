@@ -34,6 +34,39 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             if nums.is_empty() { Ok(RtValue::missing()) }
             else { Ok(RtValue::Num(nums.iter().sum::<f64>() / nums.len() as f64)) }
         }
+        "sign" => {
+            let x = arg_num(args, 0)?;
+            Ok(RtValue::Num(if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }))
+        }
+        "largest" | "smallest" => {
+            // largest(k, v1, v2, …) — k-th largest of the values (1-based).
+            // SAS skips missing values when ranking.
+            let k = arg_num(args, 0)? as usize;
+            if k == 0 || args.len() < 2 {
+                return Ok(RtValue::missing());
+            }
+            let mut nums: Vec<f64> =
+                args[1..].iter().filter_map(|v| v.as_num()).collect();
+            if k > nums.len() {
+                return Ok(RtValue::missing());
+            }
+            // sort_unstable_by handles NaN-free f64s; nums has none after
+            // filtering out missing.
+            if name == "largest" {
+                nums.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
+            } else {
+                nums.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            }
+            Ok(RtValue::Num(nums[k - 1]))
+        }
+        "ifn" => {
+            // ifn(cond, t, f) → numeric ternary
+            let cond = args.first().map(|v| v.truthy()).unwrap_or(false);
+            Ok(args
+                .get(if cond { 1 } else { 2 })
+                .cloned()
+                .unwrap_or_else(RtValue::missing))
+        }
 
         // ── string ─────────────────────────────────────────────────────
         "upcase" => Ok(RtValue::Str(arg_str(args, 0)?.to_uppercase())),
@@ -78,6 +111,173 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             Ok(RtValue::Str(parts.join(&sep)))
         }
         "compress" => Ok(RtValue::Str(arg_str(args, 0)?.chars().filter(|c| !c.is_whitespace()).collect())),
+        "compbl" => {
+            // Collapse runs of internal whitespace down to a single space;
+            // leading whitespace stays untouched (matches SAS).
+            let s = arg_str(args, 0)?;
+            let mut out = String::with_capacity(s.len());
+            let mut last_was_space = false;
+            for c in s.chars() {
+                if c.is_whitespace() {
+                    if !last_was_space {
+                        out.push(' ');
+                    }
+                    last_was_space = true;
+                } else {
+                    out.push(c);
+                    last_was_space = false;
+                }
+            }
+            Ok(RtValue::Str(out))
+        }
+        "propcase" => {
+            let s = arg_str(args, 0)?;
+            let mut out = String::with_capacity(s.len());
+            let mut capitalize = true;
+            for c in s.chars() {
+                if c.is_alphabetic() {
+                    if capitalize {
+                        out.extend(c.to_uppercase());
+                        capitalize = false;
+                    } else {
+                        out.extend(c.to_lowercase());
+                    }
+                } else {
+                    capitalize = !c.is_alphanumeric();
+                    out.push(c);
+                }
+            }
+            Ok(RtValue::Str(out))
+        }
+        "reverse" => Ok(RtValue::Str(arg_str(args, 0)?.chars().rev().collect())),
+        "repeat" => {
+            // SAS repeat(s, n) returns s repeated (n+1) times. So
+            // repeat('a', 2) → 'aaa'.
+            let s = arg_str(args, 0)?;
+            let n = arg_num(args, 1)? as i64;
+            let times = if n < 0 { 0 } else { n as usize + 1 };
+            Ok(RtValue::Str(s.repeat(times)))
+        }
+        "scan" => {
+            // scan(s, n, [delim]) — 1-based word index. Negative n
+            // counts from the right. Default delim is SAS's wordy set of
+            // separators; we use whitespace + common punctuation.
+            let s = arg_str(args, 0)?;
+            let n = arg_num(args, 1)? as i64;
+            let delim: Vec<char> = if args.len() >= 3 {
+                arg_str(args, 2)?.chars().collect()
+            } else {
+                " \t\n\r,.;:!?()/&|\"'".chars().collect()
+            };
+            let is_delim = |c: char| delim.iter().any(|&d| d == c);
+            let words: Vec<&str> = s
+                .split(|c: char| is_delim(c))
+                .filter(|w| !w.is_empty())
+                .collect();
+            if words.is_empty() || n == 0 {
+                return Ok(RtValue::Str(String::new()));
+            }
+            let idx: usize = if n > 0 {
+                (n - 1) as usize
+            } else {
+                let from_end = (-n) as usize;
+                if from_end > words.len() {
+                    return Ok(RtValue::Str(String::new()));
+                }
+                words.len() - from_end
+            };
+            Ok(RtValue::Str(
+                words.get(idx).copied().unwrap_or("").to_string(),
+            ))
+        }
+        "find" => {
+            // find(haystack, needle, [start], [modifiers])
+            // Start is 1-based; modifiers can include 'i' for
+            // case-insensitive. We treat anything past pos 2 as the
+            // modifier/string mix and parse both forms.
+            let hay = arg_str(args, 0)?;
+            let needle = arg_str(args, 1)?;
+            if needle.is_empty() {
+                return Ok(RtValue::Num(0.0));
+            }
+            let mut start: usize = 1;
+            let mut case_insensitive = false;
+            for v in args.iter().skip(2) {
+                if let Some(n) = v.as_num() {
+                    start = (n as i64).max(1) as usize;
+                } else {
+                    let s = v.as_str();
+                    if s.contains(['i', 'I']) {
+                        case_insensitive = true;
+                    }
+                }
+            }
+            let chars: Vec<char> = hay.chars().collect();
+            if start > chars.len() {
+                return Ok(RtValue::Num(0.0));
+            }
+            let needle_lc = if case_insensitive { needle.to_lowercase() } else { needle.clone() };
+            let hay_from: String = chars[start - 1..].iter().collect();
+            let hay_search = if case_insensitive { hay_from.to_lowercase() } else { hay_from };
+            match hay_search.find(needle_lc.as_str()) {
+                Some(byte_off) => {
+                    // Translate byte offset back to char position.
+                    let chars_before = hay_search[..byte_off].chars().count();
+                    Ok(RtValue::Num((start + chars_before) as f64))
+                }
+                None => Ok(RtValue::Num(0.0)),
+            }
+        }
+        "tranwrd" => {
+            let s = arg_str(args, 0)?;
+            let from = arg_str(args, 1)?;
+            let to = arg_str(args, 2)?;
+            if from.is_empty() {
+                return Ok(RtValue::Str(s));
+            }
+            Ok(RtValue::Str(s.replace(&from, &to)))
+        }
+        "translate" => {
+            // translate(s, to, from) — char-by-char substitution. Each
+            // char in `from` maps to the char at the same position in `to`.
+            // Excess `from` chars are removed; excess `to` chars ignored.
+            let s = arg_str(args, 0)?;
+            let to_chars: Vec<char> = arg_str(args, 1)?.chars().collect();
+            let from_chars: Vec<char> = arg_str(args, 2)?.chars().collect();
+            let out: String = s
+                .chars()
+                .map(|c| match from_chars.iter().position(|&f| f == c) {
+                    Some(i) => to_chars.get(i).copied().unwrap_or(c),
+                    None => c,
+                })
+                .collect();
+            Ok(RtValue::Str(out))
+        }
+        "ifc" => {
+            // ifc(cond, t, f) → character ternary
+            let cond = args.first().map(|v| v.truthy()).unwrap_or(false);
+            let pick = args.get(if cond { 1 } else { 2 });
+            Ok(RtValue::Str(pick.map(|v| v.as_str()).unwrap_or_default()))
+        }
+        "whichn" | "whichc" => {
+            // which*(target, v1, v2, …) → 1-based position, 0 if not
+            // found. whichn compares numerically when possible; whichc
+            // compares as strings.
+            let target = args.first().cloned().unwrap_or_else(RtValue::missing);
+            let comparator: Box<dyn Fn(&RtValue) -> bool> = if name == "whichn" {
+                let target_num = target.as_num();
+                Box::new(move |v| v.as_num() == target_num)
+            } else {
+                let target_str = target.as_str();
+                Box::new(move |v| v.as_str() == target_str)
+            };
+            for (i, v) in args.iter().skip(1).enumerate() {
+                if comparator(v) {
+                    return Ok(RtValue::Num((i + 1) as f64));
+                }
+            }
+            Ok(RtValue::Num(0.0))
+        }
         "index" => {
             let s = arg_str(args, 0)?;
             let needle = arg_str(args, 1)?;
@@ -109,6 +309,10 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         "nmiss" => {
             let n = args.iter().filter(|v| is_missing(v)).count();
             Ok(RtValue::Num(n as f64))
+        }
+        "notmissing" => {
+            let v = args.first().cloned().unwrap_or_else(RtValue::missing);
+            Ok(RtValue::Num(if is_missing(&v) { 0.0 } else { 1.0 }))
         }
 
         // ── date / time ────────────────────────────────────────────────
@@ -165,6 +369,20 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             let a = arg_num(args, 1)?;
             let b = arg_num(args, 2)?;
             Ok(intck(&interval, a, b))
+        }
+        "yrdif" => {
+            // yrdif(d1, d2, basis) — fractional years between two SAS
+            // dates. Supported bases: 'act/act' (default — exact day
+            // count divided by the calendar-year length spanning the
+            // interval, approximated as 365.25), '30/360', 'act/360',
+            // 'act/365'.
+            let d1 = arg_num(args, 0)?;
+            let d2 = arg_num(args, 1)?;
+            let basis = args
+                .get(2)
+                .map(|v| v.as_str().trim().to_ascii_lowercase())
+                .unwrap_or_else(|| "act/act".into());
+            Ok(yrdif(d1, d2, &basis))
         }
 
         // ── formatted I/O ──────────────────────────────────────────────
@@ -462,6 +680,34 @@ fn intck(interval: &str, a: f64, b: f64) -> RtValue {
         _ => return RtValue::missing(),
     };
     RtValue::Num(n as f64)
+}
+
+fn yrdif(d1: f64, d2: f64, basis: &str) -> RtValue {
+    use chrono::Datelike;
+    let (Some(da), Some(db)) = (sas_date_to_naive(d1), sas_date_to_naive(d2)) else {
+        return RtValue::missing();
+    };
+    let days = (db - da).num_days() as f64;
+    let years = match basis {
+        "act/360" => days / 360.0,
+        "act/365" => days / 365.0,
+        "30/360" => {
+            // Bond-day convention.
+            let d1d = da.day() as f64;
+            let d2d = db.day() as f64;
+            let d1m = da.month() as f64;
+            let d2m = db.month() as f64;
+            let d1y = da.year() as f64;
+            let d2y = db.year() as f64;
+            let d1d = d1d.min(30.0);
+            let d2d = if d1d == 30.0 { d2d.min(30.0) } else { d2d };
+            (360.0 * (d2y - d1y) + 30.0 * (d2m - d1m) + (d2d - d1d)) / 360.0
+        }
+        // Default 'act/act' — divide by 365.25 (calendar-year approximation,
+        // matches SAS within rounding for typical age calculations).
+        _ => days / 365.25,
+    };
+    RtValue::Num(years)
 }
 
 fn num1(args: &[RtValue], f: fn(f64) -> f64) -> Result<RtValue, String> {
