@@ -1437,6 +1437,58 @@ mod tests {
     }
 
     #[test]
+    fn tier2_regex_functions() {
+        // End-to-end exercise of `prxmatch` and `prxchange`. SAS-style
+        // `\N` capture references are normalized to Rust's `$N` by the
+        // engine's `convert_repl`, so users can copy/paste familiar
+        // patterns directly.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                /* prxmatch returns 1-based position or 0 */
+                pos      = prxmatch('/quick/', 'the quick brown fox');
+                pos_i    = prxmatch('/QUICK/i', 'the quick brown fox');
+                no_match = prxmatch('/zzz/', 'the quick brown fox');
+
+                /* prxchange: times=-1 means replace all */
+                replaced = prxchange('s/foo/bar/', -1, 'foo foo baz');
+                /* times=1 stops after the first substitution */
+                limited  = prxchange('s/foo/bar/', 1, 'foo foo baz');
+
+                /* Capture groups with SAS-style backreferences */
+                captured = prxchange('s/(\w+)@(\w+)/\2 at \1/', 1, 'ada@lovelace');
+
+                /* Case-insensitive global substitution */
+                ci_repl  = prxchange('s/HELLO/hi/i', -1, 'Hello, HELLO!');
+            run;
+            "#,
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
+        let num = |n: &str| match &page.rows[0][by(n)] {
+            crate::Value::Float(f) => *f,
+            crate::Value::Int(i) => *i as f64,
+            other => panic!("{}: expected number, got {:?}", n, other),
+        };
+        let txt = |n: &str| match &page.rows[0][by(n)] {
+            crate::Value::Text(s) => s.clone(),
+            other => panic!("{}: expected text, got {:?}", n, other),
+        };
+        // "the quick brown fox" — "quick" starts at position 5.
+        assert_eq!(num("pos"), 5.0);
+        assert_eq!(num("pos_i"), 5.0);
+        assert_eq!(num("no_match"), 0.0);
+        assert_eq!(txt("replaced"), "bar bar baz");
+        assert_eq!(txt("limited"), "bar foo baz");
+        assert_eq!(txt("captured"), "lovelace at ada");
+        assert_eq!(txt("ci_repl"), "hi, hi!");
+    }
+
+    #[test]
     fn tier1_function_library() {
         // One golden program that exercises every tier-1 addition end
         // to end. Inputs are crafted so the expected outputs are easy to

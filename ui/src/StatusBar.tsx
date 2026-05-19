@@ -4,9 +4,17 @@ interface Props {
   cursor: { line: number; col: number } | null;
   libraryCount: number;
   projectName: string | null;
+  zoomPercent: number;
 }
 
-export function StatusBar({ engineState, activeFile, cursor, libraryCount, projectName }: Props) {
+export function StatusBar({
+  engineState,
+  activeFile,
+  cursor,
+  libraryCount,
+  projectName,
+  zoomPercent,
+}: Props) {
   return (
     <footer className="status-bar">
       <span className={`engine-state ${engineState}`}>
@@ -20,6 +28,14 @@ export function StatusBar({ engineState, activeFile, cursor, libraryCount, proje
       <span>{libraryCount} libraries</span>
       <span className="sep">·</span>
       <span>{cursor ? `Ln ${cursor.line}, Col ${cursor.col}` : ""}</span>
+      {zoomPercent !== 100 && (
+        <>
+          <span className="sep">·</span>
+          <span title="Ctrl+= to zoom in, Ctrl+- to zoom out, Ctrl+0 to reset">
+            {zoomPercent}%
+          </span>
+        </>
+      )}
     </footer>
   );
 }

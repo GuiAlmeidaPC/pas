@@ -809,7 +809,59 @@ fn build_regex(re_pat: &str, flags: &str) -> Result<regex::Regex, String> {
     builder.build().map_err(|e| e.to_string())
 }
 
+/// Convert a SAS / Perl-style replacement string into the syntax Rust's
+/// `regex::Regex::replace*` expects:
+///
+///   `\1` … `\9` → `$1` … `$9`        (capture group references)
+///   `\\`        → `\`                  (literal backslash)
+///   `\X` (other)→ `X`                  (drop the backslash)
+///   `$`         → `$$`                 (escape — `$` is metacharacter in
+///                                       Rust's replacement language)
 fn convert_repl(repl: &str) -> String {
-    repl.to_string()
+    let mut out = String::with_capacity(repl.len());
+    let mut chars = repl.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.peek().copied() {
+                Some(d) if d.is_ascii_digit() => {
+                    out.push('$');
+                    out.push(d);
+                    chars.next();
+                }
+                Some('\\') => {
+                    out.push('\\');
+                    chars.next();
+                }
+                Some(other) => {
+                    out.push(other);
+                    chars.next();
+                }
+                None => out.push('\\'),
+            },
+            '$' => out.push_str("$$"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod convert_repl_tests {
+    use super::convert_repl;
+
+    #[test]
+    fn slash_digits_become_dollar_digits() {
+        assert_eq!(convert_repl(r"\2 at \1"), "$2 at $1");
+    }
+
+    #[test]
+    fn literal_dollar_gets_escaped() {
+        assert_eq!(convert_repl("price $5"), "price $$5");
+    }
+
+    #[test]
+    fn double_backslash_is_literal() {
+        assert_eq!(convert_repl(r"a\\b"), r"a\b");
+    }
 }
 

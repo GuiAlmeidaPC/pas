@@ -904,6 +904,7 @@ fn is_char_returning_function(name: &str) -> bool {
             | "repeat"
             | "scan"
             | "ifc"
+            | "prxchange"
     )
 }
 
