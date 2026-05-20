@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "name": "Process Flow Test",
+  "libnames": [],
+  "programs": [
+    {
+      "path": "/home/gui/projects/pas/example_project/01_setup.sas",
+      "content": "/* 01_setup.sas */\nproc sql;\n    create table raw_data as\n    select 'Apple' as item, 10 as qty, 0.5 as price union all\n    select 'Banana', 20, 0.2 union all\n    select 'Cherry', 15, 1.0;\nquit;\n\nproc sql; select * from raw_data; quit;\n"
+    },
+    {
+      "path": "/home/gui/projects/pas/example_project/02_transform.sas",
+      "content": "/* 02_transform.sas */\ndata processed_data;\n    set raw_data;\n    total_value = qty * price;\nrun;\n\nproc sql; select * from processed_data; quit;\n"
+    },
+    {
+      "path": "/home/gui/projects/pas/example_project/03_summary.sas",
+      "content": "/* 03_summary.sas */\nproc sql;\n    create table final_summary as\n    select \n        count(*) as total_items,\n        sum(qty) as total_qty,\n        sum(total_value) as grand_total\n    from processed_data;\nquit;\n\nproc sql; select * from final_summary; quit;\n"
+    },
+    {
+      "path": "teste.sas",
+      "content": "/*teste*/"
+    }
+  ],
+  "open_tabs": [
+    {
+      "path": "/home/gui/projects/pas/example_project/01_setup.sas"
+    },
+    {
+      "path": "/home/gui/projects/pas/example_project/02_transform.sas"
+    },
+    {
+      "path": "/home/gui/projects/pas/example_project/03_summary.sas"
+    },
+    {
+      "path": "teste.sas"
+    }
+  ],
+  "active_tab": "teste.sas",
+  "layout": {
+    "sidebar_width": 240,
+    "bottom_height": 180
+  }
+}

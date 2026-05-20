@@ -5,3 +5,5 @@ dist/
 *.log
 ui/dist/
 crates/pas-app/gen/
+.antigravitycli/
+.claude/
