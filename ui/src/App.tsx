@@ -9,6 +9,8 @@ import { DatasetViewer } from "./DatasetViewer";
 import { Splitter } from "./Splitter";
 import { EditorTabs } from "./Tabs";
 import { StatusBar } from "./StatusBar";
+import { MenuBar, type MenuDef } from "./MenuBar";
+import { Modal } from "./Modal";
 import { registerSasLanguage } from "./sasLang";
 import type {
   DatasetRef,
@@ -88,6 +90,8 @@ export default function App() {
   const [projectPrograms, setProjectPrograms] = useState<TabConfig[]>([]);
   const [projectSplit, setProjectSplit] = useState<number>(260);
   const [libCount, setLibCount] = useState(1);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [zoomPercent, setZoomPercent] = useState<number>(() => {
     const saved = typeof localStorage !== "undefined" ? localStorage.getItem("pas.zoom") : null;
     const parsed = saved ? parseInt(saved, 10) : NaN;
@@ -306,6 +310,19 @@ export default function App() {
     setProjectPrograms((prev) => prev.filter((p) => p.path !== path));
   }, []);
 
+  const writeTabTo = useCallback(async (tab: Tab, path: string) => {
+    try {
+      await invoke("write_file", { path, content: tab.content });
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id === tab.id ? { ...t, path, title: basename(path), saved_content: t.content } : t,
+        ),
+      );
+    } catch (e) {
+      setLog((p) => [...p, { level: "error", text: `save: ${String(e)}` }]);
+    }
+  }, []);
+
   const saveActiveTab = useCallback(async () => {
     const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
     if (!tab) return;
@@ -318,17 +335,37 @@ export default function App() {
       if (!chosen) return;
       path = chosen;
     }
-    try {
-      await invoke("write_file", { path, content: tab.content });
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.id === tab.id ? { ...t, path, title: basename(path!), saved_content: t.content } : t,
-        ),
-      );
-    } catch (e) {
-      setLog((p) => [...p, { level: "error", text: `save: ${String(e)}` }]);
+    await writeTabTo(tab, path);
+  }, [writeTabTo]);
+
+  const saveActiveTabAs = useCallback(async () => {
+    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
+    if (!tab) return;
+    const chosen = await saveDialog({
+      defaultPath: tab.path ?? tab.title,
+      filters: [{ name: "SAS", extensions: ["sas"] }],
+    });
+    if (!chosen) return;
+    await writeTabTo(tab, chosen);
+  }, [writeTabTo]);
+
+  /// Invoke a Monaco action by ID on the active editor. Returns true if
+  /// the action existed (for menu enable/disable hints).
+  const runEditorAction = useCallback((id: string) => {
+    const editor = editorRef.current;
+    if (!editor) return false;
+    const action = editor.getAction(id);
+    if (action) {
+      void action.run();
+      return true;
     }
+    // Fallback for trigger-only commands (undo / redo / type / paste).
+    editor.trigger("menu", id, null);
+    return true;
   }, []);
+
+  const clearLog = useCallback(() => setLog([]), []);
+  const clearOutputs = useCallback(() => setOutputs([]), []);
 
   // ── project file operations ──────────────────────────────────────────
   const newProject = useCallback(() => {
@@ -495,32 +532,242 @@ export default function App() {
     [tabs],
   );
 
+  const hasOutput = outputs.length > 0;
+  const hasLog = log.length > 0;
+
+  const menus: MenuDef[] = useMemo(
+    () => [
+      {
+        label: "File",
+        items: [
+          { label: "New Tab", shortcut: "Ctrl+N", onClick: newTab },
+          { label: "Open File…", shortcut: "Ctrl+O", onClick: openFile },
+          { separator: true },
+          { label: "Save", shortcut: "Ctrl+S", onClick: saveActiveTab },
+          { label: "Save As…", onClick: saveActiveTabAs },
+          { separator: true },
+          {
+            label: "Close Tab",
+            shortcut: "Ctrl+W",
+            onClick: () => closeTab(activeIdRef.current),
+          },
+        ],
+      },
+      {
+        label: "Project",
+        items: [
+          { label: "New Project", onClick: newProject },
+          { label: "Open Project…", onClick: openProject },
+          { label: "Save Project", onClick: saveProject },
+          { separator: true },
+          { label: "Add Program to Project…", onClick: addProgramToProject },
+        ],
+      },
+      {
+        label: "Edit",
+        items: [
+          {
+            label: "Undo",
+            shortcut: "Ctrl+Z",
+            onClick: () => runEditorAction("undo"),
+          },
+          {
+            label: "Redo",
+            shortcut: "Ctrl+Shift+Z",
+            onClick: () => runEditorAction("redo"),
+          },
+          { separator: true },
+          {
+            label: "Find",
+            shortcut: "Ctrl+F",
+            onClick: () => runEditorAction("actions.find"),
+          },
+          {
+            label: "Replace",
+            shortcut: "Ctrl+H",
+            onClick: () =>
+              runEditorAction("editor.action.startFindReplaceAction"),
+          },
+          { separator: true },
+          {
+            label: "Select All",
+            shortcut: "Ctrl+A",
+            onClick: () => runEditorAction("editor.action.selectAll"),
+          },
+        ],
+      },
+      {
+        label: "View",
+        items: [
+          {
+            label: "Zoom In",
+            shortcut: "Ctrl+=",
+            onClick: () => setZoomPercent((z) => Math.min(300, z + 10)),
+          },
+          {
+            label: "Zoom Out",
+            shortcut: "Ctrl+-",
+            onClick: () => setZoomPercent((z) => Math.max(50, z - 10)),
+          },
+          {
+            label: "Reset Zoom",
+            shortcut: "Ctrl+0",
+            onClick: () => setZoomPercent(100),
+          },
+          { separator: true },
+          { label: "Show Log", onClick: () => setPane("log") },
+          {
+            label: "Show Output",
+            onClick: () => setPane("output"),
+            disabled: !hasOutput,
+          },
+          {
+            label: "Show Dataset",
+            onClick: () => setPane("dataset"),
+            disabled: !activeDataset,
+          },
+        ],
+      },
+      {
+        label: "Run",
+        items: [
+          {
+            label: running ? "Running…" : "Submit",
+            shortcut: "F3",
+            onClick: submit,
+            disabled: running,
+          },
+          {
+            label: "Cancel",
+            shortcut: "F4",
+            onClick: cancel,
+            disabled: !running,
+          },
+          { separator: true },
+          { label: "Clear Log", onClick: clearLog, disabled: !hasLog },
+          { label: "Clear Output", onClick: clearOutputs, disabled: !hasOutput },
+        ],
+      },
+      {
+        label: "Help",
+        items: [
+          { label: "Keyboard Shortcuts…", onClick: () => setShowShortcuts(true) },
+          { separator: true },
+          { label: "About PAS…", onClick: () => setShowAbout(true) },
+        ],
+      },
+    ],
+    [
+      newTab,
+      openFile,
+      saveActiveTab,
+      saveActiveTabAs,
+      closeTab,
+      newProject,
+      openProject,
+      saveProject,
+      addProgramToProject,
+      runEditorAction,
+      hasOutput,
+      hasLog,
+      activeDataset,
+      running,
+      submit,
+      cancel,
+      clearLog,
+      clearOutputs,
+    ],
+  );
+
   return (
     <div className="app">
-      <header className="topbar">
+      <header className="menubar-row">
         <span className="brand">PAS</span>
-        <span className="muted">v0.6</span>
-        <div className="topbar-divider" />
-        <button onClick={newTab} title="New tab (Ctrl+N)">New</button>
-        <button onClick={openFile} title="Open file (Ctrl+O)">Open</button>
-        <button onClick={saveActiveTab} title="Save (Ctrl+S)">Save</button>
-        <div className="topbar-divider" />
-        <button onClick={newProject} title="New project">Project: New</button>
-        <button onClick={openProject} title="Open project">Open</button>
-        <button onClick={saveProject} title="Save project">Save</button>
-        <div className="spacer" />
-        <button onClick={submit} disabled={running} className="primary">
-          {running ? "Running…" : "Submit (F3)"}
+        <MenuBar menus={menus} />
+      </header>
+      <div className="toolbar">
+        <button
+          className="toolbar-btn primary"
+          onClick={submit}
+          disabled={running}
+          title="Submit (F3) — selection if any, else whole buffer"
+        >
+          <span className="toolbar-icon">▶</span>
+          {running ? "Running…" : "Submit"}
         </button>
         <button
+          className="toolbar-btn danger"
           onClick={cancel}
           disabled={!running}
-          className="cancel-btn"
           title="Cancel (F4)"
         >
-          Cancel (F4)
+          <span className="toolbar-icon">■</span>
+          Cancel
         </button>
-      </header>
+        <div className="toolbar-divider" />
+        <button
+          className="toolbar-btn"
+          onClick={saveActiveTab}
+          title="Save (Ctrl+S)"
+        >
+          <span className="toolbar-icon">💾</span>
+          Save
+        </button>
+        <button
+          className="toolbar-btn"
+          onClick={openFile}
+          title="Open file (Ctrl+O)"
+        >
+          <span className="toolbar-icon">📂</span>
+          Open
+        </button>
+        <div className="toolbar-divider" />
+        <button
+          className="toolbar-btn"
+          onClick={() => runEditorAction("actions.find")}
+          title="Find (Ctrl+F)"
+        >
+          <span className="toolbar-icon">🔍</span>
+          Find
+        </button>
+      </div>
+
+      {showShortcuts && (
+        <Modal title="Keyboard shortcuts" onClose={() => setShowShortcuts(false)}>
+          <table className="shortcuts">
+            <tbody>
+              <tr><th colSpan={2}>Run</th></tr>
+              <tr><td>Submit (selection or buffer)</td><td><kbd>F3</kbd> / <kbd>Ctrl+Enter</kbd></td></tr>
+              <tr><td>Cancel</td><td><kbd>F4</kbd></td></tr>
+              <tr><th colSpan={2}>File</th></tr>
+              <tr><td>New tab</td><td><kbd>Ctrl+N</kbd></td></tr>
+              <tr><td>Open file</td><td><kbd>Ctrl+O</kbd></td></tr>
+              <tr><td>Save</td><td><kbd>Ctrl+S</kbd></td></tr>
+              <tr><td>Close tab</td><td><kbd>Ctrl+W</kbd></td></tr>
+              <tr><th colSpan={2}>Edit (in editor)</th></tr>
+              <tr><td>Undo / Redo</td><td><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Shift+Z</kbd></td></tr>
+              <tr><td>Find / Replace</td><td><kbd>Ctrl+F</kbd> / <kbd>Ctrl+H</kbd></td></tr>
+              <tr><td>Select all</td><td><kbd>Ctrl+A</kbd></td></tr>
+              <tr><th colSpan={2}>View</th></tr>
+              <tr><td>Zoom in / out / reset</td><td><kbd>Ctrl+=</kbd> / <kbd>Ctrl+-</kbd> / <kbd>Ctrl+0</kbd></td></tr>
+            </tbody>
+          </table>
+        </Modal>
+      )}
+      {showAbout && (
+        <Modal title="About PAS" onClose={() => setShowAbout(false)}>
+          <p>
+            <strong>PAS</strong> — a cross-platform clone of the data-wrangling
+            subset of SAS Enterprise Guide. Editor on top of Monaco; engine in
+            Rust over DuckDB.
+          </p>
+          <p className="muted">
+            Statistical procedures and <code>.sas7bdat</code> interop are
+            intentionally out of scope; everything else from the SAS DATA
+            step and PROC SQL is on the menu.
+          </p>
+        </Modal>
+      )}
 
       <main
         className="main"

@@ -32,61 +32,210 @@ html, body, #root {
   height: 100vh;
 }
 
-.topbar {
+.menubar-row {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 12px;
+  align-items: stretch;
+  gap: 16px;
+  padding: 0 12px;
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
-  height: 36px;
+  height: 28px;
   flex: 0 0 auto;
 }
 
 .brand {
-  font-weight: 600;
+  font-weight: 700;
   color: var(--accent);
   letter-spacing: 1px;
+  font-size: 12px;
+  align-self: center;
 }
 
 .muted { color: var(--muted); font-size: 12px; }
 .spacer { flex: 1; }
 
-.topbar button {
-  background: var(--panel);
+/* ── Menu bar (File / Project / …) ──────────────────────────────────── */
+
+.menubar {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+}
+.menubar-item {
+  position: relative;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
   color: var(--text);
+}
+.menubar-item:hover, .menubar-item.open {
+  background: var(--panel);
+}
+.menubar-item.open .menubar-label { color: var(--accent); }
+.menubar-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 220px;
+  background: var(--panel);
   border: 1px solid var(--border);
+  border-radius: 0 0 4px 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+}
+.menubar-entry {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  padding: 5px 14px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.menubar-entry:hover:not(:disabled) { background: var(--accent); color: #0a1820; }
+.menubar-entry:disabled { color: var(--muted); cursor: default; }
+.menubar-entry .entry-label { flex: 1; }
+.menubar-entry .entry-shortcut {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+.menubar-entry:hover:not(:disabled) .entry-shortcut { color: #0a1820; }
+.menubar-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* ── Secondary action toolbar (Submit, Cancel, …) ────────────────────── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid transparent;
   border-radius: 3px;
-  padding: 4px 10px;
+  padding: 3px 9px;
   cursor: pointer;
   font-size: 12px;
 }
-.topbar button:hover:not(:disabled) {
+.toolbar-btn:hover:not(:disabled) {
   background: var(--panel-2);
-  border-color: var(--accent);
-}
-.topbar button:disabled { opacity: 0.45; cursor: default; }
-.topbar button.primary {
-  background: #155e75;        /* darker cyan */
-  border-color: #0e7490;
-  color: #e0f7fa;
-}
-.topbar button.primary:hover:not(:disabled) {
-  background: #0e7490;
-  border-color: var(--accent);
-}
-.topbar button.cancel-btn {
-  background: #7f1d1d;         /* darker red */
-  border-color: #991b1b;
-  color: #fde2e2;
-}
-.topbar button.cancel-btn:hover:not(:disabled) { background: #991b1b; }
-.topbar button.cancel-btn:disabled {
-  background: var(--panel);
   border-color: var(--border);
-  color: var(--muted);
 }
-.topbar-divider { width: 1px; background: var(--border); align-self: stretch; margin: 0 4px; }
+.toolbar-btn:disabled { opacity: 0.4; cursor: default; }
+.toolbar-btn.primary {
+  background: #155e75;
+  color: #e0f7fa;
+  border-color: #0e7490;
+}
+.toolbar-btn.primary:hover:not(:disabled) { background: #0e7490; }
+.toolbar-btn.danger {
+  background: transparent;
+  color: #fca5a5;
+}
+.toolbar-btn.danger:hover:not(:disabled) {
+  background: #7f1d1d;
+  color: #fde2e2;
+  border-color: #991b1b;
+}
+.toolbar-btn.danger:disabled { color: var(--muted); }
+.toolbar-icon { font-size: 11px; line-height: 1; }
+.toolbar-divider { width: 1px; background: var(--border); align-self: stretch; margin: 2px 6px; }
+
+/* ── Modal dialog ────────────────────────────────────────────────────── */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.modal-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 420px;
+  max-width: 640px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+  font-weight: 600;
+  font-size: 13px;
+}
+.modal-close {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body {
+  padding: 14px 18px;
+  overflow: auto;
+  font-size: 12px;
+}
+.modal-body p { margin: 0 0 10px 0; }
+.modal-body code { background: var(--panel-2); padding: 1px 4px; border-radius: 2px; }
+
+.shortcuts { border-collapse: collapse; width: 100%; }
+.shortcuts th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  padding: 10px 0 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.shortcuts td { padding: 4px 8px 4px 0; font-size: 12px; }
+.shortcuts td:last-child { text-align: right; white-space: nowrap; }
+kbd {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text);
+}
 
 .tab-bar {
   display: flex;
