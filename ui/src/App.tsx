@@ -476,6 +476,20 @@ export default function App() {
   const saveProject = useCallback(() => performSaveProject(false), [performSaveProject]);
   const saveProjectAs = useCallback(() => performSaveProject(true), [performSaveProject]);
 
+  const reorderPrograms = useCallback((srcIdx: number, destIdx: number) => {
+    let updated: TabConfig[] = [];
+    setProjectPrograms((prev) => {
+      const result = [...prev];
+      const [removed] = result.splice(srcIdx, 1);
+      result.splice(destIdx, 0, removed);
+      updated = result;
+      return result;
+    });
+    if (projectPathRef.current) {
+      performSaveProject(false, tabsRef.current, updated);
+    }
+  }, [performSaveProject]);
+
   const saveActiveTab = useCallback(async () => {
     const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
     if (!tab) return;
@@ -926,6 +940,7 @@ export default function App() {
               onAddProgram={addProgramToProject}
               onRemoveProgram={removeProgramFromProject}
               onMoveProgram={moveProgram}
+              onReorderPrograms={reorderPrograms}
               onRunProject={runProject}
               running={running}
             />

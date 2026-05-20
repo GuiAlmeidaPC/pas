@@ -397,8 +397,36 @@ kbd {
   padding: 3px 12px;
   cursor: pointer;
   user-select: none;
+  position: relative;
 }
 .tree-row:hover { background: var(--panel-2); }
+.tree-row.dragging {
+  opacity: 0.4;
+  border: 1px dashed var(--border);
+  background: var(--panel-2);
+}
+.tree-row.drag-over-top::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 4px var(--accent);
+  z-index: 10;
+}
+.tree-row.drag-over-bottom::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 4px var(--accent);
+  z-index: 10;
+}
 .tree-libref { font-weight: 600; }
 .tree-libref .caret { color: var(--muted); width: 10px; display: inline-block; }
 .tree-libref .libname { color: var(--accent); }

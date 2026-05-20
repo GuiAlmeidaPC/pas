@@ -10,6 +10,7 @@ interface Props {
   onAddProgram: () => void;
   onRemoveProgram: (path: string) => void;
   onMoveProgram: (path: string, direction: "up" | "down") => void;
+  onReorderPrograms?: (srcIdx: number, destIdx: number) => void;
   onRunProject: () => void;
   running?: boolean;
 }
@@ -27,10 +28,45 @@ export function ProjectTree({
   onAddProgram,
   onRemoveProgram,
   onMoveProgram,
+  onReorderPrograms,
   onRunProject,
   running,
 }: Props) {
   const [contextFor, setContextFor] = useState<string | null>(null);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [dragPosition, setDragPosition] = useState<"top" | "bottom" | null>(null);
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const relativeY = e.clientY - rect.top;
+    const isTopHalf = relativeY < rect.height / 2;
+
+    setDragOverIndex(index);
+    setDragPosition(isTopHalf ? "top" : "bottom");
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) return;
+
+    const targetIndex = dragPosition === "bottom" ? index + 1 : index;
+    let destIdx = targetIndex;
+    if (draggedIndex < targetIndex) {
+      destIdx = targetIndex - 1;
+    }
+
+    if (onReorderPrograms) {
+      onReorderPrograms(draggedIndex, destIdx);
+    }
+
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+    setDragPosition(null);
+  };
 
   return (
     <div className="tree" onClick={() => setContextFor(null)}>
@@ -73,10 +109,33 @@ export function ProjectTree({
         {programs.map((p, i) => {
           const isOpen = openPaths.has(p.path);
           const showCtx = contextFor === p.path;
+          const isDragging = draggedIndex === i;
+          const isDragOver = dragOverIndex === i;
+          const dragClass = isDragging
+            ? " dragging"
+            : isDragOver
+              ? dragPosition === "top"
+                ? " drag-over-top"
+                : " drag-over-bottom"
+              : "";
+
           return (
             <div
               key={p.path}
-              className={`tree-row tree-dataset${isOpen ? " open" : ""}`}
+              className={`tree-row tree-dataset${isOpen ? " open" : ""}${dragClass}`}
+              draggable
+              onDragStart={() => setDraggedIndex(i)}
+              onDragEnd={() => {
+                setDraggedIndex(null);
+                setDragOverIndex(null);
+                setDragPosition(null);
+              }}
+              onDragOver={(e) => handleDragOver(e, i)}
+              onDragLeave={() => {
+                setDragOverIndex(null);
+                setDragPosition(null);
+              }}
+              onDrop={(e) => handleDrop(e, i)}
               onDoubleClick={() => onOpenProgram(p.path, p.content)}
               onContextMenu={(e) => {
                 e.preventDefault();
