@@ -83,7 +83,8 @@ export default function App() {
   const [refreshToken, setRefreshToken] = useState(0);
   const [activeDataset, setActiveDataset] = useState<DatasetRef | null>(null);
   const [sidebarW, setSidebarW] = useState(240);
-  const [bottomH, setBottomH] = useState(320);
+  const [bottomH, setBottomH] = useState(180);
+  const [showBottomPane, setShowBottomPane] = useState(true);
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string | null>(null);
@@ -615,15 +616,20 @@ export default function App() {
             onClick: () => setZoomPercent(100),
           },
           { separator: true },
-          { label: "Show Log", onClick: () => setPane("log") },
+          {
+            label: showBottomPane ? "Hide Bottom Panel" : "Show Bottom Panel",
+            onClick: () => setShowBottomPane((s) => !s),
+          },
+          { separator: true },
+          { label: "Show Log", onClick: () => { setPane("log"); setShowBottomPane(true); } },
           {
             label: "Show Output",
-            onClick: () => setPane("output"),
+            onClick: () => { setPane("output"); setShowBottomPane(true); },
             disabled: !hasOutput,
           },
           {
             label: "Show Dataset",
-            onClick: () => setPane("dataset"),
+            onClick: () => { setPane("dataset"); setShowBottomPane(true); },
             disabled: !activeDataset,
           },
         ],
@@ -676,6 +682,7 @@ export default function App() {
       cancel,
       clearLog,
       clearOutputs,
+      showBottomPane,
     ],
   );
 
@@ -805,7 +812,7 @@ export default function App() {
 
         <section
           className="workspace"
-          style={{ gridTemplateRows: `auto 1fr 4px ${bottomH}px` }}
+          style={{ gridTemplateRows: showBottomPane ? `auto 1fr 4px ${bottomH}px` : `auto 1fr` }}
         >
           <EditorTabs
             tabs={tabMeta}
@@ -836,13 +843,15 @@ export default function App() {
             ) : null}
           </section>
 
-          <Splitter
-            direction="vertical"
-            onResize={(d) => setBottomH((h) => Math.max(120, Math.min(900, h - d)))}
-          />
+          {showBottomPane && (
+            <>
+              <Splitter
+                direction="vertical"
+                onResize={(d) => setBottomH((h) => Math.max(120, Math.min(900, h - d)))}
+              />
 
-          <section className="bottom-pane">
-            <div className="tabs">
+              <section className="bottom-pane">
+                <div className="tabs">
               <button
                 className={pane === "log" ? "tab active" : "tab"}
                 onClick={() => setPane("log")}
@@ -879,6 +888,8 @@ export default function App() {
               )}
             </div>
           </section>
+            </>
+          )}
         </section>
       </main>
 
