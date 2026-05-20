@@ -104,6 +104,16 @@ export default function App() {
   tabsRef.current = tabs;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  const projectPathRef = useRef(projectPath);
+  projectPathRef.current = projectPath;
+  const projectNameRef = useRef(projectName);
+  projectNameRef.current = projectName;
+  const projectProgramsRef = useRef(projectPrograms);
+  projectProgramsRef.current = projectPrograms;
+  const sidebarWRef = useRef(sidebarW);
+  sidebarWRef.current = sidebarW;
+  const bottomHRef = useRef(bottomH);
+  bottomHRef.current = bottomH;
 
   const activeTab = tabs.find((t) => t.id === activeId) ?? null;
 
@@ -236,6 +246,31 @@ export default function App() {
     }
   }, []);
 
+  const runProject = useCallback(async () => {
+    if (projectPrograms.length === 0) return;
+
+    const id = crypto.randomUUID();
+    currentSubmissionRef.current = id;
+    setLog([]);
+    setOutputs([]);
+    setRunning(true);
+    setPane("log");
+    setShowBottomPane(true);
+
+    try {
+      await invoke("submit_files", {
+        programs: projectPrograms,
+        submissionId: id,
+      });
+    } catch (e) {
+      setLog((p) => [
+        ...p,
+        { level: "error", text: `run project failed: ${String(e)}` },
+      ]);
+      setRunning(false);
+    }
+  }, [projectPrograms]);
+
   // ── tab management ───────────────────────────────────────────────────
   const newTab = useCallback(() => {
     setTabs((prev) => {
@@ -272,14 +307,14 @@ export default function App() {
 
   /// Open a file from a known path (no dialog). Reuses an existing tab
   /// if one is already open for this path.
-  const openFromPath = useCallback(async (path: string) => {
+  const openFromPath = useCallback(async (path: string, embeddedContent?: string) => {
     try {
       const existing = tabsRef.current.find((t) => t.path === path);
       if (existing) {
         setActiveId(existing.id);
         return;
       }
-      const content = await invoke<string>("read_file", { path });
+      const content = embeddedContent ?? (await invoke<string>("read_file", { path }));
       const t = makeTab({ path, title: basename(path), content });
       setTabs((prev) => [...prev, t]);
       setActiveId(t.id);
@@ -311,6 +346,18 @@ export default function App() {
     setProjectPrograms((prev) => prev.filter((p) => p.path !== path));
   }, []);
 
+  const moveProgram = useCallback((path: string, direction: "up" | "down") => {
+    setProjectPrograms((prev) => {
+      const idx = prev.findIndex((p) => p.path === path);
+      if (idx === -1) return prev;
+      const nextIdx = direction === "up" ? idx - 1 : idx + 1;
+      if (nextIdx < 0 || nextIdx >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[nextIdx]] = [next[nextIdx], next[idx]];
+      return next;
+    });
+  }, []);
+
   const writeTabTo = useCallback(async (tab: Tab, path: string) => {
     try {
       await invoke("write_file", { path, content: tab.content });
@@ -319,31 +366,162 @@ export default function App() {
           t.id === tab.id ? { ...t, path, title: basename(path), saved_content: t.content } : t,
         ),
       );
+      if (projectPathRef.current) {
+        setProjectPrograms((prev) =>
+          prev.some((p) => p.path === path) ? prev : [...prev, { path }],
+        );
+      }
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `save: ${String(e)}` }]);
     }
   }, []);
 
-  const saveActiveTab = useCallback(async () => {
-    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
-    if (!tab) return;
-    let path = tab.path;
+  const getDefaultSavePath = (title: string, existingPath: string | null) => {
+    if (existingPath) return existingPath;
+    if (projectPathRef.current) {
+      const parts = projectPathRef.current.split(/[\\/]/);
+      parts.pop();
+      const dir = parts.join("/");
+      return dir ? `${dir}/${title}` : title;
+    }
+    return title;
+  };
+
+  const performSaveProject = useCallback(async (
+    forceDialog: boolean,
+    overrideTabs?: Tab[],
+    overridePrograms?: TabConfig[]
+  ) => {
+    let path = forceDialog ? null : projectPathRef.current;
+    let name = projectNameRef.current;
     if (!path) {
       const chosen = await saveDialog({
-        defaultPath: tab.title,
-        filters: [{ name: "SAS", extensions: ["sas"] }],
+        defaultPath: projectPathRef.current || (name ? `${name}.pas.json` : "project.pas.json"),
+        filters: [{ name: "PAS Project", extensions: ["pas.json", "json"] }],
       });
       if (!chosen) return;
       path = chosen;
+      name = basename(chosen).replace(/\.pas\.json$|\.json$/, "");
     }
-    await writeTabTo(tab, path);
-  }, [writeTabTo]);
+    try {
+      const libs = await invoke<Library[]>("list_libraries");
+      // Merge currently-open tab paths into the program list so saving
+      // captures any files the user opened without explicitly adding to
+      // the project. Order: existing project programs first, then any
+      // open tabs not already in that list.
+      const activeTabs = overrideTabs ?? tabsRef.current;
+      const activePrograms = overridePrograms ?? projectProgramsRef.current;
+
+      const openTabPaths = activeTabs
+        .filter((t) => t.path)
+        .map((t) => t.path!);
+      const seen = new Set<string>();
+      const programPaths: string[] = [];
+      for (const p of activePrograms) {
+        if (!seen.has(p.path)) {
+          programPaths.push(p.path);
+          seen.add(p.path);
+        }
+      }
+      for (const p of openTabPaths) {
+        if (!seen.has(p)) {
+          programPaths.push(p);
+          seen.add(p);
+        }
+      }
+
+      // Fetch content for each program (embedded project feature)
+      const programs: TabConfig[] = [];
+      const openTabs = activeTabs;
+      for (const pPath of programPaths) {
+        let content: string | undefined;
+        const tab = openTabs.find((t) => t.path === pPath);
+        if (tab) {
+          content = tab.content;
+        } else {
+          try {
+            content = await invoke<string>("read_file", { path: pPath });
+          } catch (e) {
+            console.warn(`Failed to read content to embed for ${pPath}`, e);
+          }
+        }
+        programs.push({ path: pPath, content });
+      }
+
+      const project: ProjectConfig = {
+        version: 1,
+        name: name ?? "project",
+        libnames: libs
+          .filter((l) => l.kind !== "memory")
+          .map((l) => ({
+            name: l.name,
+            kind: l.kind,
+            path: l.path,
+            format: l.format ?? null,
+          })),
+        programs,
+        open_tabs: openTabPaths.map((p) => ({ path: p })),
+        active_tab: activeTabs.find((t) => t.id === activeIdRef.current)?.path ?? null,
+        layout: { sidebar_width: sidebarWRef.current, bottom_height: bottomHRef.current },
+      };
+      await invoke("save_project", { path, project });
+      setProjectPath(path);
+      setProjectName(name);
+      setProjectPrograms(programs);
+    } catch (e) {
+      setLog((p) => [...p, { level: "error", text: `save project: ${String(e)}` }]);
+    }
+  }, []);
+
+  const saveProject = useCallback(() => performSaveProject(false), [performSaveProject]);
+  const saveProjectAs = useCallback(() => performSaveProject(true), [performSaveProject]);
+
+  const saveActiveTab = useCallback(async () => {
+    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
+    if (!tab) return;
+
+    if (projectPathRef.current) {
+      // If project is open, save directly inside project file
+      let path = tab.path;
+      if (!path) {
+        const name = window.prompt("Enter a name for this program inside the project:", tab.title);
+        if (!name) return; // User cancelled
+        path = name.endsWith(".sas") ? name : `${name}.sas`;
+      }
+
+      const updatedTabs = tabsRef.current.map((t) =>
+        t.id === tab.id
+          ? { ...t, path, title: basename(path), saved_content: t.content }
+          : t,
+      );
+      setTabs(updatedTabs);
+
+      const updatedPrograms = projectProgramsRef.current.some((p) => p.path === path)
+        ? projectProgramsRef.current
+        : [...projectProgramsRef.current, { path }];
+      setProjectPrograms(updatedPrograms);
+
+      await performSaveProject(false, updatedTabs, updatedPrograms);
+    } else {
+      // Standard local standalone file saving
+      let path = tab.path;
+      if (!path) {
+        const chosen = await saveDialog({
+          defaultPath: getDefaultSavePath(tab.title, null),
+          filters: [{ name: "SAS", extensions: ["sas"] }],
+        });
+        if (!chosen) return;
+        path = chosen;
+      }
+      await writeTabTo(tab, path);
+    }
+  }, [performSaveProject, writeTabTo]);
 
   const saveActiveTabAs = useCallback(async () => {
     const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
     if (!tab) return;
     const chosen = await saveDialog({
-      defaultPath: tab.path ?? tab.title,
+      defaultPath: getDefaultSavePath(tab.title, tab.path),
       filters: [{ name: "SAS", extensions: ["sas"] }],
     });
     if (!chosen) return;
@@ -402,7 +580,8 @@ export default function App() {
       const newTabs: Tab[] = [];
       for (const t of project.open_tabs) {
         try {
-          const content = await invoke<string>("read_file", { path: t.path });
+          const embedded = programs.find((p) => p.path === t.path)?.content;
+          const content = embedded ?? (await invoke<string>("read_file", { path: t.path }));
           newTabs.push(makeTab({ path: t.path, title: basename(t.path), content }));
         } catch (e) {
           console.error("failed to open project tab", t.path, e);
@@ -422,65 +601,7 @@ export default function App() {
     }
   }, []);
 
-  const saveProject = useCallback(async () => {
-    let path = projectPath;
-    let name = projectName;
-    if (!path) {
-      const chosen = await saveDialog({
-        defaultPath: name ? `${name}.pas.json` : "project.pas.json",
-        filters: [{ name: "PAS Project", extensions: ["pas.json", "json"] }],
-      });
-      if (!chosen) return;
-      path = chosen;
-      name = basename(chosen).replace(/\.pas\.json$|\.json$/, "");
-    }
-    try {
-      const libs = await invoke<Library[]>("list_libraries");
-      // Merge currently-open tab paths into the program list so saving
-      // captures any files the user opened without explicitly adding to
-      // the project. Order: existing project programs first, then any
-      // open tabs not already in that list.
-      const openTabPaths = tabsRef.current
-        .filter((t) => t.path)
-        .map((t) => t.path!);
-      const seen = new Set<string>();
-      const programs: TabConfig[] = [];
-      for (const p of projectPrograms) {
-        if (!seen.has(p.path)) {
-          programs.push({ path: p.path });
-          seen.add(p.path);
-        }
-      }
-      for (const p of openTabPaths) {
-        if (!seen.has(p)) {
-          programs.push({ path: p });
-          seen.add(p);
-        }
-      }
-      const project: ProjectConfig = {
-        version: 1,
-        name: name ?? "project",
-        libnames: libs
-          .filter((l) => l.kind !== "memory")
-          .map((l) => ({
-            name: l.name,
-            kind: l.kind,
-            path: l.path,
-            format: l.format ?? null,
-          })),
-        programs,
-        open_tabs: openTabPaths.map((p) => ({ path: p })),
-        active_tab: tabsRef.current.find((t) => t.id === activeIdRef.current)?.path ?? null,
-        layout: { sidebar_width: sidebarW, bottom_height: bottomH },
-      };
-      await invoke("save_project", { path, project });
-      setProjectPath(path);
-      setProjectName(name);
-      setProjectPrograms(programs);
-    } catch (e) {
-      setLog((p) => [...p, { level: "error", text: `save project: ${String(e)}` }]);
-    }
-  }, [projectPath, projectName, projectPrograms, sidebarW, bottomH]);
+
 
   // ── editor mount ────────────────────────────────────────────────────
   const handleMount: OnMount = (editor, monaco) => {
@@ -546,6 +667,9 @@ export default function App() {
           { separator: true },
           { label: "Save", shortcut: "Ctrl+S", onClick: saveActiveTab },
           { label: "Save As…", onClick: saveActiveTabAs },
+          ...(projectPath
+            ? [{ label: "Save to Standalone SAS File…", onClick: saveActiveTabAs }]
+            : []),
           { separator: true },
           {
             label: "Close Tab",
@@ -560,6 +684,7 @@ export default function App() {
           { label: "New Project", onClick: newProject },
           { label: "Open Project…", onClick: openProject },
           { label: "Save Project", onClick: saveProject },
+          { label: "Save Project As…", onClick: saveProjectAs },
           { separator: true },
           { label: "Add Program to Project…", onClick: addProgramToProject },
         ],
@@ -644,6 +769,11 @@ export default function App() {
             disabled: running,
           },
           {
+            label: "Run Project",
+            onClick: runProject,
+            disabled: running || projectPrograms.length === 0,
+          },
+          {
             label: "Cancel",
             shortcut: "F4",
             onClick: cancel,
@@ -672,6 +802,7 @@ export default function App() {
       newProject,
       openProject,
       saveProject,
+      saveProjectAs,
       addProgramToProject,
       runEditorAction,
       hasOutput,
@@ -679,10 +810,12 @@ export default function App() {
       activeDataset,
       running,
       submit,
+      runProject,
       cancel,
       clearLog,
       clearOutputs,
       showBottomPane,
+      projectPath,
     ],
   );
 
@@ -715,10 +848,10 @@ export default function App() {
         <button
           className="toolbar-btn"
           onClick={saveActiveTab}
-          title="Save (Ctrl+S)"
+          title={projectPath ? "Save to Project (Ctrl+S)" : "Save (Ctrl+S)"}
         >
           <span className="toolbar-icon">💾</span>
-          Save
+          {projectPath ? "Save to Project" : "Save"}
         </button>
         <button
           className="toolbar-btn"
@@ -792,6 +925,9 @@ export default function App() {
               onOpenProgram={openFromPath}
               onAddProgram={addProgramToProject}
               onRemoveProgram={removeProgramFromProject}
+              onMoveProgram={moveProgram}
+              onRunProject={runProject}
+              running={running}
             />
           </div>
           <Splitter

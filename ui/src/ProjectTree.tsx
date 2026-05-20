@@ -6,9 +6,12 @@ interface Props {
   programs: TabConfig[];
   /// Paths currently open in editor tabs (used to render an indicator).
   openPaths: Set<string>;
-  onOpenProgram: (path: string) => void;
+  onOpenProgram: (path: string, content?: string) => void;
   onAddProgram: () => void;
   onRemoveProgram: (path: string) => void;
+  onMoveProgram: (path: string, direction: "up" | "down") => void;
+  onRunProject: () => void;
+  running?: boolean;
 }
 
 function basename(p: string): string {
@@ -23,6 +26,9 @@ export function ProjectTree({
   onOpenProgram,
   onAddProgram,
   onRemoveProgram,
+  onMoveProgram,
+  onRunProject,
+  running,
 }: Props) {
   const [contextFor, setContextFor] = useState<string | null>(null);
 
@@ -30,16 +36,29 @@ export function ProjectTree({
     <div className="tree" onClick={() => setContextFor(null)}>
       <div className="tree-header">
         <span>Project</span>
-        <button
-          className="tree-action"
-          onClick={(e) => {
-            e.stopPropagation();
-            onAddProgram();
-          }}
-          title="Add an existing .sas file to the project"
-        >
-          +
-        </button>
+        <div className="tree-actions">
+          <button
+            className="tree-action"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRunProject();
+            }}
+            disabled={running || programs.length === 0}
+            title="Run all programs in order (Process Flow)"
+          >
+            ▶
+          </button>
+          <button
+            className="tree-action"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAddProgram();
+            }}
+            title="Add an existing .sas file to the project"
+          >
+            +
+          </button>
+        </div>
       </div>
       <div className="tree-row tree-libref open">
         <span className="caret">▾</span>
@@ -51,14 +70,14 @@ export function ProjectTree({
             No programs yet. Click <code>+</code> to add one.
           </div>
         )}
-        {programs.map((p) => {
+        {programs.map((p, i) => {
           const isOpen = openPaths.has(p.path);
           const showCtx = contextFor === p.path;
           return (
             <div
               key={p.path}
               className={`tree-row tree-dataset${isOpen ? " open" : ""}`}
-              onDoubleClick={() => onOpenProgram(p.path)}
+              onDoubleClick={() => onOpenProgram(p.path, p.content)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setContextFor(p.path);
@@ -71,11 +90,29 @@ export function ProjectTree({
                 <div className="ctx-menu" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={() => {
-                      onOpenProgram(p.path);
+                      onOpenProgram(p.path, p.content);
                       setContextFor(null);
                     }}
                   >
                     Open
+                  </button>
+                  <button
+                    disabled={i === 0}
+                    onClick={() => {
+                      onMoveProgram(p.path, "up");
+                      setContextFor(null);
+                    }}
+                  >
+                    Move Up
+                  </button>
+                  <button
+                    disabled={i === programs.length - 1}
+                    onClick={() => {
+                      onMoveProgram(p.path, "down");
+                      setContextFor(null);
+                    }}
+                  >
+                    Move Down
                   </button>
                   <button
                     onClick={() => {

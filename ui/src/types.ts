@@ -74,6 +74,7 @@ export interface ProjectLibname {
 
 export interface TabConfig {
   path: string;
+  content?: string;
 }
 
 export interface Layout {

@@ -43,6 +43,8 @@ pub struct ProjectLibname {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabConfig {
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -82,6 +84,94 @@ async fn submit(
                 SubmitEventPayload { submission_id: id.clone(), event },
             );
         }
+    });
+
+    Ok(submission_id)
+}
+
+#[tauri::command]
+async fn submit_files(
+    programs: Vec<TabConfig>,
+    submission_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<String, String> {
+    let session = state.session.clone();
+    let id = submission_id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        for prog in programs {
+            let path = prog.path;
+            let _ = app.emit(
+                "pas://event",
+                SubmitEventPayload {
+                    submission_id: id.clone(),
+                    event: Event::Note {
+                        text: format!("Running file: {}", path),
+                    },
+                },
+            );
+
+            let content = if let Some(c) = prog.content {
+                c
+            } else {
+                match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = app.emit(
+                            "pas://event",
+                            SubmitEventPayload {
+                                submission_id: id.clone(),
+                                event: Event::Error {
+                                    text: format!("Failed to read {}: {}", path, e),
+                                    source_span: None,
+                                },
+                            },
+                        );
+                        break;
+                    }
+                }
+            };
+
+            let events = session.submit(&content);
+            let mut has_error = false;
+            for event in events {
+                if matches!(event, Event::Error { .. }) {
+                    has_error = true;
+                }
+                // Don't emit individual Done events from inner submits,
+                // we'll emit one at the very end.
+                if !matches!(event, Event::Done) {
+                    let _ = app.emit(
+                        "pas://event",
+                        SubmitEventPayload {
+                            submission_id: id.clone(),
+                            event,
+                        },
+                    );
+                }
+            }
+
+            if has_error {
+                let _ = app.emit(
+                    "pas://event",
+                    SubmitEventPayload {
+                        submission_id: id.clone(),
+                        event: Event::Note {
+                            text: "Stopping execution due to error.".to_string(),
+                        },
+                    },
+                );
+                break;
+            }
+        }
+        let _ = app.emit(
+            "pas://event",
+            SubmitEventPayload {
+                submission_id: id,
+                event: Event::Done,
+            },
+        );
     });
 
     Ok(submission_id)
@@ -253,6 +343,7 @@ pub fn run() {
             write_file,
             read_project,
             save_project,
+            submit_files,
             apply_project_libnames
         ])
         .run(tauri::generate_context!())
