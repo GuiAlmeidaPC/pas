@@ -167,8 +167,16 @@ html, body, #root {
 
 .sidebar {
   background: var(--panel);
-  overflow: auto;
+  display: grid;
+  /* rows set inline by the in-sidebar splitter */
   min-width: 0;
+  min-height: 0;
+}
+
+.sidebar-section {
+  overflow: auto;
+  min-height: 0;
+  position: relative;
 }
 
 .workspace {
@@ -193,7 +201,44 @@ html, body, #root {
   text-transform: uppercase;
   font-size: 10px;
   letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
+.tree-action {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 2px;
+}
+.tree-action:hover { color: var(--accent); background: var(--panel-2); }
+.tree-dataset.open { color: var(--text); }
+.tree-dataset.open .dataset-icon { color: var(--accent); }
+.ctx-menu {
+  position: absolute;
+  right: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  z-index: 5;
+}
+.ctx-menu button {
+  background: none;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.ctx-menu button:hover { background: var(--panel); }
 .tree-empty { padding: 4px 24px; color: var(--muted); font-style: italic; }
 .tree-error { padding: 4px 24px; color: var(--err); }
 .tree-row {

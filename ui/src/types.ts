@@ -85,6 +85,9 @@ export interface ProjectConfig {
   version: number;
   name: string;
   libnames: ProjectLibname[];
+  /// Files belonging to the project (regardless of whether they're open).
+  programs: TabConfig[];
+  /// Snapshot of currently-open editor tabs (subset of programs).
   open_tabs: TabConfig[];
   active_tab?: string | null;
   layout: Layout;

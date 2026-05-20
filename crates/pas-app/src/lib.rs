@@ -11,6 +11,13 @@ pub struct ProjectConfig {
     pub name: String,
     #[serde(default)]
     pub libnames: Vec<ProjectLibname>,
+    /// Files that belong to this project (regardless of whether they're
+    /// currently open in the editor). Drives the Project tree.
+    #[serde(default)]
+    pub programs: Vec<TabConfig>,
+    /// Snapshot of which programs are open in tabs right now. On project
+    /// open we use this to restore the working set; on save we capture
+    /// the current editor state.
     #[serde(default)]
     pub open_tabs: Vec<TabConfig>,
     #[serde(default)]

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { LibraryTree } from "./LibraryTree";
+import { ProjectTree } from "./ProjectTree";
 import { DatasetViewer } from "./DatasetViewer";
 import { Splitter } from "./Splitter";
 import { EditorTabs } from "./Tabs";
@@ -17,6 +18,7 @@ import type {
   ProjectConfig,
   ResultBlock,
   SubmitEventPayload,
+  TabConfig,
 } from "./types";
 
 const STARTER_PROGRAM = `/* PAS v0.6 — multi-tab editor & project files
@@ -83,6 +85,8 @@ export default function App() {
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string | null>(null);
+  const [projectPrograms, setProjectPrograms] = useState<TabConfig[]>([]);
+  const [projectSplit, setProjectSplit] = useState<number>(260);
   const [libCount, setLibCount] = useState(1);
   const [zoomPercent, setZoomPercent] = useState<number>(() => {
     const saved = typeof localStorage !== "undefined" ? localStorage.getItem("pas.zoom") : null;
@@ -261,25 +265,45 @@ export default function App() {
     });
   }, []);
 
-  const openFile = useCallback(async () => {
-    const path = await openDialog({
-      filters: [{ name: "SAS", extensions: ["sas"] }, { name: "All files", extensions: ["*"] }],
-    });
-    if (!path || Array.isArray(path)) return;
+  /// Open a file from a known path (no dialog). Reuses an existing tab
+  /// if one is already open for this path.
+  const openFromPath = useCallback(async (path: string) => {
     try {
-      const content = await invoke<string>("read_file", { path });
-      // Reuse tab if same path already open.
       const existing = tabsRef.current.find((t) => t.path === path);
       if (existing) {
         setActiveId(existing.id);
         return;
       }
+      const content = await invoke<string>("read_file", { path });
       const t = makeTab({ path, title: basename(path), content });
       setTabs((prev) => [...prev, t]);
       setActiveId(t.id);
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `open: ${String(e)}` }]);
     }
+  }, []);
+
+  const openFile = useCallback(async () => {
+    const path = await openDialog({
+      filters: [{ name: "SAS", extensions: ["sas"] }, { name: "All files", extensions: ["*"] }],
+    });
+    if (!path || Array.isArray(path)) return;
+    await openFromPath(path);
+  }, [openFromPath]);
+
+  // ── project program registry ────────────────────────────────────────
+  const addProgramToProject = useCallback(async () => {
+    const path = await openDialog({
+      filters: [{ name: "SAS", extensions: ["sas"] }, { name: "All files", extensions: ["*"] }],
+    });
+    if (!path || Array.isArray(path)) return;
+    setProjectPrograms((prev) =>
+      prev.some((p) => p.path === path) ? prev : [...prev, { path }],
+    );
+  }, []);
+
+  const removeProgramFromProject = useCallback((path: string) => {
+    setProjectPrograms((prev) => prev.filter((p) => p.path !== path));
   }, []);
 
   const saveActiveTab = useCallback(async () => {
@@ -306,10 +330,11 @@ export default function App() {
     }
   }, []);
 
-  // ── project operations ──────────────────────────────────────────────
+  // ── project file operations ──────────────────────────────────────────
   const newProject = useCallback(() => {
     setProjectPath(null);
     setProjectName(null);
+    setProjectPrograms([]);
   }, []);
 
   const openProject = useCallback(async () => {
@@ -327,7 +352,15 @@ export default function App() {
         setLog([]);
         await invoke("apply_project_libnames", { libnames: project.libnames });
       }
-      // Open each tab file.
+      // Project program registry. Fall back to `open_tabs` for older
+      // project files that predate the `programs` field.
+      const programs: TabConfig[] =
+        project.programs && project.programs.length > 0
+          ? project.programs
+          : project.open_tabs ?? [];
+      setProjectPrograms(programs);
+
+      // Open the editor working set.
       const newTabs: Tab[] = [];
       for (const t of project.open_tabs) {
         try {
@@ -365,6 +398,27 @@ export default function App() {
     }
     try {
       const libs = await invoke<Library[]>("list_libraries");
+      // Merge currently-open tab paths into the program list so saving
+      // captures any files the user opened without explicitly adding to
+      // the project. Order: existing project programs first, then any
+      // open tabs not already in that list.
+      const openTabPaths = tabsRef.current
+        .filter((t) => t.path)
+        .map((t) => t.path!);
+      const seen = new Set<string>();
+      const programs: TabConfig[] = [];
+      for (const p of projectPrograms) {
+        if (!seen.has(p.path)) {
+          programs.push({ path: p.path });
+          seen.add(p.path);
+        }
+      }
+      for (const p of openTabPaths) {
+        if (!seen.has(p)) {
+          programs.push({ path: p });
+          seen.add(p);
+        }
+      }
       const project: ProjectConfig = {
         version: 1,
         name: name ?? "project",
@@ -376,17 +430,19 @@ export default function App() {
             path: l.path,
             format: l.format ?? null,
           })),
-        open_tabs: tabsRef.current.filter((t) => t.path).map((t) => ({ path: t.path! })),
+        programs,
+        open_tabs: openTabPaths.map((p) => ({ path: p })),
         active_tab: tabsRef.current.find((t) => t.id === activeIdRef.current)?.path ?? null,
         layout: { sidebar_width: sidebarW, bottom_height: bottomH },
       };
       await invoke("save_project", { path, project });
       setProjectPath(path);
       setProjectName(name);
+      setProjectPrograms(programs);
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `save project: ${String(e)}` }]);
     }
-  }, [projectPath, projectName, sidebarW, bottomH]);
+  }, [projectPath, projectName, projectPrograms, sidebarW, bottomH]);
 
   // ── editor mount ────────────────────────────────────────────────────
   const handleMount: OnMount = (editor, monaco) => {
@@ -434,6 +490,11 @@ export default function App() {
     [tabs],
   );
 
+  const openTabPaths = useMemo(
+    () => new Set(tabs.map((t) => t.path).filter((p): p is string => !!p)),
+    [tabs],
+  );
+
   return (
     <div className="app">
       <header className="topbar">
@@ -465,8 +526,29 @@ export default function App() {
         className="main"
         style={{ gridTemplateColumns: `${sidebarW}px 4px 1fr` }}
       >
-        <aside className="sidebar">
-          <LibraryTree refreshToken={refreshToken} onOpenDataset={openDataset} />
+        <aside
+          className="sidebar"
+          style={{ gridTemplateRows: `${projectSplit}px 4px 1fr` }}
+        >
+          <div className="sidebar-section">
+            <ProjectTree
+              projectName={projectName}
+              programs={projectPrograms}
+              openPaths={openTabPaths}
+              onOpenProgram={openFromPath}
+              onAddProgram={addProgramToProject}
+              onRemoveProgram={removeProgramFromProject}
+            />
+          </div>
+          <Splitter
+            direction="vertical"
+            onResize={(d) =>
+              setProjectSplit((h) => Math.max(80, Math.min(800, h + d)))
+            }
+          />
+          <div className="sidebar-section">
+            <LibraryTree refreshToken={refreshToken} onOpenDataset={openDataset} />
+          </div>
         </aside>
 
         <Splitter
