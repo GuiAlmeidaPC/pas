@@ -1,0 +1,9 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.sample_items": {
+      "rows": 3,
+      "columns": ["name", "status", "category"]
+    }
+  }
+}

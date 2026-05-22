@@ -109,6 +109,10 @@ pub enum Stmt {
         branches: Vec<SelectBranch>,
         otherwise: Option<Box<Stmt>>,
     },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

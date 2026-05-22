@@ -98,6 +98,10 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
             body_end: usize,
             has_datalines: bool,
         },
+        MacroDef {
+            body: String,
+            src_offset: usize,
+        },
     }
     let mut state = State::Normal;
 
@@ -141,6 +145,13 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                         body_start: Some(raw.start),
                         body_end: raw.end,
                         has_datalines: false,
+                    };
+                    continue;
+                }
+                if lower.starts_with("%macro") {
+                    state = State::MacroDef {
+                        body: trimmed.to_string() + ";",
+                        src_offset: raw.start,
                     };
                     continue;
                 }
@@ -197,12 +208,29 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                 }
                 *body_end = raw.end;
             }
+            State::MacroDef { body, src_offset } => {
+                body.push_str(trimmed);
+                body.push(';');
+                if lower.starts_with("%mend") {
+                    out.push(Block::Statement {
+                        text: std::mem::take(body),
+                        src_offset: *src_offset,
+                    });
+                    state = State::Normal;
+                }
+            }
         }
     }
 
     // Flush unclosed blocks at EOF.
-    if let State::ProcOther { name, body, src_offset } = state {
-        out.push(Block::Proc { name, body, src_offset });
+    match state {
+        State::ProcOther { name, body, src_offset } => {
+            out.push(Block::Proc { name, body, src_offset });
+        }
+        State::MacroDef { body, src_offset } => {
+            out.push(Block::Statement { text: body, src_offset });
+        }
+        _ => {}
     }
 
     out

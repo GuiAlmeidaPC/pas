@@ -237,7 +237,9 @@ struct Runtime<'a, 'conn> {
     rows_in: u64,
     prev_by: Option<Vec<RtValue>>,
     pending: Option<SourceRow>,
+    macro_vars: &'a std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
+
 
 impl<'a, 'conn> Runtime<'a, 'conn> {
     /// Push one row into the pipeline. Implements a 1-row lookahead so the
@@ -347,7 +349,6 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
         }
 
         // Body.
-        let mut explicit_outputs: Vec<usize> = Vec::new();
         let mut deleted = false;
         for s in &self.ds.body {
             match exec_stmt(
@@ -355,7 +356,8 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
                 &mut self.pdv,
                 &self.arrays,
                 &self.ds.outputs,
-                &mut explicit_outputs,
+                &mut self.appenders,
+                self.macro_vars,
             )? {
                 StmtFlow::Continue => {}
                 StmtFlow::Delete => {
@@ -369,15 +371,9 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
         }
 
         // Emit.
-        if explicit_outputs.is_empty() {
+        if !has_explicit_output(&self.ds.body) {
             for i in 0..self.appenders.len() {
                 self.appenders[i].append(&self.pdv)?;
-            }
-        } else {
-            for i in explicit_outputs {
-                if let Some(a) = self.appenders.get_mut(i) {
-                    a.append(&self.pdv)?;
-                }
             }
         }
         Ok(())
@@ -390,6 +386,7 @@ pub fn run_data_step(
     conn: &Connection,
     plan: &ResolvedDataStep,
     cancel: &std::sync::atomic::AtomicBool,
+    macro_vars: &std::sync::Mutex<std::collections::HashMap<String, String>>,
 ) -> Result<DataStepResult, DataStepError> {
     let ds = plan.ast;
     let mut pdv = Pdv::new();
@@ -472,6 +469,7 @@ pub fn run_data_step(
             rows_in: 0,
             prev_by: None,
             pending: None,
+            macro_vars,
         };
         iterate_input(conn, plan, &source_schemas, |row| rt.feed(row))?;
         rt.finish()?;
@@ -1124,12 +1122,13 @@ enum StmtFlow {
     Delete,
 }
 
-fn exec_stmt(
+fn exec_stmt<'conn>(
     s: &Stmt,
     pdv: &mut Pdv,
     arrays: &HashMap<String, ArrayBinding>,
     outs: &[TableRef],
-    explicit: &mut Vec<usize>,
+    appenders: &mut [OutputAppender<'conn>],
+    macro_vars: &std::sync::Mutex<std::collections::HashMap<String, String>>,
 ) -> Result<StmtFlow, DataStepError> {
     match s {
         Stmt::Assign { target, expr } => {
@@ -1146,9 +1145,9 @@ fn exec_stmt(
         Stmt::IfThen { cond, then_stmt, else_stmt } => {
             let v = eval(cond, pdv, arrays)?;
             if v.truthy() {
-                exec_stmt(then_stmt, pdv, arrays, outs, explicit)
+                exec_stmt(then_stmt, pdv, arrays, outs, appenders, macro_vars)
             } else if let Some(e) = else_stmt {
-                exec_stmt(e, pdv, arrays, outs, explicit)
+                exec_stmt(e, pdv, arrays, outs, appenders, macro_vars)
             } else {
                 Ok(StmtFlow::Continue)
             }
@@ -1162,34 +1161,33 @@ fn exec_stmt(
             }
         }
         Stmt::Output { dataset } => {
-            let idx = match dataset {
+            match dataset {
                 None => {
-                    for i in 0..outs.len() {
-                        if !explicit.contains(&i) {
-                            explicit.push(i);
-                        }
+                    for app in appenders.iter_mut() {
+                        app.append(pdv)?;
                     }
-                    return Ok(StmtFlow::Continue);
                 }
-                Some(t) => outs
-                    .iter()
-                    .position(|o| o.name.eq_ignore_ascii_case(&t.name))
-                    .ok_or_else(|| {
-                        DataStepError::runtime(format!(
-                            "`output {}` refers to a dataset not listed on the DATA statement",
-                            t.qualified()
-                        ))
-                    })?,
-            };
-            if !explicit.contains(&idx) {
-                explicit.push(idx);
+                Some(t) => {
+                    let idx = outs
+                        .iter()
+                        .position(|o| o.name.eq_ignore_ascii_case(&t.name))
+                        .ok_or_else(|| {
+                            DataStepError::runtime(format!(
+                                "`output {}` refers to a dataset not listed on the DATA statement",
+                                t.qualified()
+                            ))
+                        })?;
+                    if let Some(app) = appenders.get_mut(idx) {
+                        app.append(pdv)?;
+                    }
+                }
             }
             Ok(StmtFlow::Continue)
         }
         Stmt::Delete => Ok(StmtFlow::Delete),
         Stmt::Block(stmts) => {
             for s in stmts {
-                match exec_stmt(s, pdv, arrays, outs, explicit)? {
+                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars)? {
                     StmtFlow::Continue => {}
                     StmtFlow::Delete => return Ok(StmtFlow::Delete),
                 }
@@ -1204,7 +1202,7 @@ fn exec_stmt(
                         for v in &branch.values {
                             let candidate = eval(v, pdv, arrays)?;
                             if compare(&switch_val, &candidate) == 0 {
-                                return exec_stmt(&branch.stmt, pdv, arrays, outs, explicit);
+                                return exec_stmt(&branch.stmt, pdv, arrays, outs, appenders, macro_vars);
                             }
                         }
                     }
@@ -1213,14 +1211,14 @@ fn exec_stmt(
                     for branch in branches {
                         for v in &branch.values {
                             if eval(v, pdv, arrays)?.truthy() {
-                                return exec_stmt(&branch.stmt, pdv, arrays, outs, explicit);
+                                return exec_stmt(&branch.stmt, pdv, arrays, outs, appenders, macro_vars);
                             }
                         }
                     }
                 }
             }
             if let Some(o) = otherwise {
-                return exec_stmt(o, pdv, arrays, outs, explicit);
+                return exec_stmt(o, pdv, arrays, outs, appenders, macro_vars);
             }
             Ok(StmtFlow::Continue)
         }
@@ -1248,7 +1246,7 @@ fn exec_stmt(
                 }
                 pdv.set(var, RtValue::Num(i));
                 for s in body {
-                    match exec_stmt(s, pdv, arrays, outs, explicit)? {
+                    match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars)? {
                         StmtFlow::Continue => {}
                         StmtFlow::Delete => return Ok(StmtFlow::Delete),
                     }
@@ -1257,6 +1255,62 @@ fn exec_stmt(
             }
             Ok(StmtFlow::Continue)
         }
+        Stmt::Call { name, args } => {
+            if name.eq_ignore_ascii_case("symput") || name.eq_ignore_ascii_case("symputx") {
+                if args.len() != 2 {
+                    return Err(DataStepError::runtime(format!(
+                        "CALL {} requires exactly 2 arguments, got {}",
+                        name,
+                        args.len()
+                    )));
+                }
+                let name_val = eval(&args[0], pdv, arrays)?;
+                let val_val = eval(&args[1], pdv, arrays)?;
+                let var_name = name_val.as_str().trim().to_string();
+                if var_name.is_empty() {
+                    return Err(DataStepError::runtime(format!(
+                        "CALL {} first argument (macro variable name) cannot be empty",
+                        name
+                    )));
+                }
+                let var_value = if name.eq_ignore_ascii_case("symputx") {
+                    val_val.as_str().trim().to_string()
+                } else {
+                    val_val.as_str()
+                };
+                let mut vars = macro_vars.lock().unwrap();
+                vars.insert(var_name, var_value);
+            } else {
+                return Err(DataStepError::runtime(format!("unknown CALL routine '{}'", name)));
+            }
+            Ok(StmtFlow::Continue)
+        }
+    }
+}
+
+fn has_explicit_output(stmts: &[Stmt]) -> bool {
+    for s in stmts {
+        if has_explicit_stmt_output(s) {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_explicit_stmt_output(s: &Stmt) -> bool {
+    match s {
+        Stmt::Output { .. } => true,
+        Stmt::IfThen { then_stmt, else_stmt, .. } => {
+            has_explicit_stmt_output(then_stmt)
+                || else_stmt.as_ref().map(|e| has_explicit_stmt_output(e)).unwrap_or(false)
+        }
+        Stmt::Block(inner) => has_explicit_output(inner),
+        Stmt::DoLoop { body, .. } => has_explicit_output(body),
+        Stmt::Select { branches, otherwise, .. } => {
+            branches.iter().any(|b| has_explicit_stmt_output(&b.stmt))
+                || otherwise.as_ref().map(|o| has_explicit_stmt_output(o)).unwrap_or(false)
+        }
+        _ => false,
     }
 }
 

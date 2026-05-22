@@ -90,6 +90,7 @@ pub struct Session {
     interrupt: Arc<InterruptHandle>,
     libraries: Mutex<HashMap<String, Library>>,
     macro_vars: Mutex<HashMap<String, String>>,
+    macro_defs: Mutex<HashMap<String, macros::MacroDef>>,
 }
 
 impl Session {
@@ -108,6 +109,7 @@ impl Session {
             interrupt,
             libraries: Mutex::new(libs),
             macro_vars: Mutex::new(HashMap::new()),
+            macro_defs: Mutex::new(HashMap::new()),
         })
     }
 
@@ -266,26 +268,12 @@ impl Session {
         self.cancel.store(false, Ordering::SeqCst);
         let cleaned = strip_comments(program);
 
-        // Macro pre-pass: `%let` / `%put` / `&var`. Macro variables persist
-        // across submissions on the same session.
-        let macro_result = {
-            let mut vars = self.macro_vars.lock().unwrap();
-            macros::preprocess(&cleaned, &mut vars)
-        };
+        let blocks = split_blocks(&cleaned);
+        println!("submit program = {:?}\nblocks = {:#?}", program, blocks);
         let mut events = Vec::new();
-        for text in macro_result.puts {
-            events.push(Event::Note { text });
-        }
-
-        let blocks = split_blocks(&macro_result.expanded);
 
         if blocks.is_empty() {
-            // Only complain about an empty program if there was no macro
-            // activity either — a `%let` alone is legitimately empty after
-            // pre-processing.
-            if events.is_empty() {
-                events.push(Event::Note { text: "No statements found.".into() });
-            }
+            events.push(Event::Note { text: "No statements found.".into() });
             events.push(Event::Done);
             return events;
         }
@@ -296,45 +284,156 @@ impl Session {
                 events.push(Event::Warning { text: "Execution cancelled by user.".into() });
                 break;
             }
+
             match block {
                 Block::Statement { text, src_offset } => {
-                    events.push(Event::Source { text: text.clone() });
-                    if let Some(handled) = self.try_libname(&conn, &text) {
-                        events.extend(handled);
+                    let macro_result = {
+                        let mut vars = self.macro_vars.lock().unwrap();
+                        let mut defs = self.macro_defs.lock().unwrap();
+                        macros::preprocess(&text, &mut vars, &mut defs)
+                    };
+
+                    println!("BLOCK Statement: text={:?}\n  expanded={:?}\n  puts={:?}", text, macro_result.expanded, macro_result.puts);
+
+                    for put_text in macro_result.puts {
+                        events.push(Event::Note { text: put_text });
+                    }
+
+                    let expanded_trimmed = macro_result.expanded.trim();
+                    if expanded_trimmed.is_empty() {
                         continue;
                     }
-                    self.run_sql_with_rewrites(
-                        &conn,
-                        &text,
-                        src_offset,
-                        &macro_result.expanded,
-                        &mut events,
-                    );
+
+                    let sub_blocks = split_blocks(&macro_result.expanded);
+                    println!("Statement text = {:?}\nExpanded = {:?}\nsub_blocks = {:#?}", text, macro_result.expanded, sub_blocks);
+                    for sub_block in sub_blocks {
+                        if self.cancel.load(Ordering::SeqCst) {
+                            events.push(Event::Warning { text: "Execution cancelled by user.".into() });
+                            break;
+                        }
+
+                        match sub_block {
+                            Block::Statement { text: sub_text, src_offset: sub_offset } => {
+                                events.push(Event::Source { text: sub_text.clone() });
+                                if let Some(handled) = self.try_libname(&conn, &sub_text) {
+                                    events.extend(handled);
+                                    continue;
+                                }
+                                self.run_sql_with_rewrites(
+                                    &conn,
+                                    &sub_text,
+                                    sub_offset,
+                                    &macro_result.expanded,
+                                    &mut events,
+                                );
+                            }
+                            Block::ProcSqlStmt { text: sub_text, src_offset: sub_offset } => {
+                                events.push(Event::Source { text: sub_text.clone() });
+                                self.run_sql_with_rewrites(
+                                    &conn,
+                                    &sub_text,
+                                    sub_offset,
+                                    &macro_result.expanded,
+                                    &mut events,
+                                );
+                            }
+                            Block::DataStep { body: sub_body, datalines: sub_datalines, body_src_offset: sub_offset } => {
+                                events.push(Event::Source { text: sub_body.clone() });
+                                self.run_data_step(
+                                    &conn,
+                                    &sub_body,
+                                    sub_datalines,
+                                    sub_offset,
+                                    &macro_result.expanded,
+                                    &mut events,
+                                );
+                            }
+                            Block::Proc { name: sub_name, body: sub_body, .. } => {
+                                events.push(Event::Source { text: format!("proc {}; {} run;", sub_name, sub_body) });
+                                self.run_proc(&conn, &sub_name, &sub_body, &mut events);
+                            }
+                        }
+                    }
                 }
                 Block::ProcSqlStmt { text, src_offset } => {
-                    events.push(Event::Source { text: text.clone() });
+                    let macro_result = {
+                        let mut vars = self.macro_vars.lock().unwrap();
+                        let mut defs = self.macro_defs.lock().unwrap();
+                        macros::preprocess(&text, &mut vars, &mut defs)
+                    };
+
+                    for put_text in macro_result.puts {
+                        events.push(Event::Note { text: put_text });
+                    }
+
+                    let expanded_trimmed = macro_result.expanded.trim();
+                    if expanded_trimmed.is_empty() {
+                        continue;
+                    }
+
+                    events.push(Event::Source { text: expanded_trimmed.to_string() });
                     self.run_sql_with_rewrites(
                         &conn,
-                        &text,
+                        &expanded_trimmed,
                         src_offset,
-                        &macro_result.expanded,
+                        program,
                         &mut events,
                     );
                 }
                 Block::DataStep { body, datalines, body_src_offset } => {
-                    events.push(Event::Source { text: body.clone() });
+                    let macro_result = {
+                        let mut vars = self.macro_vars.lock().unwrap();
+                        let mut defs = self.macro_defs.lock().unwrap();
+                        macros::preprocess(&body, &mut vars, &mut defs)
+                    };
+
+                    for put_text in macro_result.puts {
+                        events.push(Event::Note { text: put_text });
+                    }
+
+                    let expanded = macro_result.expanded;
+                    events.push(Event::Source { text: expanded.clone() });
                     self.run_data_step(
                         &conn,
-                        &body,
+                        &expanded,
                         datalines,
                         body_src_offset,
-                        &macro_result.expanded,
+                        program,
                         &mut events,
                     );
                 }
-                Block::Proc { name, body, .. } => {
-                    events.push(Event::Source { text: format!("proc {}; {} run;", name, body) });
-                    self.run_proc(&conn, &name, &body, &mut events);
+                Block::Proc { name, body, src_offset } => {
+                    let raw_proc = format!("proc {}; {} run;", name, body);
+                    let macro_result = {
+                        let mut vars = self.macro_vars.lock().unwrap();
+                        let mut defs = self.macro_defs.lock().unwrap();
+                        macros::preprocess(&raw_proc, &mut vars, &mut defs)
+                    };
+
+                    for put_text in macro_result.puts {
+                        events.push(Event::Note { text: put_text });
+                    }
+
+                    let expanded_trimmed = macro_result.expanded.trim();
+                    if expanded_trimmed.is_empty() {
+                        continue;
+                    }
+
+                    let sub_blocks = split_blocks(&macro_result.expanded);
+                    for sub_block in sub_blocks {
+                        if self.cancel.load(Ordering::SeqCst) {
+                            events.push(Event::Warning { text: "Execution cancelled by user.".into() });
+                            break;
+                        }
+
+                        match sub_block {
+                            Block::Proc { name: sub_name, body: sub_body, .. } => {
+                                events.push(Event::Source { text: format!("proc {}; {} run;", sub_name, sub_body) });
+                                self.run_proc(&conn, &sub_name, &sub_body, &mut events);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
@@ -507,7 +606,7 @@ impl Session {
         }
         let plan = datastep::exec::ResolvedDataStep { ast: &ds, input, outputs };
 
-        match datastep::run_data_step(conn, &plan, &self.cancel) {
+        match datastep::run_data_step(conn, &plan, &self.cancel, &self.macro_vars) {
             Ok(res) => {
                 for (_, target, rows) in &res.outputs {
                     events.push(Event::Note {
@@ -748,13 +847,9 @@ impl Session {
     /// schemas; MEMORY refs use the default schema.
     fn rewrite_librefs(&self, sql: &str) -> String {
         let libs = self.libraries.lock().unwrap();
-        let dir_libs: Vec<Library> = libs
-            .values()
-            .filter(|l| l.kind == LibraryKind::Dir)
-            .cloned()
-            .collect();
+        let all_libs: Vec<Library> = libs.values().cloned().collect();
         drop(libs);
-        if dir_libs.is_empty() {
+        if all_libs.is_empty() {
             return sql.to_string();
         }
         let mut out = String::with_capacity(sql.len());
@@ -794,12 +889,22 @@ impl Session {
                     }
                     if j > after_dot {
                         let ds = &sql[after_dot..j];
-                        if let Some(lib) = dir_libs
+                        if let Some(lib) = all_libs
                             .iter()
                             .find(|l| l.name.eq_ignore_ascii_case(ident))
                         {
-                            let reader = dir_reader_expr(lib, ds);
-                            out.push_str(&reader);
+                            match lib.kind {
+                                LibraryKind::Dir => {
+                                    let reader = dir_reader_expr(lib, ds);
+                                    out.push_str(&reader);
+                                }
+                                LibraryKind::Memory => {
+                                    out.push_str(&format!("\"main\".\"{}\"", ds));
+                                }
+                                LibraryKind::Duckdb => {
+                                    out.push_str(&format!("\"{}\".\"{}\"", lib.name, ds));
+                                }
+                            }
                             i = j;
                             continue;
                         }
@@ -1777,6 +1882,95 @@ mod tests {
     }
 
     #[test]
+    fn test_call_symput_and_symputx() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit(
+            r#"
+            data _null_;
+                call symput('var1', ' hello ');
+                call symputx('var2', '  world  ');
+            run;
+            "#,
+        );
+        let evs = s.submit("%put val1=&var1 val2=&var2;");
+        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("val1= hello  val2=world"))));
+    }
+
+    #[test]
+    fn test_macro_and_symput_integration() {
+        let s = Session::new_in_memory().unwrap();
+        let evs1 = s.submit(
+            r#"
+            %let my_prefix = user;
+
+            %macro test_macro(val);
+                %put --- Executing test_macro ---;
+                %let processed_val = %upcase(&val);
+                
+                data work.&my_prefix._data;
+                    length name $15 val_str $15;
+                    name = "symput_test";
+                    val_str = "&processed_val";
+                    output;
+                run;
+            %mend;
+
+            %test_macro(active);
+            "#,
+        );
+        println!("evs1 = {:#?}", evs1);
+
+        let evs2 = s.submit(
+            r#"
+            data _null_;
+                set work.user_data;
+                call symput('dynamic_var', '  Value from DATA step  ');
+                call symputx('dynamic_var_x', '  Value from DATA step  ');
+            run;
+            "#,
+        );
+        println!("evs2 = {:#?}", evs2);
+
+        let evs = s.submit(
+            r#"
+            %put SYMPUT:  "&dynamic_var";
+            %put SYMPUTX: "&dynamic_var_x";
+            "#,
+        );
+
+        println!("test_macro_and_symput_integration events = {:#?}", evs);
+
+        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("SYMPUT:  \"  Value from DATA step  \""))));
+        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("SYMPUTX: \"Value from DATA step\""))));
+    }
+
+    #[test]
+    fn test_proc_sql_work_library_reference() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit(
+            r#"
+            data work.sample_items;
+                length name $15 status $15;
+                name = "Item_1";
+                status = "ACTIVE";
+                output;
+            run;
+            "#,
+        );
+
+        let evs = s.submit(
+            r#"
+            proc sql;
+                select * from work.sample_items where status = 'ACTIVE';
+            quit;
+            "#,
+        );
+
+        // Verify that the query returned 1 row successfully instead of raising a Catalog Error.
+        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("Statement returned 1 row(s)"))));
+    }
+
+    #[test]
     fn data_step_select_when() {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select * from (values (1),(2),(3),(4)) as t(x);");
@@ -1911,4 +2105,53 @@ mod tests {
         assert_eq!(page.total_rows, 50);
         assert_eq!(page.rows.len(), 10);
     }
+
+    #[test]
+    fn test_user_macro_repro() {
+        let s = Session::new_in_memory().unwrap();
+        let evs1 = s.submit(
+            r#"
+            %macro generate_data(lib, dataset, count=3, filter_val=active);
+                %let clean_filter = %upcase(&filter_val);
+                data &lib..&dataset;
+                    length name $15 status $15 category $15;
+                    name = "Item_1";
+                    status = "&clean_filter";
+                    category = "A";
+                    output;
+                    name = "Item_2";
+                    status = "INACTIVE";
+                    category = "B";
+                    output;
+                    name = "Item_3";
+                    status = "&clean_filter";
+                    category = "A";
+                    output;
+                run;
+            %mend generate_data;
+            %generate_data(work, sample_items, count=5, filter_val=active);
+            "#,
+        );
+        println!("EVS1 = {:#?}", evs1);
+        let evs2 = s.submit(
+            r#"
+            data _null_;
+                set work.sample_items;
+                if name = 'Item_3' then do;
+                    call symput('saved_item', name);
+                    call symputx('trimmed_status', status);
+                end;
+            run;
+            "#,
+        );
+        println!("EVS2 = {:#?}", evs2);
+        let evs3 = s.submit(
+            r#"
+            %put NOTE: Saved Item Name via SYMPUT:  "&saved_item";
+            %put NOTE: Trimmed Status via SYMPUTX: "&trimmed_status";
+            "#,
+        );
+        println!("EVS3 = {:#?}", evs3);
+    }
 }
+

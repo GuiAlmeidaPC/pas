@@ -382,6 +382,23 @@ impl Parser {
         if self.eat_keyword("if") {
             return self.parse_if();
         }
+        if self.eat_keyword("call") {
+            let name = match self.bump() {
+                Tok::Ident(s) => s.to_lowercase(),
+                other => return Err(self.err(format!("expected CALL routine name, got {:?}", other))),
+            };
+            self.expect(&Tok::LParen, "call arguments")?;
+            let mut args = Vec::new();
+            if !self.eat(&Tok::RParen) {
+                args.push(self.parse_expr()?);
+                while self.eat(&Tok::Comma) {
+                    args.push(self.parse_expr()?);
+                }
+                self.expect(&Tok::RParen, "call arguments list")?;
+            }
+            self.expect(&Tok::Semi, "call statement")?;
+            return Ok(Stmt::Call { name, args });
+        }
         if self.eat_keyword("output") {
             let target = if matches!(self.peek(), Tok::Ident(_)) {
                 Some(self.parse_table_ref()?)
