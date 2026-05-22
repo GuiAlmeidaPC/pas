@@ -596,6 +596,9 @@ impl Session {
         };
         let mut outputs = Vec::with_capacity(ds.outputs.len());
         for t in &ds.outputs {
+            if t.libref.is_none() && t.name.eq_ignore_ascii_case("_null_") {
+                continue;
+            }
             match self.resolve_write(t) {
                 Ok(w) => outputs.push(w),
                 Err(e) => {
@@ -1296,6 +1299,21 @@ mod tests {
         s.submit("create table foo as select 1 as a;");
         let ds = s.list_datasets("work").unwrap();
         assert!(ds.iter().any(|d| d.name == "foo"));
+    }
+
+    #[test]
+    fn data_null_does_not_create_work_table() {
+        let s = Session::new_in_memory().unwrap();
+        let evs = s.submit(
+            r#"
+            data _null_;
+                x = 1;
+            run;
+            "#,
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        let ds = s.list_datasets("work").unwrap();
+        assert!(!ds.iter().any(|d| d.name.eq_ignore_ascii_case("_null_")), "{:?}", ds);
     }
 
     #[test]
@@ -2154,4 +2172,3 @@ mod tests {
         println!("EVS3 = {:#?}", evs3);
     }
 }
-
