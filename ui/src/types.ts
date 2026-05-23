@@ -80,6 +80,8 @@ export interface TabConfig {
 export interface Layout {
   sidebar_width?: number | null;
   bottom_height?: number | null;
+  bottom_width?: number | null;
+  orientation?: "vertical" | "horizontal" | null;
 }
 
 export interface ProjectConfig {

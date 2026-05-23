@@ -23,23 +23,90 @@ import type {
   TabConfig,
 } from "./types";
 
-const STARTER_PROGRAM = `/* PAS v0.6 — multi-tab editor & project files
-   F3 submits (selection or whole buffer). Ctrl+S saves. Ctrl+N new tab.
-*/
+const STARTER_PROGRAM = `/* ==================================================================== */
+/* PAS (Practical Analytics Studio) — Welcome & Interactive Guide       */
+/* ==================================================================== */
+/* Press F3 or Cmd+Enter to execute the selected code or the whole file. */
+/* Press F4 to cancel execution. Logs and datasets populate below.      */
 
+/* STEP 1: Assigning Libraries (LIBNAME) */
+/* The WORK library is always present as a temporary in-memory database. */
+/* You can map folders or database files to custom libraries like this:   */
+/*                                                                        */
+/*   libname mydb  duckdb "path/to/my_database.duckdb";                   */
+/*   libname files dir    "path/to/csv_and_parquet_folder" format=csv;    */
+/*                                                                        */
+/* Once mapped, you can refer to tables as 'mydb.tablename' or            */
+/* read/write CSV/Parquet files directly as datasets!                     */
+
+/* STEP 2: Basic PROC SQL (Data Generation) */
 proc sql;
-    create table demo as
-        select 'Ada' as name, 1815 as born union all
-        select 'Alan',         1912 union all
-        select 'Grace',        1906;
+    create table raw_employees as
+        select 'Jane Doe' as name, 'Sales' as dept, 4500 as salary union all
+        select 'John Smith',       'IT',    6200 union all
+        select 'Grace Hopper',     'IT',    8500 union all
+        select 'Alan Turing',      'Sales', 5200;
 quit;
 
-data ages;
-    set demo;
-    age = 2026 - born;
+/* STEP 3: Basic DATA Step (Filtering and Derived Columns) */
+data high_earners;
+    set raw_employees;
+    /* Basic arithmetic and string concatenation */
+    bonus = salary * 0.10;
+    total_comp = salary + bonus;
+    
+    /* Conditional logic */
+    if total_comp > 6000 then status = "High Comp";
+    else status = "Standard";
 run;
 
-proc sql; select * from ages order by age; quit;
+/* STEP 4: Advanced DATA Step (Accumulators, BY-Group Processing, FIRST/LAST) */
+proc sort data=high_earners out=sorted_employees;
+    by dept descending total_comp;
+run;
+
+data dept_summaries;
+    set sorted_employees;
+    by dept;
+    
+    /* Keep a running total for each department using RETAIN */
+    retain dept_total_comp 0;
+    if first.dept then dept_total_comp = 0;
+    
+    dept_total_comp = dept_total_comp + total_comp;
+    
+    /* Only output the final consolidated row per department */
+    if last.dept;
+run;
+
+/* STEP 5: Macro Variables, Functions, & Definitions (Advanced Metaprogramming) */
+%macro evaluate_bonuses(title_text, multiplier=0.15);
+    %put NOTE: --- Executing macro %upcase(evaluate_bonuses) ---;
+    %put NOTE: Title: &title_text;
+    %put NOTE: Multiplier parameter value is: &multiplier;
+    
+    data macro_results;
+        set raw_employees;
+        /* Using macro parameters inside program statements */
+        new_bonus = salary * &multiplier;
+        label = "%upcase(&title_text) RESULTS";
+    run;
+%mend evaluate_bonuses;
+
+/* Invoke the macro with custom positional and keyword parameters */
+%evaluate_bonuses(Q2 Compensation Evaluation, multiplier=0.18);
+
+/* STEP 6: Dynamic Macro Binding with CALL SYMPUTX */
+data _null_;
+    set raw_employees;
+    if name = 'Grace Hopper' then do;
+        /* Dynamically write to a macro variable at runtime */
+        call symputx('top_employee', name);
+    end;
+run;
+
+/* Print the dynamically bound value to the log pane */
+%put NOTE: Top employee resolved dynamically via SYMPUTX: "&top_employee";
 `;
 
 interface Tab {
@@ -74,6 +141,8 @@ function basename(p: string): string {
 export default function App() {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const monacoRef = useRef<Parameters<OnMount>[1] | null>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
   const [tabs, setTabs] = useState<Tab[]>(() => [makeTab({ content: STARTER_PROGRAM })]);
   const [activeId, setActiveId] = useState<string>(() => tabs[0].id);
   const [log, setLog] = useState<LogLine[]>([]);
@@ -83,13 +152,15 @@ export default function App() {
   const [refreshToken, setRefreshToken] = useState(0);
   const [activeDataset, setActiveDataset] = useState<DatasetRef | null>(null);
   const [sidebarW, setSidebarW] = useState(240);
-  const [bottomH, setBottomH] = useState(180);
+  const [bottomH, setBottomH] = useState<number | null>(null);
+  const [bottomW, setBottomW] = useState<number | null>(null);
+  const [layoutOrientation, setLayoutOrientation] = useState<"vertical" | "horizontal">("vertical");
   const [showBottomPane, setShowBottomPane] = useState(true);
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string | null>(null);
   const [projectPrograms, setProjectPrograms] = useState<TabConfig[]>([]);
-  const [projectSplit, setProjectSplit] = useState<number>(260);
+  const [projectSplit, setProjectSplit] = useState<number | null>(null);
   const [libCount, setLibCount] = useState(1);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
@@ -114,6 +185,10 @@ export default function App() {
   sidebarWRef.current = sidebarW;
   const bottomHRef = useRef(bottomH);
   bottomHRef.current = bottomH;
+  const bottomWRef = useRef(bottomW);
+  bottomWRef.current = bottomW;
+  const layoutOrientationRef = useRef(layoutOrientation);
+  layoutOrientationRef.current = layoutOrientation;
 
   const activeTab = tabs.find((t) => t.id === activeId) ?? null;
 
@@ -462,7 +537,12 @@ export default function App() {
         programs,
         open_tabs: openTabPaths.map((p) => ({ path: p })),
         active_tab: activeTabs.find((t) => t.id === activeIdRef.current)?.path ?? null,
-        layout: { sidebar_width: sidebarWRef.current, bottom_height: bottomHRef.current },
+        layout: {
+          sidebar_width: sidebarWRef.current,
+          bottom_height: bottomHRef.current,
+          bottom_width: bottomWRef.current,
+          orientation: layoutOrientationRef.current,
+        },
       };
       await invoke("save_project", { path, project });
       setProjectPath(path);
@@ -607,6 +687,8 @@ export default function App() {
       setActiveId(wantedActive?.id ?? newTabs[0].id);
       if (project.layout.sidebar_width) setSidebarW(project.layout.sidebar_width);
       if (project.layout.bottom_height) setBottomH(project.layout.bottom_height);
+      if (project.layout.bottom_width) setBottomW(project.layout.bottom_width);
+      if (project.layout.orientation) setLayoutOrientation(project.layout.orientation);
       setProjectPath(path);
       setProjectName(project.name);
       setRefreshToken((t) => t + 1);
@@ -758,6 +840,10 @@ export default function App() {
           {
             label: showBottomPane ? "Hide Bottom Panel" : "Show Bottom Panel",
             onClick: () => setShowBottomPane((s) => !s),
+          },
+          {
+            label: layoutOrientation === "vertical" ? "Split Side-by-Side" : "Split Stacked",
+            onClick: () => setLayoutOrientation((prev) => prev === "vertical" ? "horizontal" : "vertical"),
           },
           { separator: true },
           { label: "Show Log", onClick: () => { setPane("log"); setShowBottomPane(true); } },
@@ -928,8 +1014,14 @@ export default function App() {
         style={{ gridTemplateColumns: `${sidebarW}px 4px 1fr` }}
       >
         <aside
+          ref={sidebarRef}
           className="sidebar"
-          style={{ gridTemplateRows: `${projectSplit}px 4px 1fr` }}
+          style={{
+            gridTemplateRows:
+              projectSplit !== null
+                ? `${projectSplit}px 4px 1fr`
+                : "1fr 4px 1fr",
+          }}
         >
           <div className="sidebar-section">
             <ProjectTree
@@ -948,7 +1040,17 @@ export default function App() {
           <Splitter
             direction="vertical"
             onResize={(d) =>
-              setProjectSplit((h) => Math.max(80, Math.min(800, h + d)))
+              setProjectSplit((h) => {
+                let startH = h;
+                if (startH === null && sidebarRef.current) {
+                  const firstSection = sidebarRef.current.firstElementChild;
+                  if (firstSection) {
+                    startH = firstSection.getBoundingClientRect().height;
+                  }
+                }
+                const currentH = startH ?? 260;
+                return Math.max(80, Math.min(800, currentH + d));
+              })
             }
           />
           <div className="sidebar-section">
@@ -962,43 +1064,100 @@ export default function App() {
         />
 
         <section
+          ref={workspaceRef}
           className="workspace"
-          style={{ gridTemplateRows: showBottomPane ? `auto 1fr 4px ${bottomH}px` : `auto 1fr` }}
+          style={
+            layoutOrientation === "horizontal"
+              ? {
+                  gridTemplateColumns: showBottomPane
+                    ? bottomW !== null
+                      ? `1fr 4px ${bottomW}px`
+                      : "1fr 4px 1fr"
+                    : "1fr",
+                  gridTemplateRows: "1fr",
+                }
+              : {
+                  gridTemplateRows: showBottomPane
+                    ? bottomH !== null
+                      ? `1fr 4px ${bottomH}px`
+                      : "1fr 4px 1fr"
+                    : "1fr",
+                  gridTemplateColumns: "1fr",
+                }
+          }
         >
-          <EditorTabs
-            tabs={tabMeta}
-            activeId={activeId}
-            onSelect={setActiveId}
-            onClose={closeTab}
-            onNew={newTab}
-          />
+          <div className="editor-panel">
+            <EditorTabs
+              tabs={tabMeta}
+              activeId={activeId}
+              onSelect={setActiveId}
+              onClose={closeTab}
+              onNew={newTab}
+            />
 
-          <section className="editor-pane">
-            {activeTab ? (
-              <Editor
-                height="100%"
-                path={activeTab.id}
-                defaultLanguage="sas"
-                theme="vs-dark"
-                value={activeTab.content}
-                onChange={(v) => updateTabContent(activeTab.id, v ?? "")}
-                onMount={handleMount}
-                options={{
-                  fontFamily: "JetBrains Mono, monospace",
-                  fontSize: 13,
-                  minimap: { enabled: false },
-                  renderWhitespace: "selection",
-                  tabSize: 4,
-                }}
-              />
-            ) : null}
-          </section>
+            <section className="editor-pane">
+              {activeTab ? (
+                <Editor
+                  height="100%"
+                  path={activeTab.id}
+                  defaultLanguage="sas"
+                  theme="vs-dark"
+                  value={activeTab.content}
+                  onChange={(v) => updateTabContent(activeTab.id, v ?? "")}
+                  onMount={handleMount}
+                  options={{
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontSize: 13,
+                    minimap: { enabled: false },
+                    renderWhitespace: "selection",
+                    tabSize: 4,
+                  }}
+                />
+              ) : null}
+            </section>
+
+            {!showBottomPane && (
+              <button
+                className="floating-restore-btn"
+                title="Restore Bottom Panel"
+                onClick={() => setShowBottomPane(true)}
+              >
+                {layoutOrientation === "horizontal" ? "◀" : "▲"} Restore Panel
+              </button>
+            )}
+          </div>
 
           {showBottomPane && (
             <>
               <Splitter
-                direction="vertical"
-                onResize={(d) => setBottomH((h) => Math.max(120, Math.min(900, h - d)))}
+                direction={layoutOrientation === "horizontal" ? "horizontal" : "vertical"}
+                onResize={(d) => {
+                  if (layoutOrientation === "horizontal") {
+                    setBottomW((w) => {
+                      let startW = w;
+                      if (startW === null && workspaceRef.current) {
+                        const bottomPane = workspaceRef.current.querySelector(".bottom-pane");
+                        if (bottomPane) {
+                          startW = bottomPane.getBoundingClientRect().width;
+                        }
+                      }
+                      const currentW = startW ?? 300;
+                      return Math.max(150, Math.min(1200, currentW - d));
+                    });
+                  } else {
+                    setBottomH((h) => {
+                      let startH = h;
+                      if (startH === null && workspaceRef.current) {
+                        const bottomPane = workspaceRef.current.querySelector(".bottom-pane");
+                        if (bottomPane) {
+                          startH = bottomPane.getBoundingClientRect().height;
+                        }
+                      }
+                      const currentH = startH ?? 180;
+                      return Math.max(120, Math.min(900, currentH - d));
+                    });
+                  }
+                }}
               />
 
               <section className="bottom-pane">
@@ -1023,6 +1182,20 @@ export default function App() {
                 {activeDataset
                   ? `${activeDataset.libref.toUpperCase()}.${activeDataset.name}`
                   : "Dataset"}
+              </button>
+              <button
+                className="layout-toggle-btn layout-right-start"
+                title={layoutOrientation === "vertical" ? "Split Side-by-Side (Horizontal)" : "Split Stacked (Vertical)"}
+                onClick={() => setLayoutOrientation((prev) => prev === "vertical" ? "horizontal" : "vertical")}
+              >
+                {layoutOrientation === "vertical" ? "◧ Side-by-Side" : "◰ Stacked"}
+              </button>
+              <button
+                className="layout-toggle-btn"
+                title="Collapse Bottom Panel"
+                onClick={() => setShowBottomPane(false)}
+              >
+                {layoutOrientation === "horizontal" ? "▶" : "▼"} Collapse
               </button>
             </div>
             <div className="tab-body">

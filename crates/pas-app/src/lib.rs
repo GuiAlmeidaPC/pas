@@ -53,6 +53,10 @@ pub struct Layout {
     pub sidebar_width: Option<u32>,
     #[serde(default)]
     pub bottom_height: Option<u32>,
+    #[serde(default)]
+    pub bottom_width: Option<u32>,
+    #[serde(default)]
+    pub orientation: Option<String>,
 }
 
 pub struct AppState {

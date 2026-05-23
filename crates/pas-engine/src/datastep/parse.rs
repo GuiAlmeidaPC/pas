@@ -273,9 +273,14 @@ impl Parser {
     }
 
     fn parse_infile_spec(&mut self) -> Result<InfileSpec, ParseError> {
-        let path = match self.bump() {
+        let raw_path = match self.bump() {
             Tok::Str(s) => s,
             other => return Err(self.err(format!("expected quoted path after infile, got {:?}", other))),
+        };
+        let path = if raw_path.contains('\\') {
+            raw_path.replace('\\', "/")
+        } else {
+            raw_path
         };
         let mut spec = InfileSpec { path, dlm: None, dsd: false, firstobs: 1 };
         loop {

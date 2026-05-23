@@ -478,6 +478,9 @@ kbd {
 .editor-pane {
   border-bottom: 1px solid var(--border);
   min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .bottom-pane {
@@ -597,4 +600,63 @@ kbd {
 .filter-input:focus {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
+}
+
+/* Panel Layout splits & Toggle styles */
+.editor-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  position: relative;
+}
+
+.floating-restore-btn {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: var(--accent);
+  color: #ffffff;
+  border: 0;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  opacity: 0.85;
+  transition: opacity 0.1s, transform 0.1s;
+}
+.floating-restore-btn:hover {
+  opacity: 1;
+  transform: scale(1.03);
+}
+
+.layout-toggle-btn {
+  background: transparent;
+  color: var(--accent);
+  border: 0;
+  border-left: 1px solid var(--border);
+  padding: 6px 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+  font-size: 12px;
+}
+
+.layout-right-start {
+  margin-left: auto;
+}
+.layout-toggle-btn:hover {
+  background: var(--border);
+  color: var(--text);
 }

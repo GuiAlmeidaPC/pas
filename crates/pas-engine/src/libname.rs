@@ -87,10 +87,17 @@ pub fn parse(stmt: &str) -> Result<Option<LibnameDef>, LibnameError> {
         return Err(LibnameError::Syntax("missing path".into()));
     }
 
+    let raw_path = path.unwrap_or_default();
+    let normalized_path = if raw_path.contains('\\') {
+        raw_path.replace('\\', "/")
+    } else {
+        raw_path
+    };
+
     Ok(Some(LibnameDef {
         name: name.to_ascii_lowercase(),
         kind: resolved_kind,
-        path: path.unwrap_or_default(),
+        path: normalized_path,
         format,
     }))
 }
