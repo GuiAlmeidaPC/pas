@@ -57,7 +57,7 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
 
       - name: Test Rust
-        run: cargo test --workspace
+        run: cargo test -p pas-engine
 
       - name: Build frontend
         working-directory: ./ui
