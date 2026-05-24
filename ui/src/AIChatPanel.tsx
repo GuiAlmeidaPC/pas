@@ -12,6 +12,8 @@ interface Props {
   onInsertCode: (code: string) => void;
   onReplaceCode: (code: string) => void;
   onNewTab: (code: string) => void;
+  onAddToProject: (code: string) => void;
+  isProjectOpen: boolean;
   customTrigger?: { prompt: string; timestamp: number } | null;
 }
 
@@ -21,6 +23,8 @@ export function AIChatPanel({
   onInsertCode,
   onReplaceCode,
   onNewTab,
+  onAddToProject,
+  isProjectOpen,
   customTrigger,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -372,6 +376,13 @@ ${activeSelection ? `Currently selected code segment:\n\`\`\`sas\n${activeSelect
               title="Write to a new tab"
             >
               New Tab
+            </button>
+            <button
+              onClick={() => onAddToProject(code)}
+              title={isProjectOpen ? "Add this program to the current project JSON" : "Open a project to enable adding programs"}
+              disabled={!isProjectOpen}
+            >
+              Add to Project
             </button>
           </div>
         </div>

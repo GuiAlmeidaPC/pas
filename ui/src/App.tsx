@@ -629,6 +629,38 @@ export default function App() {
   const saveProject = useCallback(() => performSaveProject(false), [performSaveProject]);
   const saveProjectAs = useCallback(() => performSaveProject(true), [performSaveProject]);
 
+  const handleAddToProject = useCallback(async (code: string) => {
+    if (!projectPathRef.current) return;
+
+    // 1. Prompt for program name inside the project
+    const defaultTitle = "ai_program.sas";
+    const name = window.prompt("Enter a name for this AI program in the project:", defaultTitle);
+    if (!name) return; // User cancelled
+    const filename = name.endsWith(".sas") ? name : `${name}.sas`;
+
+    try {
+      // 2. Open a new clean tab in the editor
+      const newTab = makeTab({ path: filename, title: basename(filename), content: code });
+      newTab.saved_content = code; // Baseline for dirty check
+      
+      setTabs((prev) => [...prev, newTab]);
+      setActiveId(newTab.id);
+
+      // 3. Append the new program virtual path to the project registry
+      const updatedPrograms = projectProgramsRef.current.some((p) => p.path === filename)
+        ? projectProgramsRef.current
+        : [...projectProgramsRef.current, { path: filename, content: code }];
+      setProjectPrograms(updatedPrograms);
+
+      // 4. Trigger auto-save of the project JSON with the newly embedded content
+      await performSaveProject(false, [...tabsRef.current, newTab], updatedPrograms);
+
+      setLog((p) => [...p, { level: "note", text: `NOTE: Program successfully added to project JSON: ${basename(filename)}` }]);
+    } catch (e) {
+      setLog((p) => [...p, { level: "error", text: `Failed to add program to project: ${String(e)}` }]);
+    }
+  }, [performSaveProject]);
+
   const reorderPrograms = useCallback((srcIdx: number, destIdx: number) => {
     let updated: TabConfig[] = [];
     setProjectPrograms((prev) => {
@@ -1371,6 +1403,8 @@ export default function App() {
               onInsertCode={handleInsertCode}
               onReplaceCode={handleReplaceCode}
               onNewTab={newTabWithContent}
+              onAddToProject={handleAddToProject}
+              isProjectOpen={!!projectPath}
               customTrigger={aiTrigger}
             />
           </>
