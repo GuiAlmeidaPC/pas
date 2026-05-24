@@ -232,16 +232,105 @@ ${activeSelection ? `Currently selected code segment:\n\`\`\`sas\n${activeSelect
   };
 
   // Helper to parse text and extract code snippets, returning text mixed with CodeBlock items
+  // Helper to parse plain text segments into rich markdown react elements
+  const parseMarkdownToReact = (text: string, keyPrefix: string): React.ReactNode[] => {
+    const paragraphs = text.split(/\n\s*\n/);
+    return paragraphs.map((para, paraIdx) => {
+      para = para.trim();
+      if (!para) return null;
+
+      // Check if it is a heading
+      if (para.startsWith("#")) {
+        const match = para.match(/^(#{1,6})\s+(.*)$/);
+        if (match) {
+          const level = match[1].length;
+          const headingText = match[2];
+          const Tag = `h${Math.min(6, level + 1)}` as keyof JSX.IntrinsicElements;
+          return (
+            <Tag key={`${keyPrefix}-h-${paraIdx}`} className="markdown-heading">
+              {parseInlineMarkdown(headingText)}
+            </Tag>
+          );
+        }
+      }
+
+      // Check if it is a blockquote
+      if (para.startsWith(">")) {
+        const quoteText = para.replace(/^>\s*/gm, "");
+        return (
+          <blockquote key={`${keyPrefix}-q-${paraIdx}`} className="markdown-blockquote">
+            {parseMarkdownToReact(quoteText, `${keyPrefix}-q-${paraIdx}`)}
+          </blockquote>
+        );
+      }
+
+      // Check if it is an unordered list
+      if (para.startsWith("- ") || para.startsWith("* ")) {
+        const items = para.split(/\n[-*]\s+/).map((item, itemIdx) => {
+          const cleaned = itemIdx === 0 ? item.replace(/^[-*]\s+/, "") : item;
+          return <li key={itemIdx}>{parseInlineMarkdown(cleaned)}</li>;
+        });
+        return (
+          <ul key={`${keyPrefix}-ul-${paraIdx}`} className="markdown-list">
+            {items}
+          </ul>
+        );
+      }
+
+      // Check if it is an ordered list
+      if (/^\d+\.\s+/.test(para)) {
+        const items = para.split(/\n\d+\.\s+/).map((item, itemIdx) => {
+          const cleaned = itemIdx === 0 ? item.replace(/^\d+\.\s+/, "") : item;
+          return <li key={itemIdx}>{parseInlineMarkdown(cleaned)}</li>;
+        });
+        return (
+          <ol key={`${keyPrefix}-ol-${paraIdx}`} className="markdown-list">
+            {items}
+          </ol>
+        );
+      }
+
+      // Default paragraph
+      return (
+        <p key={`${keyPrefix}-p-${paraIdx}`} className="chat-text">
+          {parseInlineMarkdown(para)}
+        </p>
+      );
+    }).filter(Boolean) as React.ReactNode[];
+  };
+
+  const parseInlineMarkdown = (text: string): React.ReactNode => {
+    const regex = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|_[^_]+_)/g;
+    const parts = text.split(regex);
+    return parts.map((part, index) => {
+      if (part.startsWith("`") && part.endsWith("`")) {
+        return (
+          <code key={index} className="markdown-inline-code">
+            {part.slice(1, -1)}
+          </code>
+        );
+      }
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return <strong key={index}>{part.slice(2, -2)}</strong>;
+      }
+      if ((part.startsWith("*") && part.endsWith("*")) || (part.startsWith("_") && part.endsWith("_"))) {
+        return <em key={index}>{part.slice(1, -1)}</em>;
+      }
+      return part;
+    });
+  };
+
+  // Helper to parse text and extract code snippets, returning text mixed with CodeBlock items
   const renderMessageContent = (content: string) => {
     const codeBlockRegex = /```(?:sas|sql)?([\s\S]*?)```/g;
-    const parts = [];
+    const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
 
     while ((match = codeBlockRegex.exec(content)) !== null) {
       const textBefore = content.substring(lastIndex, match.index);
       if (textBefore.trim()) {
-        parts.push(<p key={`text-${match.index}`} className="chat-text">{textBefore}</p>);
+        parts.push(...parseMarkdownToReact(textBefore, `text-${match.index}`));
       }
 
       const code = match[1].trim();
@@ -276,7 +365,7 @@ ${activeSelection ? `Currently selected code segment:\n\`\`\`sas\n${activeSelect
 
     const remainingText = content.substring(lastIndex);
     if (remainingText.trim() || parts.length === 0) {
-      parts.push(<p key="text-end" className="chat-text">{remainingText || content}</p>);
+      parts.push(...parseMarkdownToReact(remainingText || content, "text-end"));
     }
 
     return parts;
