@@ -12,6 +12,7 @@ import { StatusBar } from "./StatusBar";
 import { MenuBar, type MenuDef } from "./MenuBar";
 import { Modal } from "./Modal";
 import { registerSasLanguage } from "./sasLang";
+import { AIChatPanel } from "./AIChatPanel";
 import type {
   DatasetRef,
   EngineEvent,
@@ -170,6 +171,25 @@ export default function App() {
     return Number.isFinite(parsed) && parsed >= 50 && parsed <= 300 ? parsed : 100;
   });
 
+  const [showAIPanel, setShowAIPanel] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("pas.show_ai_panel");
+      return saved === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [aiPanelW, setAiPanelW] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("pas.ai_panel_width");
+      const parsed = saved ? parseInt(saved, 10) : NaN;
+      return Number.isFinite(parsed) && parsed >= 200 && parsed <= 800 ? parsed : 320;
+    } catch {
+      return 320;
+    }
+  });
+  const [activeSelection, setActiveSelection] = useState("");
+
   const currentSubmissionRef = useRef<string | null>(null);
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
@@ -245,6 +265,18 @@ export default function App() {
       localStorage.setItem("pas.zoom", String(zoomPercent));
     } catch { /* ignore — private mode */ }
   }, [zoomPercent]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("pas.show_ai_panel", String(showAIPanel));
+    } catch { /* ignore */ }
+  }, [showAIPanel]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("pas.ai_panel_width", String(aiPanelW));
+    } catch { /* ignore */ }
+  }, [aiPanelW]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -353,6 +385,46 @@ export default function App() {
       setActiveId(t.id);
       return [...prev, t];
     });
+  }, []);
+
+  const newTabWithContent = useCallback((code: string) => {
+    setTabs((prev) => {
+      const t = makeTab({ content: code });
+      setActiveId(t.id);
+      return [...prev, t];
+    });
+  }, []);
+
+  const handleInsertCode = useCallback((code: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const position = editor.getPosition();
+    if (position && monacoRef.current) {
+      const range = new monacoRef.current.Range(
+        position.lineNumber,
+        position.column,
+        position.lineNumber,
+        position.column
+      );
+      editor.executeEdits("ai-chat", [{
+        range,
+        text: code,
+        forceMoveMarkers: true
+      }]);
+    }
+  }, []);
+
+  const handleReplaceCode = useCallback((code: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selection = editor.getSelection();
+    if (selection) {
+      editor.executeEdits("ai-chat", [{
+        range: selection,
+        text: code,
+        forceMoveMarkers: true
+      }]);
+    }
   }, []);
 
   const updateTabContent = useCallback((id: string, content: string) => {
@@ -708,6 +780,14 @@ export default function App() {
     editor.onDidChangeCursorPosition((e) =>
       setCursor({ line: e.position.lineNumber, col: e.position.column }),
     );
+    editor.onDidChangeCursorSelection((e) => {
+      const model = editor.getModel();
+      if (model) {
+        setActiveSelection(model.getValueInRange(e.selection));
+      } else {
+        setActiveSelection("");
+      }
+    });
 
     editor.addCommand(monaco.KeyCode.F3, () => submit());
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => submit());
@@ -727,6 +807,14 @@ export default function App() {
     if (!monaco || !editor) return;
     const model = editor.getModel();
     if (model) monaco.editor.setModelLanguage(model, "sas");
+    
+    // Read current selection on tab switch
+    const selection = editor.getSelection();
+    if (selection && model) {
+      setActiveSelection(model.getValueInRange(selection));
+    } else {
+      setActiveSelection("");
+    }
   }, [activeId]);
 
   const openDataset = useCallback((ds: DatasetRef) => {
@@ -844,6 +932,11 @@ export default function App() {
           {
             label: layoutOrientation === "vertical" ? "Split Side-by-Side" : "Split Stacked",
             onClick: () => setLayoutOrientation((prev) => prev === "vertical" ? "horizontal" : "vertical"),
+          },
+          { separator: true },
+          {
+            label: showAIPanel ? "Hide AI Assistant" : "Show AI Assistant",
+            onClick: () => setShowAIPanel((s) => !s),
           },
           { separator: true },
           { label: "Show Log", onClick: () => { setPane("log"); setShowBottomPane(true); } },
@@ -1011,7 +1104,11 @@ export default function App() {
 
       <main
         className="main"
-        style={{ gridTemplateColumns: `${sidebarW}px 4px 1fr` }}
+        style={{
+          gridTemplateColumns: showAIPanel
+            ? `${sidebarW}px 4px 1fr 4px ${aiPanelW}px`
+            : `${sidebarW}px 4px 1fr`,
+        }}
       >
         <aside
           ref={sidebarRef}
@@ -1215,6 +1312,27 @@ export default function App() {
             </>
           )}
         </section>
+
+        {showAIPanel && (
+          <>
+            <Splitter
+              direction="horizontal"
+              onResize={(d) => {
+                setAiPanelW((w) => {
+                  const currentW = w ?? 320;
+                  return Math.max(200, Math.min(800, currentW - d));
+                });
+              }}
+            />
+            <AIChatPanel
+              activeContent={activeTab ? activeTab.content : ""}
+              activeSelection={activeSelection}
+              onInsertCode={handleInsertCode}
+              onReplaceCode={handleReplaceCode}
+              onNewTab={newTabWithContent}
+            />
+          </>
+        )}
       </main>
 
       <StatusBar
