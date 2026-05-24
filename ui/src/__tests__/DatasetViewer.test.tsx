@@ -14,7 +14,7 @@ import { DatasetViewer } from "../DatasetViewer";
 // containing two columns (name: Utf8, age: Int32) and two rows.
 // We use the real apache-arrow library so the decode path is exercised.
 // ---------------------------------------------------------------------------
-import { tableToIPC, Table, makeVector, Schema, Field, Utf8, Int32, vectorFromArray } from "apache-arrow";
+import { tableToIPC, Table, Schema, Field, Utf8, Int32, vectorFromArray } from "apache-arrow";
 
 function buildArrowIpc(totalRows: number, offset: number): ArrayBuffer {
   const nameVec = vectorFromArray(["Alice", "Bob"], new Utf8());
@@ -28,7 +28,8 @@ function buildArrowIpc(totalRows: number, offset: number): ArrayBuffer {
   ]));
   const table = new Table(schema, { name: nameVec, age: ageVec });
   const buf = tableToIPC(table, "stream");
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  // slice() always returns a plain ArrayBuffer (never SharedArrayBuffer)
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
 // ---------------------------------------------------------------------------
