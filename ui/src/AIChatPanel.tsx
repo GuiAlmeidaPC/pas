@@ -12,6 +12,7 @@ interface Props {
   onInsertCode: (code: string) => void;
   onReplaceCode: (code: string) => void;
   onNewTab: (code: string) => void;
+  customTrigger?: { prompt: string; timestamp: number } | null;
 }
 
 export function AIChatPanel({
@@ -20,6 +21,7 @@ export function AIChatPanel({
   onInsertCode,
   onReplaceCode,
   onNewTab,
+  customTrigger,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -54,26 +56,33 @@ export function AIChatPanel({
     setErrorMsg(null);
   };
 
-  const handleSend = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!input.trim() || loading) return;
+  // Listen for Monaco right-click context menu actions
+  useEffect(() => {
+    if (customTrigger) {
+      sendMessageDirectly(customTrigger.prompt);
+    }
+  }, [customTrigger]);
+
+  const sendMessageDirectly = async (promptText: string) => {
+    if (!promptText.trim() || loading) return;
 
     if (!config || !config.apiKey) {
       setIsSettingsOpen(true);
       return;
     }
 
-    const userPrompt = input;
-    setInput("");
     setErrorMsg(null);
 
-    // Append user message
-    const updatedMessages: Message[] = [...messages, { role: "user", content: userPrompt }];
-    setMessages(updatedMessages);
+    // Closure-safe state capture of messages history
+    let currentMessages: Message[] = [];
+    setMessages((prev) => {
+      currentMessages = [...prev, { role: "user", content: promptText }];
+      return currentMessages;
+    });
     setLoading(true);
 
     try {
-      const responseText = await fetchLLMCompletion(updatedMessages);
+      const responseText = await fetchLLMCompletion(currentMessages);
       setMessages((prev) => [...prev, { role: "assistant", content: responseText }]);
     } catch (err) {
       console.error(err);
@@ -81,6 +90,13 @@ export function AIChatPanel({
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSend = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const promptText = input;
+    setInput("");
+    sendMessageDirectly(promptText);
   };
 
   const fetchLLMCompletion = async (history: Message[]): Promise<string> => {

@@ -189,6 +189,7 @@ export default function App() {
     }
   });
   const [activeSelection, setActiveSelection] = useState("");
+  const [aiTrigger, setAiTrigger] = useState<{ prompt: string; timestamp: number } | null>(null);
 
   const currentSubmissionRef = useRef<string | null>(null);
   const tabsRef = useRef(tabs);
@@ -798,6 +799,46 @@ export default function App() {
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyW, () =>
       closeTab(activeIdRef.current),
     );
+
+    editor.addAction({
+      id: "ai-explain-code",
+      label: "AI: Explain Selection",
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 1,
+      precondition: "editorHasSelection",
+      run: (ed) => {
+        const selection = ed.getSelection();
+        const model = ed.getModel();
+        if (selection && model) {
+          const text = model.getValueInRange(selection);
+          setShowAIPanel(true);
+          setAiTrigger({
+            prompt: `Explain this code:\n\n\`\`\`sas\n${text}\n\`\`\``,
+            timestamp: Date.now(),
+          });
+        }
+      }
+    });
+
+    editor.addAction({
+      id: "ai-refactor-code",
+      label: "AI: Refactor/Optimize Selection",
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 2,
+      precondition: "editorHasSelection",
+      run: (ed) => {
+        const selection = ed.getSelection();
+        const model = ed.getModel();
+        if (selection && model) {
+          const text = model.getValueInRange(selection);
+          setShowAIPanel(true);
+          setAiTrigger({
+            prompt: `Refactor and optimize this code segment:\n\n\`\`\`sas\n${text}\n\`\`\``,
+            timestamp: Date.now(),
+          });
+        }
+      }
+    });
   };
 
   // Reapply SAS language on tab switch (each model needs registration).
@@ -1330,6 +1371,7 @@ export default function App() {
               onInsertCode={handleInsertCode}
               onReplaceCode={handleReplaceCode}
               onNewTab={newTabWithContent}
+              customTrigger={aiTrigger}
             />
           </>
         )}
