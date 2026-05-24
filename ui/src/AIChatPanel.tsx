@@ -15,6 +15,7 @@ interface Props {
   onAddToProject: (code: string) => void;
   isProjectOpen: boolean;
   customTrigger?: { prompt: string; timestamp: number } | null;
+  workspaceContext: string;
 }
 
 export function AIChatPanel({
@@ -26,6 +27,7 @@ export function AIChatPanel({
   onAddToProject,
   isProjectOpen,
   customTrigger,
+  workspaceContext,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -106,23 +108,38 @@ export function AIChatPanel({
   const fetchLLMCompletion = async (history: Message[]): Promise<string> => {
     if (!config) throw new Error("AI Setup required");
 
+    // Gather system metadata
+    const localTime = new Date().toLocaleTimeString();
+    const localDate = new Date().toLocaleDateString();
+    const osPlatform = "Linux";
+
     const systemPrompt = `You are an expert SAS and PAS (Practical Analytics Studio) database programmer.
 Your goal is to help the user write, debug, and explain SAS DATA step programs and PROC SQL scripts.
 
-Guidelines:
+System Metadata:
+- Platform: ${osPlatform}
+- Current Local Time: ${localDate} ${localTime}
+- Backed by: DuckDB (for PROC SQL queries)
+
+Programming Constraints & Instructions:
 1. Always generate clean, syntactically correct SAS/PAS code.
 2. PAS supports DATA steps (with set, merge, by, first., last., retain, array, do loops) and PROC SQL (backed by DuckDB), PROC SORT, PROC PRINT, and PROC TRANSPOSE.
-3. If you generate a block of code, wrap it inside standard markdown code blocks, like this:
-\`\`\`sas
-data work.example;
-    set input_ds;
-run;
-\`\`\`
-4. When writing code, return ONLY the code blocks or keep explanations extremely concise. Always prioritize valid, functional code.
+3. If assigning PROC SQL query results into macro variables, utilize the SAS trimmed syntax:
+   \`\`\`sas
+   select count(*) into :variable trimmed from table;
+   \`\`\`
+4. Wrap all code blocks in triple-backticks with the explicit language tag (e.g. \`\`\`sas or \`\`\`sql) to ensure the editor's UI snippet card actions can parse and apply them. Never omit the language tag.
+5. Avoid excessive conversational filler or introductory greetings (e.g., "Sure, I'd be happy to help!"). Jump straight to the core explanation or code solution.
+6. If requested to explain or refactor, briefly detail your logic in 1-2 concise bullet points before showing the code.
 
-Context:
-${activeContent ? `Currently open file contents:\n\`\`\`sas\n${activeContent}\n\`\`\`\n` : ""}
-${activeSelection ? `Currently selected code segment:\n\`\`\`sas\n${activeSelection}\n\`\`\`\n` : ""}`;
+Context Information:
+The user's active workspace state is provided below inside structured XML tags. Analyze this context to answer questions accurately and tailor code references to the active project's libraries and datasets.
+
+<workspace_context>
+${workspaceContext}
+${activeContent ? `<open_file_buffer>\n${activeContent}\n</open_file_buffer>` : ""}
+${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>` : ""}
+</workspace_context>`;
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
