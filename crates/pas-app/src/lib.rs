@@ -366,13 +366,17 @@ fn canonical_existing_parent(path: &Path) -> Result<PathBuf, String> {
 
 fn canonicalize_path(path: &Path) -> Result<PathBuf, String> {
     if path.exists() {
-        path.canonicalize().map_err(|e| format!("canonicalize: {}", e))
+        path.canonicalize()
+            .map_err(|e| format!("canonicalize: {}", e))
     } else if let Some(parent) = path.parent() {
-        let canonical_parent = parent.canonicalize().map_err(|e| format!("canonicalize parent: {}", e))?;
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("canonicalize parent: {}", e))?;
         let filename = path.file_name().ok_or_else(|| "no file name".to_string())?;
         Ok(canonical_parent.join(filename))
     } else {
-        path.canonicalize().map_err(|e| format!("canonicalize: {}", e))
+        path.canonicalize()
+            .map_err(|e| format!("canonicalize: {}", e))
     }
 }
 
@@ -381,7 +385,10 @@ fn ensure_under_project_root(path: &Path, state: &State<'_, AppState>) -> Result
 
     // Check if explicitly allowed in allowed_paths first!
     {
-        let allowed = state.allowed_paths.lock().map_err(|_| "allowed paths lock poisoned")?;
+        let allowed = state
+            .allowed_paths
+            .lock()
+            .map_err(|_| "allowed paths lock poisoned")?;
         if allowed.contains(&canonical) {
             return Ok(());
         }
@@ -448,13 +455,17 @@ fn read_project(path: String, state: State<'_, AppState>) -> Result<ProjectConfi
 
     // Verify the project path itself is explicitly in the allowlist!
     {
-        let allowed = state.allowed_paths.lock().map_err(|_| "allowed paths lock poisoned")?;
+        let allowed = state
+            .allowed_paths
+            .lock()
+            .map_err(|_| "allowed paths lock poisoned")?;
         if !allowed.contains(&canonical) {
             return Err("Access denied: project file not in allowed paths allowlist".to_string());
         }
     }
 
-    let text = std::fs::read_to_string(&canonical).map_err(|e| format!("{}: {}", canonical.display(), e))?;
+    let text = std::fs::read_to_string(&canonical)
+        .map_err(|e| format!("{}: {}", canonical.display(), e))?;
     let project: ProjectConfig =
         serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", canonical.display(), e))?;
     let root = canonical
@@ -470,12 +481,19 @@ fn read_project(path: String, state: State<'_, AppState>) -> Result<ProjectConfi
 
     // Register project file, project root, and all sub-programs inside allowed_paths
     {
-        let mut allowed = state.allowed_paths.lock().map_err(|_| "allowed paths lock poisoned")?;
+        let mut allowed = state
+            .allowed_paths
+            .lock()
+            .map_err(|_| "allowed paths lock poisoned")?;
         allowed.insert(canonical);
         allowed.insert(root.clone());
         for p in &project.programs {
             if let Ok(p_buf) = normalize_path(&p.path) {
-                let abs = if p_buf.is_absolute() { p_buf } else { root.join(p_buf) };
+                let abs = if p_buf.is_absolute() {
+                    p_buf
+                } else {
+                    root.join(p_buf)
+                };
                 if let Ok(canon) = canonicalize_path(&abs) {
                     allowed.insert(canon);
                 }
@@ -483,7 +501,11 @@ fn read_project(path: String, state: State<'_, AppState>) -> Result<ProjectConfi
         }
         for t in &project.open_tabs {
             if let Ok(p_buf) = normalize_path(&t.path) {
-                let abs = if p_buf.is_absolute() { p_buf } else { root.join(p_buf) };
+                let abs = if p_buf.is_absolute() {
+                    p_buf
+                } else {
+                    root.join(p_buf)
+                };
                 if let Ok(canon) = canonicalize_path(&abs) {
                     allowed.insert(canon);
                 }
@@ -508,7 +530,10 @@ fn save_project(
 
     // Verify the project path itself is explicitly in the allowlist!
     {
-        let allowed = state.allowed_paths.lock().map_err(|_| "allowed paths lock poisoned")?;
+        let allowed = state
+            .allowed_paths
+            .lock()
+            .map_err(|_| "allowed paths lock poisoned")?;
         if !allowed.contains(&canonical) {
             return Err("Access denied: project file not in allowed paths allowlist".to_string());
         }
@@ -535,12 +560,19 @@ fn save_project(
 
     // Register project file, project root, and all sub-programs inside allowed_paths
     {
-        let mut allowed = state.allowed_paths.lock().map_err(|_| "allowed paths lock poisoned")?;
+        let mut allowed = state
+            .allowed_paths
+            .lock()
+            .map_err(|_| "allowed paths lock poisoned")?;
         allowed.insert(canonical);
         allowed.insert(root.clone());
         for p in &project.programs {
             if let Ok(p_buf) = normalize_path(&p.path) {
-                let abs = if p_buf.is_absolute() { p_buf } else { root.join(p_buf) };
+                let abs = if p_buf.is_absolute() {
+                    p_buf
+                } else {
+                    root.join(p_buf)
+                };
                 if let Ok(canon) = canonicalize_path(&abs) {
                     allowed.insert(canon);
                 }
@@ -548,7 +580,11 @@ fn save_project(
         }
         for t in &project.open_tabs {
             if let Ok(p_buf) = normalize_path(&t.path) {
-                let abs = if p_buf.is_absolute() { p_buf } else { root.join(p_buf) };
+                let abs = if p_buf.is_absolute() {
+                    p_buf
+                } else {
+                    root.join(p_buf)
+                };
                 if let Ok(canon) = canonicalize_path(&abs) {
                     allowed.insert(canon);
                 }
@@ -954,7 +990,10 @@ async fn pick_save_project_file(
     default_path: Option<String>,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let mut builder = app.dialog().file().add_filter("PAS Project", &["pas.json", "json"]);
+    let mut builder = app
+        .dialog()
+        .file()
+        .add_filter("PAS Project", &["pas.json", "json"]);
     if let Some(dp) = default_path {
         builder = builder.set_file_name(dp);
     }
