@@ -380,7 +380,7 @@ fn canonicalize_path(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn ensure_under_project_root(path: &Path, state: &State<'_, AppState>) -> Result<(), String> {
+fn ensure_under_project_root(path: &Path, state: &AppState) -> Result<(), String> {
     let canonical = canonicalize_path(path)?;
 
     // Check if explicitly allowed in allowed_paths first!
@@ -1059,4 +1059,76 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running PAS");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn test_canonicalize_path() {
+        let temp_dir = std::env::temp_dir().join(format!("pas_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_path = temp_dir.join("test.sas");
+
+        // Non-existent file but existing parent
+        let res = canonicalize_path(&file_path);
+        assert!(res.is_ok());
+        let canonical = res.unwrap();
+        assert_eq!(canonical.file_name().unwrap(), "test.sas");
+
+        // Non-existent parent directory traversal should fail
+        let bad_path = Path::new("/nonexistent_dir_123_xyz/../test.sas");
+        let res_bad = canonicalize_path(bad_path);
+        assert!(res_bad.is_err());
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_ensure_under_project_root() {
+        let temp_dir = std::env::temp_dir().join(format!("pas_test_{}", uuid::Uuid::new_v4()));
+        let root_path = temp_dir.join("my_project");
+        fs::create_dir_all(&root_path).unwrap();
+        let canonical_root = root_path.canonicalize().unwrap();
+
+        let session = Arc::new(Session::new_in_memory().unwrap());
+        let state = AppState {
+            session,
+            project_root: Mutex::new(Some(canonical_root.clone())),
+            ai_config: Mutex::new(None),
+            allowed_paths: Mutex::new(HashSet::new()),
+        };
+
+        // Case 1: Path inside project root is allowed
+        let test_file = canonical_root.join("program.sas");
+        let res = ensure_under_project_root(&test_file, &state);
+        assert!(res.is_ok(), "Should allow files inside active project root");
+
+        // Case 2: Path outside project root is blocked
+        let outside_dir = temp_dir.join("other_folder");
+        fs::create_dir_all(&outside_dir).unwrap();
+        let outside_file = outside_dir.canonicalize().unwrap().join("stolen.sas");
+        let res = ensure_under_project_root(&outside_file, &state);
+        assert!(
+            res.is_err(),
+            "Should deny files outside active project root"
+        );
+
+        // Case 3: Path explicitly in allowed_paths override is allowed
+        {
+            let mut allowed = state.allowed_paths.lock().unwrap();
+            allowed.insert(outside_file.clone());
+        }
+        let res = ensure_under_project_root(&outside_file, &state);
+        assert!(
+            res.is_ok(),
+            "Should allow files in allowed_paths allowlist override"
+        );
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
 }

@@ -5,6 +5,8 @@
 //! a small built-in function library.
 
 pub mod ast;
+#[cfg(test)]
+pub mod eval_tests;
 pub mod exec;
 pub mod funcs;
 pub mod lex;

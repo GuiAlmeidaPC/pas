@@ -1553,3 +1553,18 @@ fn value_for_appender(is_char: bool, v: Option<&RtValue>) -> DV {
         (false, _) => DV::Null,
     }
 }
+
+#[cfg(test)]
+pub(crate) fn test_eval_expression(
+    expr_str: &str,
+    vars: &HashMap<String, RtValue>,
+) -> Result<RtValue, super::DataStepError> {
+    let parsed_expr = super::parse::parse_expr_for_test(expr_str)
+        .map_err(|e| super::DataStepError::Parse(e.message))?;
+    let mut pdv = Pdv::new();
+    for (name, val) in vars {
+        pdv.set(name, val.clone());
+    }
+    let arrays = HashMap::new();
+    eval(&parsed_expr, &pdv, &arrays)
+}

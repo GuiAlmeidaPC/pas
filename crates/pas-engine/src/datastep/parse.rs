@@ -877,6 +877,18 @@ impl Parser {
 }
 
 #[cfg(test)]
+pub fn parse_expr_for_test(src: &str) -> Result<Expr, ParseError> {
+    let toks = Lexer::new(src)
+        .tokens_with_spans()
+        .map_err(|m| ParseError {
+            message: m,
+            span: Span::point(0),
+        })?;
+    let mut p = Parser { toks, pos: 0 };
+    p.parse_expr()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

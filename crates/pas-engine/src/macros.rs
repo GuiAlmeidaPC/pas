@@ -8,12 +8,20 @@
 //! - `%name(args)` and `%name` macro invocations.
 //! - `%if condition %then action; %else action;` conditionals.
 //! - `%do; ... %end;` blocks.
-#![allow(clippy::all, warnings)]
 //! - `%do var = start %to end %by step; ... %end;` iterative loops.
 //! - `%do %while(condition); ... %end;` and `%do %until(condition); ... %end;` loops.
 //! - Built-in functions: `%eval`, `%sysevalf`, `%upcase`, `%lowcase`, `%substr`, `%length`, `%index`, `%scan`, `%str`, `%quote`.
 //! - Lexical environment scopes stack.
 //! - Automatic system variables like `&sysdate`, `&systime`, `&sysday`, etc.
+
+#![allow(
+    clippy::map_entry,
+    clippy::inherent_to_string,
+    clippy::manual_ignore_case_cmp,
+    clippy::collapsible_if,
+    clippy::unnecessary_unwrap,
+    clippy::get_first
+)]
 
 use std::collections::HashMap;
 
@@ -1775,18 +1783,15 @@ mod tests {
             %test_macro(active);
         "#;
         let out = preprocess(input, &mut vars, &mut defs);
-        println!("OUT PUTS: {:?}", out.puts);
-        println!("OUT EXPANDED:\n{}", out.expanded);
         assert!(out.expanded.contains("data work.user_data;"));
         let sub_blocks = crate::split::split_blocks(&out.expanded);
-        println!("SUB BLOCKS: {:#?}", sub_blocks);
         assert!(!sub_blocks.is_empty());
     }
 
     #[test]
     fn debug_multi_block_macro() {
         let s = crate::Session::new_in_memory().unwrap();
-        let evs1 = s.submit(
+        let _evs1 = s.submit(
             r#"
             %let my_prefix = user;
 
@@ -1805,6 +1810,5 @@ mod tests {
             %test_macro(active);
             "#,
         );
-        println!("DEBUG EVS1 = {:#?}", evs1);
     }
 }
