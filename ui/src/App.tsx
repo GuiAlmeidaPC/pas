@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor, { OnMount } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+
 import { LibraryTree } from "./LibraryTree";
 import { ProjectTree } from "./ProjectTree";
 import { DatasetViewer } from "./DatasetViewer";
@@ -577,19 +577,15 @@ export default function App() {
   }, []);
 
   const openFile = useCallback(async () => {
-    const path = await openDialog({
-      filters: [{ name: "SAS", extensions: ["sas"] }, { name: "All files", extensions: ["*"] }],
-    });
-    if (!path || Array.isArray(path)) return;
+    const path = await invoke<string | null>("pick_sas_file");
+    if (!path) return;
     await openFromPath(path);
   }, [openFromPath]);
 
   // ── project program registry ────────────────────────────────────────
   const addProgramToProject = useCallback(async () => {
-    const path = await openDialog({
-      filters: [{ name: "SAS", extensions: ["sas"] }, { name: "All files", extensions: ["*"] }],
-    });
-    if (!path || Array.isArray(path)) return;
+    const path = await invoke<string | null>("pick_sas_file");
+    if (!path) return;
     setProjectPrograms((prev) =>
       prev.some((p) => p.path === path) ? prev : [...prev, { path }],
     );
@@ -648,10 +644,8 @@ export default function App() {
     let path = forceDialog ? null : projectPathRef.current;
     let name = projectNameRef.current;
     if (!path) {
-      const chosen = await saveDialog({
-        defaultPath: projectPathRef.current || (name ? `${name}.pas.json` : "project.pas.json"),
-        filters: [{ name: "PAS Project", extensions: ["pas.json", "json"] }],
-      });
+      const defaultPath = projectPathRef.current || (name ? `${name}.pas.json` : "project.pas.json");
+      const chosen = await invoke<string | null>("pick_save_project_file", { defaultPath });
       if (!chosen) return;
       path = chosen;
       name = basename(chosen).replace(/\.pas\.json$|\.json$/, "");
@@ -810,9 +804,8 @@ export default function App() {
       // Standard local standalone file saving
       let path = tab.path;
       if (!path) {
-        const chosen = await saveDialog({
+        const chosen = await invoke<string | null>("pick_save_sas_file", {
           defaultPath: getDefaultSavePath(tab.title, null),
-          filters: [{ name: "SAS", extensions: ["sas"] }],
         });
         if (!chosen) return;
         path = chosen;
@@ -824,9 +817,8 @@ export default function App() {
   const saveActiveTabAs = useCallback(async () => {
     const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
     if (!tab) return;
-    const chosen = await saveDialog({
+    const chosen = await invoke<string | null>("pick_save_sas_file", {
       defaultPath: getDefaultSavePath(tab.title, tab.path),
-      filters: [{ name: "SAS", extensions: ["sas"] }],
     });
     if (!chosen) return;
     await writeTabTo(tab, chosen);
@@ -858,10 +850,8 @@ export default function App() {
   }, []);
 
   const openProject = useCallback(async () => {
-    const path = await openDialog({
-      filters: [{ name: "PAS Project", extensions: ["pas.json", "json"] }],
-    });
-    if (!path || Array.isArray(path)) return;
+    const path = await invoke<string | null>("pick_project_file");
+    if (!path) return;
     try {
       const project = await invoke<ProjectConfig>("read_project", { path });
       // Apply libnames (logs to current session).

@@ -28,7 +28,10 @@ pub fn parse_data_step_with_datalines(
 ) -> Result<DataStep, ParseError> {
     let toks = Lexer::new(src)
         .tokens_with_spans()
-        .map_err(|m| ParseError { message: m, span: Span::point(0) })?;
+        .map_err(|m| ParseError {
+            message: m,
+            span: Span::point(0),
+        })?;
     let mut p = Parser { toks, pos: 0 };
     let mut ds = p.parse_data_step()?;
     ds.datalines = datalines;
@@ -41,36 +44,61 @@ struct Parser {
 }
 
 impl Parser {
-    fn peek(&self) -> &Tok { &self.toks[self.pos].0 }
-    fn current_span(&self) -> Span { self.toks[self.pos].1 }
+    fn peek(&self) -> &Tok {
+        &self.toks[self.pos].0
+    }
+    fn current_span(&self) -> Span {
+        self.toks[self.pos].1
+    }
     fn bump(&mut self) -> Tok {
         let t = self.toks[self.pos].0.clone();
         self.pos += 1;
         t
     }
     fn eat(&mut self, t: &Tok) -> bool {
-        if self.peek() == t { self.pos += 1; true } else { false }
+        if self.peek() == t {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
     }
     fn expect(&mut self, t: &Tok, ctx: &str) -> Result<(), ParseError> {
         if self.eat(t) {
             Ok(())
         } else {
-            Err(self.err(format!("expected {:?} in {}, found {:?}", t, ctx, self.peek())))
+            Err(self.err(format!(
+                "expected {:?} in {}, found {:?}",
+                t,
+                ctx,
+                self.peek()
+            )))
         }
     }
     fn at_keyword(&self, kw: &str) -> bool {
         matches!(self.peek(), Tok::Ident(s) if s == kw)
     }
     fn eat_keyword(&mut self, kw: &str) -> bool {
-        if self.at_keyword(kw) { self.pos += 1; true } else { false }
+        if self.at_keyword(kw) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
     }
     fn err(&self, message: String) -> ParseError {
-        ParseError { message, span: self.current_span() }
+        ParseError {
+            message,
+            span: self.current_span(),
+        }
     }
 
     fn parse_data_step(&mut self) -> Result<DataStep, ParseError> {
         if !self.eat_keyword("data") {
-            return Err(self.err(format!("DATA step must start with `data`, got {:?}", self.peek())));
+            return Err(self.err(format!(
+                "DATA step must start with `data`, got {:?}",
+                self.peek()
+            )));
         }
         let outputs = self.parse_table_list()?;
         self.expect(&Tok::Semi, "data header")?;
@@ -120,11 +148,19 @@ impl Parser {
         if self.eat(&Tok::Dot) {
             let name = match self.bump() {
                 Tok::Ident(s) => s,
-                other => return Err(self.err(format!("expected table name after dot, got {:?}", other))),
+                other => {
+                    return Err(self.err(format!("expected table name after dot, got {:?}", other)))
+                }
             };
-            Ok(TableRef { libref: Some(first), name })
+            Ok(TableRef {
+                libref: Some(first),
+                name,
+            })
         } else {
-            Ok(TableRef { libref: None, name: first })
+            Ok(TableRef {
+                libref: None,
+                name: first,
+            })
         }
     }
 
@@ -136,7 +172,11 @@ impl Parser {
             }
             self.expect(&Tok::Semi, "set")?;
             if ds.input.is_some() {
-                return Err(ParseError { message: "multiple set/merge statements in one data step are not supported".into(), span: self.current_span() });
+                return Err(ParseError {
+                    message: "multiple set/merge statements in one data step are not supported"
+                        .into(),
+                    span: self.current_span(),
+                });
             }
             ds.input = Some(DataInput::Set(sources));
             return Ok(());
@@ -148,10 +188,17 @@ impl Parser {
             }
             self.expect(&Tok::Semi, "merge")?;
             if ds.input.is_some() {
-                return Err(ParseError { message: "multiple set/merge statements in one data step are not supported".into(), span: self.current_span() });
+                return Err(ParseError {
+                    message: "multiple set/merge statements in one data step are not supported"
+                        .into(),
+                    span: self.current_span(),
+                });
             }
             if sources.len() < 2 {
-                return Err(ParseError { message: "merge requires at least two datasets".into(), span: self.current_span() });
+                return Err(ParseError {
+                    message: "merge requires at least two datasets".into(),
+                    span: self.current_span(),
+                });
             }
             ds.input = Some(DataInput::Merge(sources));
             return Ok(());
@@ -227,10 +274,14 @@ impl Parser {
         loop {
             match self.peek() {
                 Tok::Ident(_) => {
-                    if let Tok::Ident(s) = self.bump() { out.push(s); }
+                    if let Tok::Ident(s) = self.bump() {
+                        out.push(s);
+                    }
                 }
                 Tok::Semi | Tok::Eof => break,
-                Tok::Comma => { self.bump(); }
+                Tok::Comma => {
+                    self.bump();
+                }
                 other => return Err(self.err(format!("expected name, got {:?}", other))),
             }
         }
@@ -246,11 +297,21 @@ impl Parser {
             };
             let is_char = self.eat(&Tok::Dollar);
             let width = match self.peek() {
-                Tok::Number(n) => { let n = *n; self.bump(); n as u32 }
+                Tok::Number(n) => {
+                    let n = *n;
+                    self.bump();
+                    n as u32
+                }
                 _ => 8,
             };
-            out.push(LengthDecl { name, is_char, width });
-            if matches!(self.peek(), Tok::Comma) { self.bump(); }
+            out.push(LengthDecl {
+                name,
+                is_char,
+                width,
+            });
+            if matches!(self.peek(), Tok::Comma) {
+                self.bump();
+            }
         }
         Ok(out)
     }
@@ -264,7 +325,11 @@ impl Parser {
                 other => return Err(self.err(format!("expected name in retain, got {:?}", other))),
             };
             let initial = match self.peek() {
-                Tok::Number(n) => { let n = *n; self.bump(); Some(n) }
+                Tok::Number(n) => {
+                    let n = *n;
+                    self.bump();
+                    Some(n)
+                }
                 _ => None,
             };
             out.push(RetainDecl { name, initial });
@@ -275,14 +340,24 @@ impl Parser {
     fn parse_infile_spec(&mut self) -> Result<InfileSpec, ParseError> {
         let raw_path = match self.bump() {
             Tok::Str(s) => s,
-            other => return Err(self.err(format!("expected quoted path after infile, got {:?}", other))),
+            other => {
+                return Err(self.err(format!(
+                    "expected quoted path after infile, got {:?}",
+                    other
+                )))
+            }
         };
         let path = if raw_path.contains('\\') {
             raw_path.replace('\\', "/")
         } else {
             raw_path
         };
-        let mut spec = InfileSpec { path, dlm: None, dsd: false, firstobs: 1 };
+        let mut spec = InfileSpec {
+            path,
+            dlm: None,
+            dsd: false,
+            firstobs: 1,
+        };
         loop {
             match self.peek().clone() {
                 Tok::Semi | Tok::Eof => break,
@@ -291,19 +366,29 @@ impl Parser {
                     self.bump();
                     match kwl.as_str() {
                         "dsd" => spec.dsd = true,
-                        "truncover" | "missover" | "stopover" | "flowover" => { /* tolerated; defaults match truncover */ }
+                        "truncover" | "missover" | "stopover" | "flowover" => { /* tolerated; defaults match truncover */
+                        }
                         "dlm" | "delimiter" => {
                             self.expect(&Tok::Eq, "dlm")?;
                             spec.dlm = Some(match self.bump() {
                                 Tok::Str(s) => s,
-                                other => return Err(self.err(format!("expected dlm value, got {:?}", other))),
+                                other => {
+                                    return Err(
+                                        self.err(format!("expected dlm value, got {:?}", other))
+                                    )
+                                }
                             });
                         }
                         "firstobs" => {
                             self.expect(&Tok::Eq, "firstobs")?;
                             spec.firstobs = match self.bump() {
                                 Tok::Number(n) => n as u64,
-                                other => return Err(self.err(format!("expected number for firstobs, got {:?}", other))),
+                                other => {
+                                    return Err(self.err(format!(
+                                        "expected number for firstobs, got {:?}",
+                                        other
+                                    )))
+                                }
                             };
                         }
                         other => return Err(self.err(format!("unknown infile option {:?}", other))),
@@ -321,7 +406,11 @@ impl Parser {
             let name = match self.bump() {
                 Tok::Ident(s) => s,
                 Tok::Comma => continue,
-                other => return Err(self.err(format!("expected variable name in input, got {:?}", other))),
+                other => {
+                    return Err(
+                        self.err(format!("expected variable name in input, got {:?}", other))
+                    )
+                }
             };
             let is_char = self.eat(&Tok::Dollar);
             out.push(InputVar { name, is_char });
@@ -343,14 +432,19 @@ impl Parser {
         } else if self.eat(&Tok::LParen) {
             Tok::RParen
         } else {
-            return Err(self.err(format!("expected '{{' / '[' / '(' after array name, got {:?}", self.peek())));
+            return Err(self.err(format!(
+                "expected '{{' / '[' / '(' after array name, got {:?}",
+                self.peek()
+            )));
         };
 
         let size_tok = self.bump();
         let explicit_size: Option<usize> = match size_tok {
             Tok::Number(n) => Some(n as usize),
             Tok::Star => None, // {*} — size inferred from element list
-            other => return Err(self.err(format!("expected size or '*' in array, got {:?}", other))),
+            other => {
+                return Err(self.err(format!("expected size or '*' in array, got {:?}", other)))
+            }
         };
         self.expect(&close, "array size")?;
 
@@ -365,7 +459,9 @@ impl Parser {
         while let Tok::Ident(s) = self.peek().clone() {
             self.bump();
             elements.push(s);
-            if matches!(self.peek(), Tok::Comma) { self.bump(); }
+            if matches!(self.peek(), Tok::Comma) {
+                self.bump();
+            }
         }
 
         let size = explicit_size.unwrap_or(elements.len());
@@ -380,7 +476,12 @@ impl Parser {
                 elements.len()
             )));
         }
-        Ok(ArrayDecl { name, size, is_char, elements })
+        Ok(ArrayDecl {
+            name,
+            size,
+            is_char,
+            elements,
+        })
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -390,7 +491,9 @@ impl Parser {
         if self.eat_keyword("call") {
             let name = match self.bump() {
                 Tok::Ident(s) => s.to_lowercase(),
-                other => return Err(self.err(format!("expected CALL routine name, got {:?}", other))),
+                other => {
+                    return Err(self.err(format!("expected CALL routine name, got {:?}", other)))
+                }
             };
             self.expect(&Tok::LParen, "call arguments")?;
             let mut args = Vec::new();
@@ -455,7 +558,11 @@ impl Parser {
                     self.peek()
                 )));
             }
-            return Ok(Stmt::Select { switch, branches, otherwise });
+            return Ok(Stmt::Select {
+                switch,
+                branches,
+                otherwise,
+            });
         }
         if self.eat_keyword("do") {
             // Either `do; ... end;` (block) or `do var = a to b [by c]; ... end;`.
@@ -470,7 +577,10 @@ impl Parser {
             self.expect(&Tok::Eq, "iterative do")?;
             let start = self.parse_expr()?;
             if !self.eat_keyword("to") {
-                return Err(self.err(format!("expected 'to' in iterative do, got {:?}", self.peek())));
+                return Err(self.err(format!(
+                    "expected 'to' in iterative do, got {:?}",
+                    self.peek()
+                )));
             }
             let stop = self.parse_expr()?;
             let step = if self.eat_keyword("by") {
@@ -480,11 +590,20 @@ impl Parser {
             };
             self.expect(&Tok::Semi, "iterative do header")?;
             let body = self.parse_do_body()?;
-            return Ok(Stmt::DoLoop { var, start, stop, step, body });
+            return Ok(Stmt::DoLoop {
+                var,
+                start,
+                stop,
+                step,
+                body,
+            });
         }
         // Assignment: ident [`{expr}` | `[expr]`] = expr ;
         let name = match self.peek().clone() {
-            Tok::Ident(s) => { self.bump(); s }
+            Tok::Ident(s) => {
+                self.bump();
+                s
+            }
             other => return Err(self.err(format!("unexpected statement start: {:?}", other))),
         };
         let target = if self.eat(&Tok::LBrace) {
@@ -508,10 +627,15 @@ impl Parser {
         let mut body = Vec::new();
         while !self.at_keyword("end") {
             if matches!(self.peek(), Tok::Eof) {
-                return Err(ParseError { message: "unterminated do/end".into(), span: self.current_span() });
+                return Err(ParseError {
+                    message: "unterminated do/end".into(),
+                    span: self.current_span(),
+                });
             }
             while self.eat(&Tok::Semi) {}
-            if self.at_keyword("end") { break; }
+            if self.at_keyword("end") {
+                break;
+            }
             body.push(self.parse_stmt()?);
         }
         self.eat_keyword("end");
@@ -528,19 +652,29 @@ impl Parser {
             } else {
                 None
             };
-            return Ok(Stmt::IfThen { cond, then_stmt, else_stmt });
+            return Ok(Stmt::IfThen {
+                cond,
+                then_stmt,
+                else_stmt,
+            });
         }
         self.expect(&Tok::Semi, "subsetting if")?;
         Ok(Stmt::SubsetIf { cond })
     }
 
-    fn parse_expr(&mut self) -> Result<Expr, ParseError> { self.parse_or() }
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        self.parse_or()
+    }
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_and()?;
         while self.eat_keyword("or") {
             let rhs = self.parse_and()?;
-            lhs = Expr::Binary { op: BinOp::Or, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+            lhs = Expr::Binary {
+                op: BinOp::Or,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
         }
         Ok(lhs)
     }
@@ -548,14 +682,21 @@ impl Parser {
         let mut lhs = self.parse_not()?;
         while self.eat_keyword("and") {
             let rhs = self.parse_not()?;
-            lhs = Expr::Binary { op: BinOp::And, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+            lhs = Expr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
         }
         Ok(lhs)
     }
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
         if self.eat_keyword("not") {
             let e = self.parse_not()?;
-            Ok(Expr::Unary { op: UnaryOp::Not, expr: Box::new(e) })
+            Ok(Expr::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(e),
+            })
         } else {
             self.parse_cmp()
         }
@@ -574,7 +715,11 @@ impl Parser {
         if let Some(op) = op {
             self.bump();
             let rhs = self.parse_concat()?;
-            return Ok(Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) });
+            return Ok(Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
         }
         Ok(lhs)
     }
@@ -582,29 +727,49 @@ impl Parser {
         let mut lhs = self.parse_add()?;
         while self.eat(&Tok::Concat) {
             let rhs = self.parse_add()?;
-            lhs = Expr::Binary { op: BinOp::Concat, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+            lhs = Expr::Binary {
+                op: BinOp::Concat,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
         }
         Ok(lhs)
     }
     fn parse_add(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_mul()?;
         loop {
-            let op = if self.eat(&Tok::Plus) { BinOp::Add }
-                else if self.eat(&Tok::Minus) { BinOp::Sub }
-                else { break; };
+            let op = if self.eat(&Tok::Plus) {
+                BinOp::Add
+            } else if self.eat(&Tok::Minus) {
+                BinOp::Sub
+            } else {
+                break;
+            };
             let rhs = self.parse_mul()?;
-            lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+            lhs = Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
         }
         Ok(lhs)
     }
     fn parse_mul(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_power()?;
         loop {
-            let op = if self.eat(&Tok::Star) { BinOp::Mul }
-                else if self.eat(&Tok::Slash) { BinOp::Div }
-                else { break; };
+            let op = if self.eat(&Tok::Star) {
+                BinOp::Mul
+            } else if self.eat(&Tok::Slash) {
+                BinOp::Div
+            } else {
+                break;
+            };
             let rhs = self.parse_power()?;
-            lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+            lhs = Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
         }
         Ok(lhs)
     }
@@ -612,14 +777,21 @@ impl Parser {
         let lhs = self.parse_unary()?;
         if self.eat(&Tok::Power) {
             let rhs = self.parse_power()?;
-            return Ok(Expr::Binary { op: BinOp::Pow, lhs: Box::new(lhs), rhs: Box::new(rhs) });
+            return Ok(Expr::Binary {
+                op: BinOp::Pow,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
         }
         Ok(lhs)
     }
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         if self.eat(&Tok::Minus) {
             let e = self.parse_unary()?;
-            return Ok(Expr::Unary { op: UnaryOp::Neg, expr: Box::new(e) });
+            return Ok(Expr::Unary {
+                op: UnaryOp::Neg,
+                expr: Box::new(e),
+            });
         }
         if self.eat(&Tok::Plus) {
             return self.parse_unary();
@@ -628,8 +800,14 @@ impl Parser {
     }
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match self.peek().clone() {
-            Tok::Number(n) => { self.bump(); Ok(Expr::NumLit(n)) }
-            Tok::Str(s) => { self.bump(); Ok(Expr::StrLit(s)) }
+            Tok::Number(n) => {
+                self.bump();
+                Ok(Expr::NumLit(n))
+            }
+            Tok::Str(s) => {
+                self.bump();
+                Ok(Expr::StrLit(s))
+            }
             Tok::LParen => {
                 self.bump();
                 let e = self.parse_expr()?;
@@ -666,17 +844,29 @@ impl Parser {
                     }
                     self.expect(&Tok::RParen, "call args")?;
                     let end = self.toks[self.pos - 1].1.end;
-                    Ok(Expr::Call { name, args, span: Span::new(start, end) })
+                    Ok(Expr::Call {
+                        name,
+                        args,
+                        span: Span::new(start, end),
+                    })
                 } else if self.eat(&Tok::LBrace) {
                     let idx = self.parse_expr()?;
                     self.expect(&Tok::RBrace, "array index")?;
                     let end = self.toks[self.pos - 1].1.end;
-                    Ok(Expr::ArrayRef { name, index: Box::new(idx), span: Span::new(start, end) })
+                    Ok(Expr::ArrayRef {
+                        name,
+                        index: Box::new(idx),
+                        span: Span::new(start, end),
+                    })
                 } else if self.eat(&Tok::LBracket) {
                     let idx = self.parse_expr()?;
                     self.expect(&Tok::RBracket, "array index")?;
                     let end = self.toks[self.pos - 1].1.end;
-                    Ok(Expr::ArrayRef { name, index: Box::new(idx), span: Span::new(start, end) })
+                    Ok(Expr::ArrayRef {
+                        name,
+                        index: Box::new(idx),
+                        span: Span::new(start, end),
+                    })
                 } else {
                     Ok(Expr::Ident(name))
                 }
@@ -699,12 +889,16 @@ mod tests {
 
     #[test]
     fn parses_if_then_else() {
-        let ds = parse_data_step(
-            "data o; set i; if x > 1 then y = 'big'; else y = 'small'; run;",
-        )
-        .unwrap();
+        let ds = parse_data_step("data o; set i; if x > 1 then y = 'big'; else y = 'small'; run;")
+            .unwrap();
         assert_eq!(ds.body.len(), 1);
-        assert!(matches!(ds.body[0], Stmt::IfThen { else_stmt: Some(_), .. }));
+        assert!(matches!(
+            ds.body[0],
+            Stmt::IfThen {
+                else_stmt: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -715,10 +909,8 @@ mod tests {
 
     #[test]
     fn parses_keep_drop_length() {
-        let ds = parse_data_step(
-            "data o; set i; keep a b c; drop z; length name $ 20 age 8; run;",
-        )
-        .unwrap();
+        let ds = parse_data_step("data o; set i; keep a b c; drop z; length name $ 20 age 8; run;")
+            .unwrap();
         assert_eq!(ds.keep.as_ref().unwrap().len(), 3);
         assert_eq!(ds.drop.as_ref().unwrap()[0], "z");
         assert_eq!(ds.lengths.len(), 2);
@@ -741,24 +933,23 @@ mod tests {
 
     #[test]
     fn parses_array_and_index() {
-        let ds = parse_data_step(
-            "data o; set i; array a{3} a1 a2 a3; a{1} = 10; x = a[2]; run;",
-        )
-        .unwrap();
+        let ds = parse_data_step("data o; set i; array a{3} a1 a2 a3; a{1} = 10; x = a[2]; run;")
+            .unwrap();
         assert_eq!(ds.arrays.len(), 1);
         assert_eq!(ds.arrays[0].size, 3);
         assert!(matches!(
             ds.body[0],
-            Stmt::Assign { target: AssignTarget::ArrayElem { .. }, .. }
+            Stmt::Assign {
+                target: AssignTarget::ArrayElem { .. },
+                ..
+            }
         ));
     }
 
     #[test]
     fn parses_iterative_do() {
-        let ds = parse_data_step(
-            "data o; set i; do i = 1 to 5 by 2; y = y + i; end; run;",
-        )
-        .unwrap();
+        let ds =
+            parse_data_step("data o; set i; do i = 1 to 5 by 2; y = y + i; end; run;").unwrap();
         assert!(matches!(ds.body[0], Stmt::DoLoop { .. }));
     }
 }

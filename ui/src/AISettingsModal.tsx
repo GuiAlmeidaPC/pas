@@ -10,16 +10,16 @@ export interface AIConfig {
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (config: AIConfig) => void;
+  onSave: (config: AIConfig) => void | Promise<void>;
   initialConfig?: AIConfig | null;
 }
 
 const DEFAULT_MODELS: Record<AIConfig["provider"], string[]> = {
-  openai: ["gpt-5.5-instant", "gpt-5.5-pro", "gpt-5.4-mini"],
-  anthropic: ["claude-sonnet-4.6", "claude-opus-4.7", "claude-haiku-4.5"],
-  gemini: ["gemini-3.5-flash", "gemini-3.1-pro", "gemini-3.1-flash-lite"],
-  deepseek: ["deepseek-v4-flash", "deepseek-v4-pro"],
-  openrouter: ["google/gemini-2.5-pro", "meta-llama/llama-3.3-70b-instruct"],
+  openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+  anthropic: ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
+  gemini: ["gemini-1.5-pro", "gemini-1.5-flash"],
+  deepseek: ["deepseek-chat", "deepseek-coder"],
+  openrouter: ["meta-llama/llama-3.3-70b-instruct", "google/gemini-2.5-pro"],
 };
 
 export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Props) {
@@ -29,9 +29,11 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
   const [customUrl, setCustomUrl] = useState("");
   const [customModel, setCustomModel] = useState("");
   const [useCustomModel, setUseCustomModel] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialConfig) {
+      setFormError(null);
       setProvider(initialConfig.provider);
       setApiKey(initialConfig.apiKey || "");
       setCustomUrl(initialConfig.customUrl || "");
@@ -46,12 +48,13 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
       }
     } else {
       // Set defaults
+      setFormError(null);
       setProvider("openai");
       setApiKey("");
       setCustomUrl("");
-      setModel("gpt-5.5-instant");
+      setModel("");
       setCustomModel("");
-      setUseCustomModel(false);
+      setUseCustomModel(true);
     }
   }, [initialConfig, isOpen]);
 
@@ -60,20 +63,26 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
     setProvider(p);
     const defaults = DEFAULT_MODELS[p] || [];
     setModel(defaults[0] || "");
+    setUseCustomModel(defaults.length === 0);
     setCustomUrl("");
   };
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSave({
-      provider,
-      apiKey: apiKey.trim(),
-      model: useCustomModel ? customModel.trim() : model,
-      customUrl: customUrl.trim() || undefined,
-    });
-    onClose();
+    setFormError(null);
+    try {
+      await onSave({
+        provider,
+        apiKey: apiKey.trim(),
+        model: useCustomModel ? customModel.trim() : model,
+        customUrl: customUrl.trim() || undefined,
+      });
+      onClose();
+    } catch (e) {
+      setFormError(String(e));
+    }
   };
 
   const defaultModels = DEFAULT_MODELS[provider] || [];
@@ -120,7 +129,7 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
                 <select
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                  disabled={useCustomModel}
+                  disabled={useCustomModel || defaultModels.length === 0}
                 >
                   {defaultModels.map((m) => (
                     <option key={m} value={m}>{m}</option>
@@ -141,7 +150,8 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
                 <input
                   type="checkbox"
                   checked={useCustomModel}
-                  onChange={(e) => setUseCustomModel(e.target.checked)}
+                  onChange={(e) => setUseCustomModel(defaultModels.length === 0 ? true : e.target.checked)}
+                  disabled={defaultModels.length === 0}
                 />
                 Use custom model name
               </label>
@@ -159,6 +169,12 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
                 onChange={(e) => setCustomUrl(e.target.value)}
               />
               <span className="field-hint">Leave blank to use default API endpoints.</span>
+            </div>
+          )}
+
+          {formError && (
+            <div className="chat-error-card">
+              {formError}
             </div>
           )}
 

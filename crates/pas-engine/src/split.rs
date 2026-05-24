@@ -12,7 +12,11 @@ pub enum Block {
     /// A single statement that lived inside a `proc sql` wrapper.
     ProcSqlStmt { text: String, src_offset: usize },
     /// Any non-SQL PROC.
-    Proc { name: String, body: String, src_offset: usize },
+    Proc {
+        name: String,
+        body: String,
+        src_offset: usize,
+    },
     /// A DATA step. `body` is the original source slice between the data
     /// header's `;` and the trailing `run;` — positions in the body map
     /// directly to positions in the original program by adding
@@ -134,7 +138,11 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                         body.push_str(rest_after_name);
                         body.push(';');
                     }
-                    state = State::ProcOther { name, body, src_offset: raw.start };
+                    state = State::ProcOther {
+                        name,
+                        body,
+                        src_offset: raw.start,
+                    };
                     continue;
                 }
                 if lower == "data" || lower.starts_with("data ") {
@@ -170,7 +178,11 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                     src_offset: raw.start,
                 });
             }
-            State::ProcOther { name, body, src_offset } => {
+            State::ProcOther {
+                name,
+                body,
+                src_offset,
+            } => {
                 if lower == "run" || lower == "quit" {
                     out.push(Block::Proc {
                         name: std::mem::take(name),
@@ -183,7 +195,11 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                 body.push_str(trimmed);
                 body.push(';');
             }
-            State::Data { body_start, body_end, has_datalines } => {
+            State::Data {
+                body_start,
+                body_end,
+                has_datalines,
+            } => {
                 if lower == "run" {
                     let start = body_start.unwrap_or(*body_end);
                     let body = src.get(start..*body_end).unwrap_or("").to_string();
@@ -224,11 +240,22 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
 
     // Flush unclosed blocks at EOF.
     match state {
-        State::ProcOther { name, body, src_offset } => {
-            out.push(Block::Proc { name, body, src_offset });
+        State::ProcOther {
+            name,
+            body,
+            src_offset,
+        } => {
+            out.push(Block::Proc {
+                name,
+                body,
+                src_offset,
+            });
         }
         State::MacroDef { body, src_offset } => {
-            out.push(Block::Statement { text: body, src_offset });
+            out.push(Block::Statement {
+                text: body,
+                src_offset,
+            });
         }
         _ => {}
     }
@@ -342,7 +369,11 @@ fn split_on_semicolons(src: &str) -> Vec<RawStmt> {
         i += 1;
     }
     if !current.trim().is_empty() {
-        stmts.push(RawStmt { text: current, start, end: i });
+        stmts.push(RawStmt {
+            text: current,
+            start,
+            end: i,
+        });
     }
     stmts
 }
@@ -393,7 +424,12 @@ mod tests {
     fn block_split_data_step() {
         let blocks = split_blocks("data out; set in; x = 1; run;");
         assert_eq!(blocks.len(), 1);
-        let Block::DataStep { body, body_src_offset, .. } = &blocks[0] else {
+        let Block::DataStep {
+            body,
+            body_src_offset,
+            ..
+        } = &blocks[0]
+        else {
             panic!("expected DataStep, got {:?}", blocks)
         };
         assert!(body.starts_with("data out"));
@@ -419,7 +455,10 @@ mod tests {
     fn extracts_datalines() {
         let src = "data x;\n  input name $ age;\n  datalines;\nalice 30\nbob 25\n;\nrun;\n";
         let blocks = split_blocks(src);
-        let Block::DataStep { body, datalines, .. } = &blocks[0] else {
+        let Block::DataStep {
+            body, datalines, ..
+        } = &blocks[0]
+        else {
             panic!("expected DataStep");
         };
         assert_eq!(datalines.len(), 2);

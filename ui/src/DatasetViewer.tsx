@@ -23,6 +23,7 @@ export function DatasetViewer({ ds }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const debounceRef = useRef<number | null>(null);
+  const requestSeqRef = useRef(0);
 
   const activeFilters = useMemo(() => {
     const out: Record<string, string> = {};
@@ -34,6 +35,7 @@ export function DatasetViewer({ ds }: Props) {
 
   const load = useCallback(
     async (newOffset: number, currentFilters: Record<string, string>) => {
+      const requestSeq = ++requestSeqRef.current;
       setLoading(true);
       setErr(null);
       try {
@@ -45,12 +47,14 @@ export function DatasetViewer({ ds }: Props) {
           filters: Object.keys(currentFilters).length > 0 ? currentFilters : null,
         });
         const view = decodePage(buf);
+        if (requestSeq !== requestSeqRef.current) return;
         setPage(view);
         setOffset(newOffset);
       } catch (e) {
+        if (requestSeq !== requestSeqRef.current) return;
         setErr(String(e));
       } finally {
-        setLoading(false);
+        if (requestSeq === requestSeqRef.current) setLoading(false);
       }
     },
     [ds.libref, ds.name],

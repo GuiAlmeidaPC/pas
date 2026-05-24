@@ -95,7 +95,7 @@ pub fn build_select_sql(from_clause: &str, spec: &TransposeSpec) -> String {
         let cols = spec
             .by_vars
             .iter()
-            .map(|v| format!("\"{}\"", v))
+            .map(|v| crate::quote_ident(v))
             .collect::<Vec<_>>()
             .join(", ");
         format!(" GROUP BY {}", cols)
@@ -103,8 +103,11 @@ pub fn build_select_sql(from_clause: &str, spec: &TransposeSpec) -> String {
 
     // DuckDB syntax: PIVOT <relation> ON <pivot_col> USING <agg> [GROUP BY …]
     format!(
-        "PIVOT {} ON \"{}\" USING first(\"{}\"){}",
-        from_clause, spec.id_var, spec.value_var, group_by
+        "PIVOT {} ON {} USING first({}){}",
+        from_clause,
+        crate::quote_ident(&spec.id_var),
+        crate::quote_ident(&spec.value_var),
+        group_by
     )
 }
 

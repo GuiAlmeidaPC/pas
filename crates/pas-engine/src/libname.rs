@@ -50,9 +50,18 @@ pub fn parse(stmt: &str) -> Result<Option<LibnameDef>, LibnameError> {
     if let Some(tok) = peek.as_ref() {
         let low = tok.to_ascii_lowercase();
         match low.as_str() {
-            "duckdb" => { kind = Some(LibraryKind::Duckdb); toks.next(); }
-            "dir" => { kind = Some(LibraryKind::Dir); toks.next(); }
-            "memory" => { kind = Some(LibraryKind::Memory); toks.next(); }
+            "duckdb" => {
+                kind = Some(LibraryKind::Duckdb);
+                toks.next();
+            }
+            "dir" => {
+                kind = Some(LibraryKind::Dir);
+                toks.next();
+            }
+            "memory" => {
+                kind = Some(LibraryKind::Memory);
+                toks.next();
+            }
             _ => {}
         }
     }
@@ -167,13 +176,17 @@ mod tests {
 
     #[test]
     fn parses_duckdb_explicit() {
-        let def = parse(r#"libname store duckdb "/data/store.duckdb""#).unwrap().unwrap();
+        let def = parse(r#"libname store duckdb "/data/store.duckdb""#)
+            .unwrap()
+            .unwrap();
         assert_eq!(def.kind, LibraryKind::Duckdb);
     }
 
     #[test]
     fn parses_format_option() {
-        let def = parse(r#"libname raw dir "/data" format=csv"#).unwrap().unwrap();
+        let def = parse(r#"libname raw dir "/data" format=csv"#)
+            .unwrap()
+            .unwrap();
         assert_eq!(def.format, Some(DirFormat::Csv));
     }
 

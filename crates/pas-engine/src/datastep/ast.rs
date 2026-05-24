@@ -88,10 +88,21 @@ pub struct ArrayDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    Assign { target: AssignTarget, expr: Expr },
-    IfThen { cond: Expr, then_stmt: Box<Stmt>, else_stmt: Option<Box<Stmt>> },
-    SubsetIf { cond: Expr },
-    Output { dataset: Option<TableRef> },
+    Assign {
+        target: AssignTarget,
+        expr: Expr,
+    },
+    IfThen {
+        cond: Expr,
+        then_stmt: Box<Stmt>,
+        else_stmt: Option<Box<Stmt>>,
+    },
+    SubsetIf {
+        cond: Expr,
+    },
+    Output {
+        dataset: Option<TableRef>,
+    },
     Delete,
     Block(Vec<Stmt>),
     /// `do var = start to stop [by step]; … end;`
@@ -136,11 +147,26 @@ pub enum Expr {
     StrLit(String),
     Ident(String),
     /// `name(args...)`. `span` covers the whole call (name through `)`).
-    Call { name: String, args: Vec<Expr>, span: super::lex::Span },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+        span: super::lex::Span,
+    },
     /// `name{index}` or `name[index]`. `span` covers `name { … }`.
-    ArrayRef { name: String, index: Box<Expr>, span: super::lex::Span },
-    Unary { op: UnaryOp, expr: Box<Expr> },
-    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
+    ArrayRef {
+        name: String,
+        index: Box<Expr>,
+        span: super::lex::Span,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expr>,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -152,8 +178,19 @@ pub enum UnaryOp {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Pow, Mod,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Mod,
     Concat,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
 }

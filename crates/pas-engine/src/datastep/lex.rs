@@ -12,7 +12,10 @@ impl Span {
         Self { start, end }
     }
     pub fn point(pos: usize) -> Self {
-        Self { start: pos, end: pos }
+        Self {
+            start: pos,
+            end: pos,
+        }
     }
 }
 
@@ -29,8 +32,17 @@ pub enum Tok {
     RBrace,
     LBracket,
     RBracket,
-    Plus, Minus, Star, Slash, Power,
-    Eq, NotEq, Lt, Le, Gt, Ge,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Power,
+    Eq,
+    NotEq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
     Concat,
     Dot,
     Dollar,
@@ -45,12 +57,19 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Self {
-        Self { src: src.as_bytes(), pos: 0 }
+        Self {
+            src: src.as_bytes(),
+            pos: 0,
+        }
     }
 
     #[allow(dead_code)]
     pub fn tokens(self) -> Result<Vec<Tok>, String> {
-        Ok(self.tokens_with_spans()?.into_iter().map(|(t, _)| t).collect())
+        Ok(self
+            .tokens_with_spans()?
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect())
     }
 
     pub fn tokens_with_spans(mut self) -> Result<Vec<(Tok, Span)>, String> {
@@ -70,11 +89,19 @@ impl<'a> Lexer<'a> {
     }
 
     fn peek(&self) -> u8 {
-        if self.pos < self.src.len() { self.src[self.pos] } else { 0 }
+        if self.pos < self.src.len() {
+            self.src[self.pos]
+        } else {
+            0
+        }
     }
 
     fn peek_at(&self, n: usize) -> u8 {
-        if self.pos + n < self.src.len() { self.src[self.pos + n] } else { 0 }
+        if self.pos + n < self.src.len() {
+            self.src[self.pos + n]
+        } else {
+            0
+        }
     }
 
     fn bump(&mut self) -> u8 {
@@ -95,17 +122,50 @@ impl<'a> Lexer<'a> {
         }
         let b = self.peek();
         match b {
-            b';' => { self.bump(); Ok(Tok::Semi) }
-            b',' => { self.bump(); Ok(Tok::Comma) }
-            b'(' => { self.bump(); Ok(Tok::LParen) }
-            b')' => { self.bump(); Ok(Tok::RParen) }
-            b'{' => { self.bump(); Ok(Tok::LBrace) }
-            b'}' => { self.bump(); Ok(Tok::RBrace) }
-            b'[' => { self.bump(); Ok(Tok::LBracket) }
-            b']' => { self.bump(); Ok(Tok::RBracket) }
-            b'+' => { self.bump(); Ok(Tok::Plus) }
-            b'-' => { self.bump(); Ok(Tok::Minus) }
-            b'$' => { self.bump(); Ok(Tok::Dollar) }
+            b';' => {
+                self.bump();
+                Ok(Tok::Semi)
+            }
+            b',' => {
+                self.bump();
+                Ok(Tok::Comma)
+            }
+            b'(' => {
+                self.bump();
+                Ok(Tok::LParen)
+            }
+            b')' => {
+                self.bump();
+                Ok(Tok::RParen)
+            }
+            b'{' => {
+                self.bump();
+                Ok(Tok::LBrace)
+            }
+            b'}' => {
+                self.bump();
+                Ok(Tok::RBrace)
+            }
+            b'[' => {
+                self.bump();
+                Ok(Tok::LBracket)
+            }
+            b']' => {
+                self.bump();
+                Ok(Tok::RBracket)
+            }
+            b'+' => {
+                self.bump();
+                Ok(Tok::Plus)
+            }
+            b'-' => {
+                self.bump();
+                Ok(Tok::Minus)
+            }
+            b'$' => {
+                self.bump();
+                Ok(Tok::Dollar)
+            }
             b'.' => {
                 if self.peek_at(1).is_ascii_digit() {
                     self.read_number()
@@ -116,31 +176,61 @@ impl<'a> Lexer<'a> {
             }
             b'*' => {
                 self.bump();
-                if self.peek() == b'*' { self.bump(); Ok(Tok::Power) } else { Ok(Tok::Star) }
+                if self.peek() == b'*' {
+                    self.bump();
+                    Ok(Tok::Power)
+                } else {
+                    Ok(Tok::Star)
+                }
             }
-            b'/' => { self.bump(); Ok(Tok::Slash) }
-            b'=' => { self.bump(); Ok(Tok::Eq) }
+            b'/' => {
+                self.bump();
+                Ok(Tok::Slash)
+            }
+            b'=' => {
+                self.bump();
+                Ok(Tok::Eq)
+            }
             b'<' => {
                 self.bump();
                 match self.peek() {
-                    b'=' => { self.bump(); Ok(Tok::Le) }
-                    b'>' => { self.bump(); Ok(Tok::NotEq) }
+                    b'=' => {
+                        self.bump();
+                        Ok(Tok::Le)
+                    }
+                    b'>' => {
+                        self.bump();
+                        Ok(Tok::NotEq)
+                    }
                     _ => Ok(Tok::Lt),
                 }
             }
             b'>' => {
                 self.bump();
-                if self.peek() == b'=' { self.bump(); Ok(Tok::Ge) } else { Ok(Tok::Gt) }
+                if self.peek() == b'=' {
+                    self.bump();
+                    Ok(Tok::Ge)
+                } else {
+                    Ok(Tok::Gt)
+                }
             }
             b'!' => {
                 self.bump();
-                if self.peek() == b'=' { self.bump(); Ok(Tok::NotEq) }
-                else { Err("unexpected '!' (use 'ne' or '<>')".into()) }
+                if self.peek() == b'=' {
+                    self.bump();
+                    Ok(Tok::NotEq)
+                } else {
+                    Err("unexpected '!' (use 'ne' or '<>')".into())
+                }
             }
             b'|' => {
                 self.bump();
-                if self.peek() == b'|' { self.bump(); Ok(Tok::Concat) }
-                else { Err("unexpected '|' (use '||' for concat)".into()) }
+                if self.peek() == b'|' {
+                    self.bump();
+                    Ok(Tok::Concat)
+                } else {
+                    Err("unexpected '|' (use '||' for concat)".into())
+                }
             }
             b'\'' | b'"' => self.read_string(),
             d if d.is_ascii_digit() => self.read_number(),
@@ -158,7 +248,9 @@ impl<'a> Lexer<'a> {
         }
         if self.pos < self.src.len() && (self.src[self.pos] == b'e' || self.src[self.pos] == b'E') {
             self.pos += 1;
-            if self.pos < self.src.len() && (self.src[self.pos] == b'+' || self.src[self.pos] == b'-') {
+            if self.pos < self.src.len()
+                && (self.src[self.pos] == b'+' || self.src[self.pos] == b'-')
+            {
                 self.pos += 1;
             }
             while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
@@ -264,9 +356,20 @@ pub(crate) fn parse_sas_date(s: &str) -> Result<f64, String> {
 pub(crate) fn parse_sas_time(s: &str) -> Result<f64, String> {
     let s = s.trim();
     let mut parts = s.split(':');
-    let h: u32 = parts.next().ok_or("missing hour")?.parse().map_err(|_| "bad hour")?;
-    let m: u32 = parts.next().ok_or("missing minute")?.parse().map_err(|_| "bad minute")?;
-    let sec: f64 = parts.next().map(|p| p.parse().unwrap_or(0.0)).unwrap_or(0.0);
+    let h: u32 = parts
+        .next()
+        .ok_or("missing hour")?
+        .parse()
+        .map_err(|_| "bad hour")?;
+    let m: u32 = parts
+        .next()
+        .ok_or("missing minute")?
+        .parse()
+        .map_err(|_| "bad minute")?;
+    let sec: f64 = parts
+        .next()
+        .map(|p| p.parse().unwrap_or(0.0))
+        .unwrap_or(0.0);
     Ok(h as f64 * 3600.0 + m as f64 * 60.0 + sec)
 }
 
@@ -283,9 +386,18 @@ pub(crate) fn parse_sas_datetime(s: &str) -> Result<f64, String> {
 
 fn month_from_abbr(s: &str) -> Result<u32, String> {
     match s.to_ascii_uppercase().as_str() {
-        "JAN" => Ok(1), "FEB" => Ok(2), "MAR" => Ok(3), "APR" => Ok(4),
-        "MAY" => Ok(5), "JUN" => Ok(6), "JUL" => Ok(7), "AUG" => Ok(8),
-        "SEP" => Ok(9), "OCT" => Ok(10), "NOV" => Ok(11), "DEC" => Ok(12),
+        "JAN" => Ok(1),
+        "FEB" => Ok(2),
+        "MAR" => Ok(3),
+        "APR" => Ok(4),
+        "MAY" => Ok(5),
+        "JUN" => Ok(6),
+        "JUL" => Ok(7),
+        "AUG" => Ok(8),
+        "SEP" => Ok(9),
+        "OCT" => Ok(10),
+        "NOV" => Ok(11),
+        "DEC" => Ok(12),
         other => Err(format!("unknown month {:?}", other)),
     }
 }

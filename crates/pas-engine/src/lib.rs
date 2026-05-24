@@ -40,11 +40,22 @@ pub enum EngineError {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
-    Source { text: String },
-    Note { text: String },
-    Warning { text: String },
-    Error { text: String, source_span: Option<SourceSpan> },
-    Output { block: ResultBlock },
+    Source {
+        text: String,
+    },
+    Note {
+        text: String,
+    },
+    Warning {
+        text: String,
+    },
+    Error {
+        text: String,
+        source_span: Option<SourceSpan>,
+    },
+    Output {
+        block: ResultBlock,
+    },
     Done,
 }
 
@@ -101,7 +112,12 @@ impl Session {
         // WORK is always present and points at the default in-memory schema.
         libs.insert(
             "work".to_string(),
-            Library { name: "work".to_string(), kind: LibraryKind::Memory, path: String::new(), format: None },
+            Library {
+                name: "work".to_string(),
+                kind: LibraryKind::Memory,
+                path: String::new(),
+                format: None,
+            },
         );
         Ok(Self {
             conn: Mutex::new(conn),
@@ -122,8 +138,7 @@ impl Session {
     }
 
     pub fn list_libraries(&self) -> Vec<Library> {
-        let mut v: Vec<Library> =
-            self.libraries.lock().unwrap().values().cloned().collect();
+        let mut v: Vec<Library> = self.libraries.lock().unwrap().values().cloned().collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }
@@ -138,11 +153,7 @@ impl Session {
         }
     }
 
-    pub fn dataset_schema(
-        &self,
-        libref: &str,
-        name: &str,
-    ) -> Result<Vec<ColumnInfo>, EngineError> {
+    pub fn dataset_schema(&self, libref: &str, name: &str) -> Result<Vec<ColumnInfo>, EngineError> {
         let lib = self.lookup_library(libref)?;
         let from_clause = dataset_from_clause(&lib, name)?;
         let conn = self.conn.lock().unwrap();
@@ -157,7 +168,10 @@ impl Session {
                     .and_then(|s| s.column_name(i).ok())
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| format!("col{}", i));
-                ColumnInfo { name, ty: "?".to_string() }
+                ColumnInfo {
+                    name,
+                    ty: "?".to_string(),
+                }
             })
             .collect();
         Ok(cols)
@@ -204,10 +218,7 @@ impl Session {
         let mut md = base_schema.metadata().clone();
         md.insert("total_rows".to_string(), total.to_string());
         md.insert("offset".to_string(), offset.to_string());
-        let schema = Arc::new(Schema::new_with_metadata(
-            base_schema.fields().clone(),
-            md,
-        ));
+        let schema = Arc::new(Schema::new_with_metadata(base_schema.fields().clone(), md));
 
         let mut buf: Vec<u8> = Vec::new();
         {
@@ -258,9 +269,17 @@ impl Session {
         );
         let block = match run_query(&conn, &sql, limit as usize)? {
             StmtResult::Rows(b) => b,
-            _ => ResultBlock { columns: vec![], rows: vec![], truncated: false },
+            _ => ResultBlock {
+                columns: vec![],
+                rows: vec![],
+                truncated: false,
+            },
         };
-        Ok(DatasetPage { columns: block.columns, rows: block.rows, total_rows: total })
+        Ok(DatasetPage {
+            columns: block.columns,
+            rows: block.rows,
+            total_rows: total,
+        })
     }
 
     /// Run an entire program, returning all events.
@@ -269,11 +288,13 @@ impl Session {
         let cleaned = strip_comments(program);
 
         let blocks = split_blocks(&cleaned);
-        println!("submit program = {:?}\nblocks = {:#?}", program, blocks);
+        tracing::debug!(block_count = blocks.len(), "program split into blocks");
         let mut events = Vec::new();
 
         if blocks.is_empty() {
-            events.push(Event::Note { text: "No statements found.".into() });
+            events.push(Event::Note {
+                text: "No statements found.".into(),
+            });
             events.push(Event::Done);
             return events;
         }
@@ -281,19 +302,29 @@ impl Session {
         let conn = self.conn.lock().expect("engine mutex poisoned");
         for block in blocks {
             if self.cancel.load(Ordering::SeqCst) {
-                events.push(Event::Warning { text: "Execution cancelled by user.".into() });
+                events.push(Event::Warning {
+                    text: "Execution cancelled by user.".into(),
+                });
                 break;
             }
 
             match block {
-                Block::Statement { text, src_offset } => {
+                Block::Statement {
+                    text,
+                    src_offset: _,
+                } => {
                     let macro_result = {
                         let mut vars = self.macro_vars.lock().unwrap();
                         let mut defs = self.macro_defs.lock().unwrap();
                         macros::preprocess(&text, &mut vars, &mut defs)
                     };
 
-                    println!("BLOCK Statement: text={:?}\n  expanded={:?}\n  puts={:?}", text, macro_result.expanded, macro_result.puts);
+                    tracing::debug!(
+                        statement = %text,
+                        expanded = %macro_result.expanded,
+                        puts = ?macro_result.puts,
+                        "macro preprocessing complete",
+                    );
 
                     for put_text in macro_result.puts {
                         events.push(Event::Note { text: put_text });
@@ -305,16 +336,23 @@ impl Session {
                     }
 
                     let sub_blocks = split_blocks(&macro_result.expanded);
-                    println!("Statement text = {:?}\nExpanded = {:?}\nsub_blocks = {:#?}", text, macro_result.expanded, sub_blocks);
+                    tracing::debug!(sub_blocks = ?sub_blocks, "expanded statement split");
                     for sub_block in sub_blocks {
                         if self.cancel.load(Ordering::SeqCst) {
-                            events.push(Event::Warning { text: "Execution cancelled by user.".into() });
+                            events.push(Event::Warning {
+                                text: "Execution cancelled by user.".into(),
+                            });
                             break;
                         }
 
                         match sub_block {
-                            Block::Statement { text: sub_text, src_offset: sub_offset } => {
-                                events.push(Event::Source { text: sub_text.clone() });
+                            Block::Statement {
+                                text: sub_text,
+                                src_offset: sub_offset,
+                            } => {
+                                events.push(Event::Source {
+                                    text: sub_text.clone(),
+                                });
                                 if let Some(handled) = self.try_libname(&conn, &sub_text) {
                                     events.extend(handled);
                                     continue;
@@ -327,8 +365,13 @@ impl Session {
                                     &mut events,
                                 );
                             }
-                            Block::ProcSqlStmt { text: sub_text, src_offset: sub_offset } => {
-                                events.push(Event::Source { text: sub_text.clone() });
+                            Block::ProcSqlStmt {
+                                text: sub_text,
+                                src_offset: sub_offset,
+                            } => {
+                                events.push(Event::Source {
+                                    text: sub_text.clone(),
+                                });
                                 self.run_sql_with_rewrites(
                                     &conn,
                                     &sub_text,
@@ -337,8 +380,14 @@ impl Session {
                                     &mut events,
                                 );
                             }
-                            Block::DataStep { body: sub_body, datalines: sub_datalines, body_src_offset: sub_offset } => {
-                                events.push(Event::Source { text: sub_body.clone() });
+                            Block::DataStep {
+                                body: sub_body,
+                                datalines: sub_datalines,
+                                body_src_offset: sub_offset,
+                            } => {
+                                events.push(Event::Source {
+                                    text: sub_body.clone(),
+                                });
                                 self.run_data_step(
                                     &conn,
                                     &sub_body,
@@ -348,8 +397,14 @@ impl Session {
                                     &mut events,
                                 );
                             }
-                            Block::Proc { name: sub_name, body: sub_body, .. } => {
-                                events.push(Event::Source { text: format!("proc {}; {} run;", sub_name, sub_body) });
+                            Block::Proc {
+                                name: sub_name,
+                                body: sub_body,
+                                ..
+                            } => {
+                                events.push(Event::Source {
+                                    text: format!("proc {}; {} run;", sub_name, sub_body),
+                                });
                                 self.run_proc(&conn, &sub_name, &sub_body, &mut events);
                             }
                         }
@@ -371,16 +426,22 @@ impl Session {
                         continue;
                     }
 
-                    events.push(Event::Source { text: expanded_trimmed.to_string() });
+                    events.push(Event::Source {
+                        text: expanded_trimmed.to_string(),
+                    });
                     self.run_sql_with_rewrites(
                         &conn,
-                        &expanded_trimmed,
+                        expanded_trimmed,
                         src_offset,
                         program,
                         &mut events,
                     );
                 }
-                Block::DataStep { body, datalines, body_src_offset } => {
+                Block::DataStep {
+                    body,
+                    datalines,
+                    body_src_offset,
+                } => {
                     let macro_result = {
                         let mut vars = self.macro_vars.lock().unwrap();
                         let mut defs = self.macro_defs.lock().unwrap();
@@ -392,7 +453,9 @@ impl Session {
                     }
 
                     let expanded = macro_result.expanded;
-                    events.push(Event::Source { text: expanded.clone() });
+                    events.push(Event::Source {
+                        text: expanded.clone(),
+                    });
                     self.run_data_step(
                         &conn,
                         &expanded,
@@ -402,7 +465,11 @@ impl Session {
                         &mut events,
                     );
                 }
-                Block::Proc { name, body, src_offset } => {
+                Block::Proc {
+                    name,
+                    body,
+                    src_offset: _,
+                } => {
                     let raw_proc = format!("proc {}; {} run;", name, body);
                     let macro_result = {
                         let mut vars = self.macro_vars.lock().unwrap();
@@ -422,16 +489,22 @@ impl Session {
                     let sub_blocks = split_blocks(&macro_result.expanded);
                     for sub_block in sub_blocks {
                         if self.cancel.load(Ordering::SeqCst) {
-                            events.push(Event::Warning { text: "Execution cancelled by user.".into() });
+                            events.push(Event::Warning {
+                                text: "Execution cancelled by user.".into(),
+                            });
                             break;
                         }
 
-                        match sub_block {
-                            Block::Proc { name: sub_name, body: sub_body, .. } => {
-                                events.push(Event::Source { text: format!("proc {}; {} run;", sub_name, sub_body) });
-                                self.run_proc(&conn, &sub_name, &sub_body, &mut events);
-                            }
-                            _ => {}
+                        if let Block::Proc {
+                            name: sub_name,
+                            body: sub_body,
+                            ..
+                        } = sub_block
+                        {
+                            events.push(Event::Source {
+                                text: format!("proc {}; {} run;", sub_name, sub_body),
+                            });
+                            self.run_proc(&conn, &sub_name, &sub_body, &mut events);
                         }
                     }
                 }
@@ -446,10 +519,16 @@ impl Session {
         match libname::parse(stmt) {
             Ok(Some(def)) => Some(match self.apply_libname(conn, &def) {
                 Ok(msg) => vec![Event::Note { text: msg }],
-                Err(e) => vec![Event::Error { text: e.to_string(), source_span: None }],
+                Err(e) => vec![Event::Error {
+                    text: e.to_string(),
+                    source_span: None,
+                }],
             }),
             Ok(None) => None,
-            Err(e) => Some(vec![Event::Error { text: e.to_string(), source_span: None }]),
+            Err(e) => Some(vec![Event::Error {
+                text: e.to_string(),
+                source_span: None,
+            }]),
         }
     }
 
@@ -503,7 +582,9 @@ impl Session {
             Ok(StmtResult::Affected(n)) => events.push(Event::Note {
                 text: format!("Statement executed ({} row(s) affected).", n),
             }),
-            Ok(StmtResult::Done) => events.push(Event::Note { text: "Statement executed.".into() }),
+            Ok(StmtResult::Done) => events.push(Event::Note {
+                text: "Statement executed.".into(),
+            }),
             Err(e) => {
                 let text = e.to_string();
                 let source_span = duckdb_error_span(&text, stmt, src_offset, program);
@@ -528,7 +609,10 @@ impl Session {
                     events.push(n);
                 }
             }
-            Err(e) => events.push(Event::Error { text: e.to_string(), source_span: None }),
+            Err(e) => events.push(Event::Error {
+                text: e.to_string(),
+                source_span: None,
+            }),
         }
     }
 
@@ -539,7 +623,11 @@ impl Session {
         let select_sql = procs::sort::build_select_sql(&from, &spec);
         let rows = materialize_select_into(conn, &target, &select_sql)?;
         Ok(vec![Event::Note {
-            text: format!("The data set {} has {} observations.", target.display(), rows),
+            text: format!(
+                "The data set {} has {} observations.",
+                target.display(),
+                rows
+            ),
         }])
     }
 
@@ -565,7 +653,11 @@ impl Session {
         let select_sql = procs::transpose::build_select_sql(&from, &spec);
         let rows = materialize_select_into(conn, &target, &select_sql)?;
         Ok(vec![Event::Note {
-            text: format!("The data set {} has {} observations.", target.display(), rows),
+            text: format!(
+                "The data set {} has {} observations.",
+                target.display(),
+                rows
+            ),
         }])
     }
 
@@ -601,19 +693,33 @@ impl Session {
         let input = match ds.input.as_ref() {
             None => None,
             Some(datastep::ast::DataInput::Set(tables)) => {
-                match tables.iter().map(|t| self.resolve_read(t)).collect::<Result<Vec<_>, _>>() {
+                match tables
+                    .iter()
+                    .map(|t| self.resolve_read(t))
+                    .collect::<Result<Vec<_>, _>>()
+                {
                     Ok(v) => Some(datastep::exec::ResolvedInput::Set(v)),
                     Err(e) => {
-                        events.push(Event::Error { text: e.to_string(), source_span: None });
+                        events.push(Event::Error {
+                            text: e.to_string(),
+                            source_span: None,
+                        });
                         return;
                     }
                 }
             }
             Some(datastep::ast::DataInput::Merge(tables)) => {
-                match tables.iter().map(|t| self.resolve_read(t)).collect::<Result<Vec<_>, _>>() {
+                match tables
+                    .iter()
+                    .map(|t| self.resolve_read(t))
+                    .collect::<Result<Vec<_>, _>>()
+                {
                     Ok(v) => Some(datastep::exec::ResolvedInput::Merge(v)),
                     Err(e) => {
-                        events.push(Event::Error { text: e.to_string(), source_span: None });
+                        events.push(Event::Error {
+                            text: e.to_string(),
+                            source_span: None,
+                        });
                         return;
                     }
                 }
@@ -627,18 +733,29 @@ impl Session {
             match self.resolve_write(t) {
                 Ok(w) => outputs.push(w),
                 Err(e) => {
-                    events.push(Event::Error { text: e.to_string(), source_span: None });
+                    events.push(Event::Error {
+                        text: e.to_string(),
+                        source_span: None,
+                    });
                     return;
                 }
             }
         }
-        let plan = datastep::exec::ResolvedDataStep { ast: &ds, input, outputs };
+        let plan = datastep::exec::ResolvedDataStep {
+            ast: &ds,
+            input,
+            outputs,
+        };
 
         match datastep::run_data_step(conn, &plan, &self.cancel, &self.macro_vars) {
             Ok(res) => {
                 for (_, target, rows) in &res.outputs {
                     events.push(Event::Note {
-                        text: format!("The data set {} has {} observations.", target.display(), rows),
+                        text: format!(
+                            "The data set {} has {} observations.",
+                            target.display(),
+                            rows
+                        ),
                     });
                 }
                 events.push(Event::Note {
@@ -663,7 +780,10 @@ impl Session {
                     }
                     _ => None,
                 };
-                events.push(Event::Error { text: e.to_string(), source_span });
+                events.push(Event::Error {
+                    text: e.to_string(),
+                    source_span,
+                });
             }
         }
     }
@@ -690,7 +810,10 @@ impl Session {
     ) -> Result<datastep::exec::WriteTarget, EngineError> {
         use datastep::exec::WriteTarget;
         match &t.libref {
-            None => Ok(WriteTarget::DuckDb { schema: "main".into(), name: t.name.clone() }),
+            None => Ok(WriteTarget::DuckDb {
+                schema: "main".into(),
+                name: t.name.clone(),
+            }),
             Some(l) => {
                 let lib = self.lookup_library(l)?;
                 match lib.kind {
@@ -710,11 +833,8 @@ impl Session {
                             t.name,
                             fmt.extension()
                         );
-                        let display = format!(
-                            "{}.{}",
-                            lib.name.to_uppercase(),
-                            t.name.to_uppercase()
-                        );
+                        let display =
+                            format!("{}.{}", lib.name.to_uppercase(), t.name.to_uppercase());
                         Ok(match fmt {
                             DirFormat::Parquet => WriteTarget::Parquet { path, display },
                             DirFormat::Csv => WriteTarget::Csv { path, display },
@@ -758,10 +878,7 @@ impl Session {
                     )));
                 }
                 if !p.is_dir() {
-                    return Err(EngineError::Other(format!(
-                        "not a directory: {}",
-                        def.path
-                    )));
+                    return Err(EngineError::Other(format!("not a directory: {}", def.path)));
                 }
             }
         }
@@ -776,7 +893,11 @@ impl Session {
             "Library {} assigned as {:?}{}.",
             def.name.to_uppercase(),
             def.kind,
-            if def.path.is_empty() { String::new() } else { format!(" → {}", def.path) }
+            if def.path.is_empty() {
+                String::new()
+            } else {
+                format!(" → {}", def.path)
+            }
         ))
     }
 
@@ -894,15 +1015,15 @@ impl Session {
                     let b = bytes[i];
                     out.push(b as char);
                     i += 1;
-                    if b == q { break; }
+                    if b == q {
+                        break;
+                    }
                 }
                 continue;
             }
             if c.is_ascii_alphabetic() || c == b'_' {
                 let start = i;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-                {
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
                 let ident = &sql[start..i];
@@ -910,16 +1031,14 @@ impl Session {
                 if i < bytes.len() && bytes[i] == b'.' {
                     let after_dot = i + 1;
                     let mut j = after_dot;
-                    while j < bytes.len()
-                        && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_')
+                    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_')
                     {
                         j += 1;
                     }
                     if j > after_dot {
                         let ds = &sql[after_dot..j];
-                        if let Some(lib) = all_libs
-                            .iter()
-                            .find(|l| l.name.eq_ignore_ascii_case(ident))
+                        if let Some(lib) =
+                            all_libs.iter().find(|l| l.name.eq_ignore_ascii_case(ident))
                         {
                             match lib.kind {
                                 LibraryKind::Dir => {
@@ -958,23 +1077,36 @@ pub struct DatasetPage {
 /// Build a `WHERE col1 LIKE '%v%' AND col2 LIKE '%w%'` clause for the
 /// dataset viewer. Empty values and missing maps return an empty string.
 fn build_where_clause(filters: Option<&HashMap<String, String>>) -> String {
-    let Some(map) = filters else { return String::new(); };
+    let Some(map) = filters else {
+        return String::new();
+    };
     let mut parts: Vec<String> = map
         .iter()
         .filter(|(_, v)| !v.trim().is_empty())
         .map(|(k, v)| {
             let needle = v.replace('\'', "''");
-            format!("CAST(\"{}\" AS VARCHAR) ILIKE '%{}%'", k.replace('"', ""), needle)
+            format!("CAST({} AS VARCHAR) ILIKE '%{}%'", quote_ident(k), needle)
         })
         .collect();
-    if parts.is_empty() { return String::new(); }
+    if parts.is_empty() {
+        return String::new();
+    }
     parts.sort();
     format!(" WHERE {}", parts.join(" AND "))
 }
 
+pub fn quote_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
 fn dir_reader_expr(lib: &Library, dataset: &str) -> String {
     let fmt = lib.format.unwrap_or(DirFormat::Parquet);
-    let path = format!("{}/{}.{}", lib.path.trim_end_matches('/'), dataset, fmt.extension());
+    let path = format!(
+        "{}/{}.{}",
+        lib.path.trim_end_matches('/'),
+        dataset,
+        fmt.extension()
+    );
     let escaped = path.replace('\'', "''");
     match fmt {
         DirFormat::Parquet => format!("read_parquet('{}')", escaped),
@@ -1004,19 +1136,25 @@ fn list_schema_tables(
         .collect();
     Ok(names
         .into_iter()
-        .map(|name| DatasetInfo { libref: libref.to_string(), name, rows: None })
+        .map(|name| DatasetInfo {
+            libref: libref.to_string(),
+            name,
+            rows: None,
+        })
         .collect())
 }
 
 fn list_dir_datasets(lib: &Library) -> Result<Vec<DatasetInfo>, EngineError> {
     let fmt = lib.format.unwrap_or(DirFormat::Parquet);
     let ext = fmt.extension();
-    let dir = std::fs::read_dir(&lib.path)
-        .map_err(|e| EngineError::Other(format!("read_dir: {}", e)))?;
+    let dir =
+        std::fs::read_dir(&lib.path).map_err(|e| EngineError::Other(format!("read_dir: {}", e)))?;
     let mut out = Vec::new();
     for entry in dir.flatten() {
         let p = entry.path();
-        if p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case(ext))
+        if p.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case(ext))
             == Some(true)
         {
             if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
@@ -1093,10 +1231,17 @@ fn run_query(conn: &Connection, sql: &str, max_rows: usize) -> Result<StmtResult
     let columns = col_names
         .into_iter()
         .zip(col_types)
-        .map(|(name, ty)| Column { name, ty: if ty.is_empty() { "?".into() } else { ty } })
+        .map(|(name, ty)| Column {
+            name,
+            ty: if ty.is_empty() { "?".into() } else { ty },
+        })
         .collect();
 
-    Ok(StmtResult::Rows(ResultBlock { columns, rows, truncated }))
+    Ok(StmtResult::Rows(ResultBlock {
+        columns,
+        rows,
+        truncated,
+    }))
 }
 
 /// Run `select_sql` and route the result rows into `target`. Returns the
@@ -1234,8 +1379,16 @@ fn is_query(sql: &str) -> bool {
         .collect();
     matches!(
         head.as_str(),
-        "select" | "with" | "show" | "describe" | "explain" | "pragma" | "values" | "table"
-            | "from" | "summarize"
+        "select"
+            | "with"
+            | "show"
+            | "describe"
+            | "explain"
+            | "pragma"
+            | "values"
+            | "table"
+            | "from"
+            | "summarize"
     )
 }
 
@@ -1299,7 +1452,10 @@ mod tests {
             quit;
             "#,
         );
-        let outputs: Vec<_> = evs.iter().filter(|e| matches!(e, Event::Output { .. })).collect();
+        let outputs: Vec<_> = evs
+            .iter()
+            .filter(|e| matches!(e, Event::Output { .. }))
+            .collect();
         assert_eq!(outputs.len(), 1, "got events: {:?}", evs);
     }
 
@@ -1315,7 +1471,11 @@ mod tests {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table t as select 1 as x;");
         let evs = s.submit("create table t as select 2 as x;");
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
     }
 
     #[test]
@@ -1336,9 +1496,17 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let ds = s.list_datasets("work").unwrap();
-        assert!(!ds.iter().any(|d| d.name.eq_ignore_ascii_case("_null_")), "{:?}", ds);
+        assert!(
+            !ds.iter().any(|d| d.name.eq_ignore_ascii_case("_null_")),
+            "{:?}",
+            ds
+        );
     }
 
     #[test]
@@ -1347,13 +1515,25 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let s = Session::new_in_memory().unwrap();
         let evs = s.submit(&format!(r#"libname out "{}";"#, dir));
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let evs = s.submit("create table out.demo as select 1 as a union all select 2;");
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         assert!(std::path::Path::new(&format!("{}/demo.parquet", dir)).exists());
         // Read back via libref.
         let evs = s.submit("select count(*) as n from out.demo;");
-        assert!(evs.iter().any(|e| matches!(e, Event::Output { .. })), "{:?}", evs);
+        assert!(
+            evs.iter().any(|e| matches!(e, Event::Output { .. })),
+            "{:?}",
+            evs
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1376,7 +1556,10 @@ mod tests {
             run;
             "#,
         );
-        let errs: Vec<_> = evs.iter().filter(|e| matches!(e, Event::Error { .. })).collect();
+        let errs: Vec<_> = evs
+            .iter()
+            .filter(|e| matches!(e, Event::Error { .. }))
+            .collect();
         assert!(errs.is_empty(), "errors: {:?}", errs);
         let page = s.dataset_page("work", "out", 0, 100, None).unwrap();
         assert_eq!(page.total_rows, 2);
@@ -1410,7 +1593,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 100, None).unwrap();
         assert_eq!(page.total_rows, 4);
         // Last row's `total` should be 1+2+3+4 = 10.
@@ -1439,7 +1626,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 100, None).unwrap();
         assert_eq!(page.total_rows, 3);
     }
@@ -1460,12 +1651,18 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 100, None).unwrap();
         let total_idx = page.columns.iter().position(|c| c.name == "total").unwrap();
         if let crate::Value::Float(t) = &page.rows[0][total_idx] {
             assert!((t - 6.0).abs() < 1e-9);
-        } else { panic!("not float: {:?}", page.rows[0][total_idx]); }
+        } else {
+            panic!("not float: {:?}", page.rows[0][total_idx]);
+        }
     }
 
     #[test]
@@ -1484,7 +1681,11 @@ mod tests {
             "#,
             path
         ));
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "people", 0, 100, None).unwrap();
         assert_eq!(page.total_rows, 3);
         std::fs::remove_dir_all(&dir).ok();
@@ -1504,7 +1705,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
         let txt = |idx: usize| match &page.rows[0][idx] {
@@ -1528,11 +1733,16 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         let d_idx = page.columns.iter().position(|c| c.name == "d").unwrap();
         let expected = (chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
-            - chrono::NaiveDate::from_ymd_opt(1960, 1, 1).unwrap()).num_days() as f64;
+            - chrono::NaiveDate::from_ymd_opt(1960, 1, 1).unwrap())
+        .num_days() as f64;
         match &page.rows[0][d_idx] {
             crate::Value::Float(f) => assert!((f - expected).abs() < 1e-9, "{} vs {}", f, expected),
             other => panic!("expected float, got {:?}", other),
@@ -1545,19 +1755,31 @@ mod tests {
         let evs = s.submit(
             "data work.people;\n  input name $ age;\n  datalines;\nalice 30\nbob 25\ncarol 41\n;\nrun;\n",
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "people", 0, 100, None).unwrap();
         assert_eq!(page.total_rows, 3);
         let name_i = page.columns.iter().position(|c| c.name == "name").unwrap();
         let age_i = page.columns.iter().position(|c| c.name == "age").unwrap();
-        let names: Vec<String> = page.rows.iter().map(|r| match &r[name_i] {
-            crate::Value::Text(s) => s.clone(),
-            _ => String::new(),
-        }).collect();
-        let ages: Vec<f64> = page.rows.iter().map(|r| match &r[age_i] {
-            crate::Value::Float(f) => *f,
-            _ => f64::NAN,
-        }).collect();
+        let names: Vec<String> = page
+            .rows
+            .iter()
+            .map(|r| match &r[name_i] {
+                crate::Value::Text(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        let ages: Vec<f64> = page
+            .rows
+            .iter()
+            .map(|r| match &r[age_i] {
+                crate::Value::Float(f) => *f,
+                _ => f64::NAN,
+            })
+            .collect();
         assert_eq!(names, vec!["alice", "bob", "carol"]);
         assert_eq!(ages, vec![30.0, 25.0, 41.0]);
     }
@@ -1579,7 +1801,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "merged", 0, 1, None).unwrap();
         assert_eq!(page.total_rows, 200000);
     }
@@ -1614,7 +1840,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
         let num = |n: &str| match &page.rows[0][by(n)] {
@@ -1672,7 +1902,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
         let txt = |n: &str| match &page.rows[0][by(n)] {
@@ -1718,7 +1952,11 @@ mod tests {
         let span = span.expect("expected runtime error span");
         // Line 3 is the assignment with the bad function.
         assert_eq!(span.start_line, 3);
-        assert!(span.start_col >= 5, "expected the call to be past the indent, got col {}", span.start_col);
+        assert!(
+            span.start_col >= 5,
+            "expected the call to be past the indent, got col {}",
+            span.start_col
+        );
     }
 
     #[test]
@@ -1767,7 +2005,11 @@ mod tests {
         let span = err_span.expect("expected an Event::Error with a source_span");
         // The offending token should land somewhere on or after the buggy
         // line 3 (which is the assignment without a trailing semicolon).
-        assert!(span.start_line >= 3, "span at line {} should be >= 3", span.start_line);
+        assert!(
+            span.start_line >= 3,
+            "span at line {} should be >= 3",
+            span.start_line
+        );
         assert!(span.end_line >= span.start_line);
         assert!(span.start_col >= 1);
     }
@@ -1790,7 +2032,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "big_out", 0, 1, None).unwrap();
         assert_eq!(page.total_rows, 5000);
     }
@@ -1802,10 +2048,12 @@ mod tests {
             "create table src as select * from (values \
              ('b', 2),('a', 1),('a', 3),('c', 5)) as t(grp, val);",
         );
-        let evs = s.submit(
-            "proc sort data=src out=sorted nodupkey; by grp; run;",
+        let evs = s.submit("proc sort data=src out=sorted nodupkey; by grp; run;");
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
         let page = s.dataset_page("work", "sorted", 0, 10, None).unwrap();
         // nodupkey keeps one row per by-group (grp): a, b, c → 3 rows.
         assert_eq!(page.total_rows, 3);
@@ -1820,8 +2068,15 @@ mod tests {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select * from (values (1),(2),(3)) as t(x);");
         let evs = s.submit("proc print data=src obs=2; var x; run;");
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
-        let outputs: Vec<_> = evs.iter().filter(|e| matches!(e, Event::Output { .. })).collect();
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let outputs: Vec<_> = evs
+            .iter()
+            .filter(|e| matches!(e, Event::Output { .. }))
+            .collect();
         assert_eq!(outputs.len(), 1);
         if let Some(Event::Output { block }) = outputs.first() {
             assert_eq!(block.rows.len(), 2);
@@ -1836,10 +2091,13 @@ mod tests {
             "create table sales as select * from (values \
              ('east','q1',10),('east','q2',20),('west','q1',5),('west','q2',8)) as t(region, qtr, amount);",
         );
-        let evs = s.submit(
-            "proc transpose data=sales out=wide; by region; id qtr; var amount; run;",
+        let evs =
+            s.submit("proc transpose data=sales out=wide; by region; id qtr; var amount; run;");
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
         let page = s.dataset_page("work", "wide", 0, 10, None).unwrap();
         // 2 regions × (region + q1 + q2) = 2 rows, 3 columns
         assert_eq!(page.total_rows, 2);
@@ -1856,7 +2114,11 @@ mod tests {
         let evs = s.submit(
             "proc sql; create table o as select x, x*2 as doubled, calculated doubled + 1 as plus1 from src; quit;",
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         assert_eq!(page.total_rows, 3);
     }
@@ -1865,10 +2127,13 @@ mod tests {
     fn proc_sql_monotonic_function() {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select * from (values ('a'),('b'),('c')) as t(letter);");
-        let evs = s.submit(
-            "proc sql; create table o as select monotonic() as rn, letter from src; quit;",
+        let evs = s
+            .submit("proc sql; create table o as select monotonic() as rn, letter from src; quit;");
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         assert_eq!(page.total_rows, 3);
         let rn_idx = page.columns.iter().position(|c| c.name == "rn").unwrap();
@@ -1887,7 +2152,11 @@ mod tests {
         let evs = s.submit(
             "proc sql; create table merged as select * from a outer union corr select * from b; quit;",
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "merged", 0, 10, None).unwrap();
         // Two rows, columns id + name regardless of declaration order.
         assert_eq!(page.total_rows, 2);
@@ -1905,9 +2174,15 @@ mod tests {
             create table t as select &target as x;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         // The %put text appears as a NOTE.
-        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("answer is 42"))));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, Event::Note { text } if text.contains("answer is 42"))));
         // The table was created with x = 42.
         let page = s.dataset_page("work", "t", 0, 10, None).unwrap();
         assert_eq!(page.total_rows, 1);
@@ -1935,8 +2210,18 @@ mod tests {
             %put n_employees count is &n_employees;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
-        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("n_employees count is 2"))), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        assert!(
+            evs.iter().any(
+                |e| matches!(e, Event::Note { text } if text.contains("n_employees count is 2"))
+            ),
+            "{:?}",
+            evs
+        );
     }
 
     #[test]
@@ -1944,7 +2229,9 @@ mod tests {
         let s = Session::new_in_memory().unwrap();
         s.submit("%let name = ada;");
         let evs = s.submit("%put hi &name;");
-        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("hi ada"))));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, Event::Note { text } if text.contains("hi ada"))));
     }
 
     #[test]
@@ -1959,7 +2246,9 @@ mod tests {
             "#,
         );
         let evs = s.submit("%put val1=&var1 val2=&var2;");
-        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("val1= hello  val2=world"))));
+        assert!(evs.iter().any(
+            |e| matches!(e, Event::Note { text } if text.contains("val1= hello  val2=world"))
+        ));
     }
 
     #[test]
@@ -2033,7 +2322,9 @@ mod tests {
         );
 
         // Verify that the query returned 1 row successfully instead of raising a Catalog Error.
-        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("Statement returned 1 row(s)"))));
+        assert!(evs.iter().any(
+            |e| matches!(e, Event::Note { text } if text.contains("Statement returned 1 row(s)"))
+        ));
     }
 
     #[test]
@@ -2052,13 +2343,21 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 100, None).unwrap();
         let label_idx = page.columns.iter().position(|c| c.name == "label").unwrap();
-        let labels: Vec<String> = page.rows.iter().map(|r| match &r[label_idx] {
-            crate::Value::Text(s) => s.clone(),
-            _ => String::new(),
-        }).collect();
+        let labels: Vec<String> = page
+            .rows
+            .iter()
+            .map(|r| match &r[label_idx] {
+                crate::Value::Text(s) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
         assert_eq!(labels, vec!["one", "middle", "middle", "big"]);
     }
 
@@ -2079,18 +2378,26 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         let by_name = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
         let row = &page.rows[0];
-        let n = |i: usize| match &row[i] { crate::Value::Float(f) => *f, _ => f64::NAN };
+        let n = |i: usize| match &row[i] {
+            crate::Value::Float(f) => *f,
+            _ => f64::NAN,
+        };
         assert_eq!(n(by_name("yr")), 2024.0);
         assert_eq!(n(by_name("mn")), 1.0);
         assert_eq!(n(by_name("dy")), 1.0);
         // 01FEB2024 = days from 1960-01-01
         // intnx('month', 01JAN2024, 1) → 01FEB2024
         let feb1 = (chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap()
-            - chrono::NaiveDate::from_ymd_opt(1960, 1, 1).unwrap()).num_days() as f64;
+            - chrono::NaiveDate::from_ymd_opt(1960, 1, 1).unwrap())
+        .num_days() as f64;
         assert_eq!(n(by_name("next")), feb1);
         assert_eq!(n(by_name("gap")), 2.0);
     }
@@ -2098,8 +2405,12 @@ mod tests {
     #[test]
     fn data_step_merge_one_to_many() {
         let s = Session::new_in_memory().unwrap();
-        s.submit("create table people as select * from (values (1,'a'),(2,'b'),(3,'c')) as t(id, name);");
-        s.submit("create table scores as select * from (values (1,10),(1,20),(2,30)) as t(id, score);");
+        s.submit(
+            "create table people as select * from (values (1,'a'),(2,'b'),(3,'c')) as t(id, name);",
+        );
+        s.submit(
+            "create table scores as select * from (values (1,10),(1,20),(2,30)) as t(id, score);",
+        );
         let evs = s.submit(
             r#"
             data o;
@@ -2108,7 +2419,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 100, None).unwrap();
         // id=1 → 2 rows (name=a broadcast), id=2 → 1 row, id=3 → 1 row (score null) = 4 total
         assert_eq!(page.total_rows, 4);
@@ -2122,7 +2437,11 @@ mod tests {
         s.submit(&format!(r#"libname dados "{}";"#, dir));
         // Seed a parquet file via PROC SQL (CREATE TABLE dados.people).
         let evs = s.submit("create table dados.people as select 'Ada' as name, 1815 as born;");
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         // DATA step that reads + writes via the DIR libref.
         let evs = s.submit(
             r#"
@@ -2132,7 +2451,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         assert!(std::path::Path::new(&format!("{}/people_12.parquet", dir)).exists());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2148,7 +2471,11 @@ mod tests {
             run;
             "#,
         );
-        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         assert_eq!(page.total_rows, 2);
     }

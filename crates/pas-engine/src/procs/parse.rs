@@ -78,7 +78,10 @@ pub fn parse_by_clause(s: &str) -> Vec<ByVar> {
         if lw == "descending" || lw == "desc" {
             next_desc = true;
         } else {
-            out.push(ByVar { name: lw, descending: next_desc });
+            out.push(ByVar {
+                name: lw,
+                descending: next_desc,
+            });
             next_desc = false;
         }
     }
@@ -109,9 +112,27 @@ mod tests {
     #[test]
     fn by_descending() {
         let v = parse_by_clause("x descending y z");
-        assert_eq!(v[0], ByVar { name: "x".into(), descending: false });
-        assert_eq!(v[1], ByVar { name: "y".into(), descending: true });
-        assert_eq!(v[2], ByVar { name: "z".into(), descending: false });
+        assert_eq!(
+            v[0],
+            ByVar {
+                name: "x".into(),
+                descending: false
+            }
+        );
+        assert_eq!(
+            v[1],
+            ByVar {
+                name: "y".into(),
+                descending: true
+            }
+        );
+        assert_eq!(
+            v[2],
+            ByVar {
+                name: "z".into(),
+                descending: false
+            }
+        );
     }
 
     #[test]

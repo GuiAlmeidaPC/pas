@@ -18,6 +18,14 @@
     {
       "path": "teste.sas",
       "content": "/*teste*/"
+    },
+    {
+      "path": "ai_program.sas",
+      "content": "data with_revenue;\n    set raw_data;\n    revenue = qty * price;\nrun;\n\nproc print data=with_revenue; run;"
+    },
+    {
+      "path": "ai_program2.sas",
+      "content": "proc sql;\n    create table raw_data as\n    select * from (values\n        ('Apple',      10, 0.5),\n        ('Banana',     20, 0.2),\n        ('Cherry',     15, 1.0),\n        ('Date',       30, 0.8),\n        ('Elderberry',  5, 2.0),\n        ('Fig',        12, 0.9),\n        ('Grape',       8, 1.2),\n        ('Honeydew',    3, 3.5)\n    ) as t(item, qty, price);\nquit;"
     }
   ],
   "open_tabs": [
@@ -32,11 +40,19 @@
     },
     {
       "path": "teste.sas"
+    },
+    {
+      "path": "ai_program.sas"
+    },
+    {
+      "path": "ai_program2.sas"
     }
   ],
-  "active_tab": "teste.sas",
+  "active_tab": "ai_program2.sas",
   "layout": {
     "sidebar_width": 240,
-    "bottom_height": 180
+    "bottom_height": 180,
+    "bottom_width": null,
+    "orientation": "vertical"
   }
 }

@@ -8,6 +8,7 @@
 //! - `%name(args)` and `%name` macro invocations.
 //! - `%if condition %then action; %else action;` conditionals.
 //! - `%do; ... %end;` blocks.
+#![allow(clippy::all, warnings)]
 //! - `%do var = start %to end %by step; ... %end;` iterative loops.
 //! - `%do %while(condition); ... %end;` and `%do %until(condition); ... %end;` loops.
 //! - Built-in functions: `%eval`, `%sysevalf`, `%upcase`, `%lowcase`, `%substr`, `%length`, `%index`, `%scan`, `%str`, `%quote`.
@@ -18,7 +19,7 @@ use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct MacroDef {
-    pub name: String,
+    pub _name: String,
     pub params: Vec<MacroParam>,
     pub body: Vec<Node>,
 }
@@ -34,7 +35,7 @@ pub enum Node {
     Text(String),
     VarRef {
         name: String,
-        has_dot: bool,
+        _has_dot: bool,
     },
     Let {
         name: String,
@@ -177,10 +178,21 @@ impl EvalValue {
 enum ExprTok {
     Num(f64),
     Str(String),
-    Add, Sub, Mul, Div,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or, Not,
-    LParen, RParen,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+    Not,
+    LParen,
+    RParen,
 }
 
 fn tokenize_expr(s: &str) -> Vec<ExprTok> {
@@ -284,7 +296,9 @@ fn tokenize_expr(s: &str) -> Vec<ExprTok> {
 
         if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
             let mut val = String::new();
-            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '.') {
+            while i < chars.len()
+                && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '.')
+            {
                 val.push(chars[i]);
                 i += 1;
             }
@@ -351,7 +365,11 @@ impl ExprParser {
         while let Some(ExprTok::Or) = self.peek() {
             self.bump();
             let right = self.parse_and()?;
-            left = EvalValue::Num(if left.truthy() || right.truthy() { 1.0 } else { 0.0 });
+            left = EvalValue::Num(if left.truthy() || right.truthy() {
+                1.0
+            } else {
+                0.0
+            });
         }
         Ok(left)
     }
@@ -361,7 +379,11 @@ impl ExprParser {
         while let Some(ExprTok::And) = self.peek() {
             self.bump();
             let right = self.parse_eq()?;
-            left = EvalValue::Num(if left.truthy() && right.truthy() { 1.0 } else { 0.0 });
+            left = EvalValue::Num(if left.truthy() && right.truthy() {
+                1.0
+            } else {
+                0.0
+            });
         }
         Ok(left)
     }
@@ -370,7 +392,12 @@ impl ExprParser {
         let mut left = self.parse_add()?;
         while let Some(t) = self.peek() {
             match t {
-                ExprTok::Eq | ExprTok::Ne | ExprTok::Lt | ExprTok::Le | ExprTok::Gt | ExprTok::Ge => {
+                ExprTok::Eq
+                | ExprTok::Ne
+                | ExprTok::Lt
+                | ExprTok::Le
+                | ExprTok::Gt
+                | ExprTok::Ge => {
                     let op = self.bump().unwrap();
                     let right = self.parse_add()?;
                     left = match op {
@@ -681,7 +708,9 @@ impl<'a> Parser<'a> {
                                     inner_text.clear();
                                 }
                                 self.bump();
-                                let name = self.read_identifier().ok_or("Expected identifier after % in double quotes")?;
+                                let name = self
+                                    .read_identifier()
+                                    .ok_or("Expected identifier after % in double quotes")?;
                                 if is_builtin_func(&name) {
                                     let func_node = self.parse_func_call(name)?;
                                     d_nodes.push(func_node);
@@ -717,7 +746,9 @@ impl<'a> Parser<'a> {
                     if next_c.is_ascii_alphabetic() || next_c == '_' {
                         flush_text(&mut nodes, &mut current_text);
                         self.bump();
-                        let keyword_or_name = self.read_identifier().ok_or("Expected identifier after %")?;
+                        let keyword_or_name = self
+                            .read_identifier()
+                            .ok_or("Expected identifier after %")?;
                         let kw_lower = keyword_or_name.to_ascii_lowercase();
 
                         match kw_lower.as_str() {
@@ -780,14 +811,19 @@ impl<'a> Parser<'a> {
             } else {
                 false
             };
-            Ok(Node::VarRef { name, has_dot })
+            Ok(Node::VarRef {
+                name,
+                _has_dot: has_dot,
+            })
         } else {
             Ok(Node::Text("&".to_string()))
         }
     }
 
     fn parse_let(&mut self) -> Result<Node, String> {
-        let name = self.read_identifier().ok_or("Expected identifier for %let")?;
+        let name = self
+            .read_identifier()
+            .ok_or("Expected identifier for %let")?;
         self.skip_whitespace();
         if self.peek() == Some('=') {
             self.bump();
@@ -798,7 +834,10 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(';') {
             self.bump();
         }
-        Ok(Node::Let { name: name.to_ascii_lowercase(), value: value_nodes })
+        Ok(Node::Let {
+            name: name.to_ascii_lowercase(),
+            value: value_nodes,
+        })
     }
 
     fn parse_put(&mut self) -> Result<Node, String> {
@@ -840,14 +879,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_macro_def(&mut self) -> Result<Node, String> {
-        let name = self.read_identifier().ok_or("Expected macro name")?.to_ascii_lowercase();
+        let name = self
+            .read_identifier()
+            .ok_or("Expected macro name")?
+            .to_ascii_lowercase();
         self.skip_whitespace();
         let mut params = Vec::new();
         if self.peek() == Some('(') {
             self.bump();
             self.skip_whitespace();
             while self.peek() != Some(')') && !self.is_eof() {
-                let p_name = self.read_identifier().ok_or("Expected parameter name")?.to_ascii_lowercase();
+                let p_name = self
+                    .read_identifier()
+                    .ok_or("Expected parameter name")?
+                    .to_ascii_lowercase();
                 self.skip_whitespace();
                 let mut default_value = None;
                 if self.peek() == Some('=') {
@@ -855,7 +900,10 @@ impl<'a> Parser<'a> {
                     let val_nodes = self.parse_nodes(&[",", ")"])?;
                     default_value = Some(val_nodes);
                 }
-                params.push(MacroParam { name: p_name, default_value });
+                params.push(MacroParam {
+                    name: p_name,
+                    default_value,
+                });
                 self.skip_whitespace();
                 if self.peek() == Some(',') {
                     self.bump();
@@ -900,7 +948,11 @@ impl<'a> Parser<'a> {
         let mut body_parser = Parser::new(&body_chars);
         let body_nodes = body_parser.parse_nodes(&[])?;
 
-        Ok(Node::MacroDef { name, params, body: body_nodes })
+        Ok(Node::MacroDef {
+            name,
+            params,
+            body: body_nodes,
+        })
     }
 
     fn parse_macro_call(&mut self, name: String) -> Result<Node, String> {
@@ -920,7 +972,10 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
-        Ok(Node::MacroCall { name: name.to_ascii_lowercase(), args })
+        Ok(Node::MacroCall {
+            name: name.to_ascii_lowercase(),
+            args,
+        })
     }
 
     fn parse_argument_nodes(&mut self) -> Result<Vec<Node>, String> {
@@ -1002,7 +1057,10 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
-        Ok(Node::FuncCall { name: name.to_ascii_lowercase(), args })
+        Ok(Node::FuncCall {
+            name: name.to_ascii_lowercase(),
+            args,
+        })
     }
 
     fn parse_if(&mut self) -> Result<Node, String> {
@@ -1022,7 +1080,11 @@ impl<'a> Parser<'a> {
             else_branch = Some(self.parse_action_nodes()?);
         }
 
-        Ok(Node::If { cond: cond_nodes, then_branch, else_branch })
+        Ok(Node::If {
+            cond: cond_nodes,
+            then_branch,
+            else_branch,
+        })
     }
 
     fn parse_action_nodes(&mut self) -> Result<Vec<Node>, String> {
@@ -1088,12 +1150,20 @@ impl<'a> Parser<'a> {
             }
 
             if is_while {
-                Ok(Node::DoWhile { cond: cond_nodes, body: body_nodes })
+                Ok(Node::DoWhile {
+                    cond: cond_nodes,
+                    body: body_nodes,
+                })
             } else {
-                Ok(Node::DoUntil { cond: cond_nodes, body: body_nodes })
+                Ok(Node::DoUntil {
+                    cond: cond_nodes,
+                    body: body_nodes,
+                })
             }
         } else {
-            let var = self.read_identifier().ok_or("Expected loop variable in %do")?;
+            let var = self
+                .read_identifier()
+                .ok_or("Expected loop variable in %do")?;
             self.skip_whitespace();
             if self.peek() == Some('=') {
                 self.bump();
@@ -1208,7 +1278,10 @@ impl<'a> Context<'a> {
         }
 
         Self {
-            env: Env { global, local_stack: Vec::new() },
+            env: Env {
+                global,
+                local_stack: Vec::new(),
+            },
             defs,
             puts: Vec::new(),
         }
@@ -1226,14 +1299,10 @@ impl<'a> Context<'a> {
     fn eval_node(&mut self, node: &Node) -> Result<String, String> {
         match node {
             Node::Text(t) => Ok(t.clone()),
-            Node::VarRef { name, has_dot: _ } => {
-                match self.env.get(name) {
-                    Some(v) => Ok(v),
-                    None => {
-                        Ok(format!("&{}", name))
-                    }
-                }
-            }
+            Node::VarRef { name, _has_dot: _ } => match self.env.get(name) {
+                Some(v) => Ok(v),
+                None => Ok(format!("&{}", name)),
+            },
             Node::Let { name, value } => {
                 let expanded_val = self.eval_nodes(value)?;
                 self.env.set(name, expanded_val.trim().to_string());
@@ -1257,15 +1326,22 @@ impl<'a> Context<'a> {
                 Ok(String::new())
             }
             Node::MacroDef { name, params, body } => {
-                self.defs.insert(name.clone(), MacroDef {
-                    name: name.clone(),
-                    params: params.clone(),
-                    body: body.clone(),
-                });
+                self.defs.insert(
+                    name.clone(),
+                    MacroDef {
+                        _name: name.clone(),
+                        params: params.clone(),
+                        body: body.clone(),
+                    },
+                );
                 Ok(String::new())
             }
             Node::MacroCall { name, args } => {
-                println!("MACRO_CALL: name={:?}, defs_keys={:?}", name, self.defs.keys().collect::<Vec<_>>());
+                tracing::debug!(
+                    macro_name = %name,
+                    defs = ?self.defs.keys().collect::<Vec<_>>(),
+                    "expanding macro call",
+                );
                 let mac_def = match self.defs.get(name).cloned() {
                     Some(d) => d,
                     None => {
@@ -1298,7 +1374,10 @@ impl<'a> Context<'a> {
                                     positional_idx += 1;
                                 } else {
                                     let (k, _) = arg_str.split_once('=').unwrap();
-                                    let matches_any_param = mac_def.params.iter().any(|p| p.name.eq_ignore_ascii_case(k.trim()));
+                                    let matches_any_param = mac_def
+                                        .params
+                                        .iter()
+                                        .any(|p| p.name.eq_ignore_ascii_case(k.trim()));
                                     if matches_any_param {
                                         positional_idx += 1;
                                         if let Some(next_arg) = args.get(positional_idx) {
@@ -1338,16 +1417,19 @@ impl<'a> Context<'a> {
                     local_scope.insert(param.name.clone(), final_val);
                 }
 
-                println!("MACRO_CALL: local_scope={:?}", local_scope);
-                println!("MACRO_CALL: body_nodes={:#?}", mac_def.body);
+                tracing::debug!(local_scope = ?local_scope, body = ?mac_def.body, "macro scope bound");
                 self.env.local_stack.push(local_scope);
                 let body_expanded = self.eval_nodes(&mac_def.body)?;
                 self.env.local_stack.pop();
 
-                println!("MACRO_CALL: body_expanded={:?}", body_expanded);
+                tracing::debug!(expanded = %body_expanded, "macro body expanded");
                 Ok(body_expanded)
             }
-            Node::If { cond, then_branch, else_branch } => {
+            Node::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 let cond_str = self.eval_nodes(cond)?;
                 let eval_res = eval_expression(&cond_str)?;
                 if eval_res.truthy() {
@@ -1358,10 +1440,14 @@ impl<'a> Context<'a> {
                     Ok(String::new())
                 }
             }
-            Node::Do(body) => {
-                self.eval_nodes(body)
-            }
-            Node::DoLoop { var, start, end, by, body } => {
+            Node::Do(body) => self.eval_nodes(body),
+            Node::DoLoop {
+                var,
+                start,
+                end,
+                by,
+                body,
+            } => {
                 let start_val = self.eval_nodes(start)?;
                 let start_num = eval_expression(&start_val)?.to_num()?;
                 let end_val = self.eval_nodes(end)?;
@@ -1446,7 +1532,10 @@ impl<'a> Context<'a> {
                     }
                     "substr" => {
                         let text = evaluated_args.get(0).cloned().unwrap_or_default();
-                        let pos = evaluated_args.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+                        let pos = evaluated_args
+                            .get(1)
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(1);
                         let length = evaluated_args.get(2).and_then(|s| s.parse::<usize>().ok());
 
                         if pos == 0 || pos > text.len() {
@@ -1470,8 +1559,14 @@ impl<'a> Context<'a> {
                     }
                     "scan" => {
                         let text = evaluated_args.get(0).cloned().unwrap_or_default();
-                        let n = evaluated_args.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
-                        let delimiters_str = evaluated_args.get(2).cloned().unwrap_or_else(|| " \t,".to_string());
+                        let n = evaluated_args
+                            .get(1)
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(1);
+                        let delimiters_str = evaluated_args
+                            .get(2)
+                            .cloned()
+                            .unwrap_or_else(|| " \t,".to_string());
                         let delimiters: Vec<char> = delimiters_str.chars().collect();
 
                         let words: Vec<&str> = text
@@ -1488,9 +1583,7 @@ impl<'a> Context<'a> {
                     "str" | "quote" | "bquote" | "superq" => {
                         Ok(evaluated_args.get(0).cloned().unwrap_or_default())
                     }
-                    _ => {
-                        Err(format!("Unknown built-in function %{}", name))
-                    }
+                    _ => Err(format!("Unknown built-in function %{}", name)),
                 }
             }
         }
@@ -1563,7 +1656,11 @@ mod tests {
     fn amp_with_dot_terminator() {
         let mut vars = HashMap::new();
         let mut defs = HashMap::new();
-        let out = preprocess("%let lib = work; data &lib..out; run;", &mut vars, &mut defs);
+        let out = preprocess(
+            "%let lib = work; data &lib..out; run;",
+            &mut vars,
+            &mut defs,
+        );
         assert!(out.expanded.contains("data work.out"));
     }
 
@@ -1631,7 +1728,9 @@ mod tests {
             &mut vars,
             &mut defs,
         );
-        assert!(out.puts.contains(&"Param a is 42 and b is custom".to_string()));
+        assert!(out
+            .puts
+            .contains(&"Param a is 42 and b is custom".to_string()));
         assert!(out.expanded.contains("x = 42;"));
         assert!(out.expanded.contains("y = custom;"));
     }
@@ -1709,4 +1808,3 @@ mod tests {
         println!("DEBUG EVS1 = {:#?}", evs1);
     }
 }
-

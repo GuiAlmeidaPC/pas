@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { AISettingsModal, type AIConfig } from "./AISettingsModal";
 
 interface Message {
@@ -37,12 +38,14 @@ export function AIChatPanel({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Load configuration from localStorage on mount
+  // Load non-secret configuration from localStorage on mount.
   useEffect(() => {
-    const saved = localStorage.getItem("pas.ai_config");
+    localStorage.removeItem("pas.ai_config");
+    const saved = localStorage.getItem("pas.ai_config_public");
     if (saved) {
       try {
-        setConfig(JSON.parse(saved));
+        const parsed = JSON.parse(saved);
+        setConfig({ ...parsed, apiKey: "" });
       } catch (e) {
         console.error("Failed to parse saved AI config", e);
       }
@@ -56,9 +59,21 @@ export function AIChatPanel({
     }
   }, [messages, loading]);
 
-  const saveConfig = (newConfig: AIConfig) => {
+  const saveConfig = async (newConfig: AIConfig) => {
+    await invoke("set_ai_config", {
+      config: {
+        provider: newConfig.provider,
+        apiKey: newConfig.apiKey,
+        model: newConfig.model,
+        customUrl: newConfig.customUrl,
+      },
+    });
     setConfig(newConfig);
-    localStorage.setItem("pas.ai_config", JSON.stringify(newConfig));
+    localStorage.setItem("pas.ai_config_public", JSON.stringify({
+      provider: newConfig.provider,
+      model: newConfig.model,
+      customUrl: newConfig.customUrl,
+    }));
     setErrorMsg(null);
   };
 
@@ -72,7 +87,7 @@ export function AIChatPanel({
   const sendMessageDirectly = async (promptText: string) => {
     if (!promptText.trim() || loading) return;
 
-    if (!config || !config.apiKey) {
+    if (!config) {
       setIsSettingsOpen(true);
       return;
     }
@@ -141,122 +156,15 @@ ${activeContent ? `<open_file_buffer>\n${activeContent}\n</open_file_buffer>` : 
 ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>` : ""}
 </workspace_context>`;
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-
-    let url = "";
-    let body = {};
-
-    switch (config.provider) {
-      case "openai": {
-        url = config.customUrl || "https://api.openai.com/v1/chat/completions";
-        headers["Authorization"] = `Bearer ${config.apiKey}`;
-        body = {
-          model: config.model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...history.map((m) => ({ role: m.role, content: m.content })),
-          ],
-        };
-        break;
-      }
-      case "deepseek": {
-        url = config.customUrl || "https://api.deepseek.com/v1/chat/completions";
-        headers["Authorization"] = `Bearer ${config.apiKey}`;
-        body = {
-          model: config.model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...history.map((m) => ({ role: m.role, content: m.content })),
-          ],
-        };
-        break;
-      }
-      case "openrouter": {
-        url = config.customUrl || "https://openrouter.ai/api/v1/chat/completions";
-        headers["Authorization"] = `Bearer ${config.apiKey}`;
-        headers["HTTP-Referer"] = "https://pas.app";
-        headers["X-Title"] = "PAS";
-        body = {
-          model: config.model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...history.map((m) => ({ role: m.role, content: m.content })),
-          ],
-        };
-        break;
-      }
-      case "anthropic": {
-        url = "https://api.anthropic.com/v1/messages";
-        headers["x-api-key"] = config.apiKey;
-        headers["anthropic-version"] = "2023-06-01";
-        headers["dangerously-allow-browser"] = "true";
-        body = {
-          model: config.model,
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: history.map((m) => ({
-            role: m.role === "system" ? "assistant" : m.role, // Anthropic only supports user/assistant
-            content: m.content,
-          })),
-        };
-        break;
-      }
-      case "gemini": {
-        url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
-        
-        // Convert history to Gemini format
-        const contents = [
-          {
-            role: "user",
-            parts: [{ text: systemPrompt + "\n\nUnderstood. Please prompt me for the code task." }],
-          },
-          {
-            role: "model",
-            parts: [{ text: "Understood. I will act as a SAS/PAS programming assistant." }],
-          },
-          ...history.map((m) => ({
-            role: m.role === "user" ? "user" : "model",
-            parts: [{ text: m.content }],
-          })),
-        ];
-
-        body = { contents };
-        break;
-      }
-      default:
-        throw new Error(`Unsupported provider: ${config.provider}`);
-    }
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
+    return invoke<string>("ai_completion", {
+      request: {
+        provider: config.provider,
+        model: config.model,
+        customUrl: config.customUrl,
+        systemPrompt,
+        messages: history,
+      },
     });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      let parsedErr = errText;
-      try {
-        const json = JSON.parse(errText);
-        parsedErr = json.error?.message || json.message || errText;
-      } catch (_) {}
-      throw new Error(`API Error (${res.status}): ${parsedErr}`);
-    }
-
-    const data = await res.json();
-
-    // Extract text depending on provider
-    if (config.provider === "openai" || config.provider === "deepseek" || config.provider === "openrouter") {
-      return data.choices?.[0]?.message?.content || "";
-    } else if (config.provider === "anthropic") {
-      return data.content?.[0]?.text || "";
-    } else if (config.provider === "gemini") {
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    }
-
-    return "";
   };
 
   const insertSuggestedContext = (text: string) => {

@@ -21,6 +21,9 @@ pub fn parse_table_ref(s: &str) -> Option<TableRef> {
             name: n.to_ascii_lowercase(),
         })
     } else {
-        Some(TableRef { libref: None, name: s.to_ascii_lowercase() })
+        Some(TableRef {
+            libref: None,
+            name: s.to_ascii_lowercase(),
+        })
     }
 }

@@ -27,7 +27,9 @@ struct DatasetExpected {
     columns: Vec<String>,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 fn golden_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is the engine crate; the goldens live in the repo
@@ -52,16 +54,28 @@ fn all_goldens_pass() {
         .filter(|p| p.extension().is_some_and(|e| e == "sas"))
         .collect();
     programs.sort();
-    assert!(!programs.is_empty(), "no golden programs found in {}", dir.display());
+    assert!(
+        !programs.is_empty(),
+        "no golden programs found in {}",
+        dir.display()
+    );
 
     let mut failures = Vec::new();
     for sas in programs {
         if let Err(e) = run_one(&sas) {
-            failures.push(format!("{}: {}", sas.file_name().unwrap().to_string_lossy(), e));
+            failures.push(format!(
+                "{}: {}",
+                sas.file_name().unwrap().to_string_lossy(),
+                e
+            ));
         }
     }
     if !failures.is_empty() {
-        panic!("{} golden(s) failed:\n  - {}", failures.len(), failures.join("\n  - "));
+        panic!(
+            "{} golden(s) failed:\n  - {}",
+            failures.len(),
+            failures.join("\n  - ")
+        );
     }
 }
 
@@ -99,8 +113,11 @@ fn run_one(sas_path: &Path) -> Result<(), String> {
                 qualified, exp.rows, page.total_rows
             ));
         }
-        let actual_cols: Vec<String> =
-            page.columns.iter().map(|c| c.name.to_ascii_lowercase()).collect();
+        let actual_cols: Vec<String> = page
+            .columns
+            .iter()
+            .map(|c| c.name.to_ascii_lowercase())
+            .collect();
         let expected_cols: Vec<String> =
             exp.columns.iter().map(|c| c.to_ascii_lowercase()).collect();
         if actual_cols != expected_cols {

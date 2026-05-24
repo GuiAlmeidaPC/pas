@@ -20,13 +20,15 @@ pub fn parse(body: &str) -> Result<SortSpec, String> {
     let (header, rest) = split_body(body);
     let opts = parse_options(&header);
     let data_in = match opts.get("data").and_then(|v| v.as_ref()) {
-        Some(s) => parse_table_ref(s)
-            .ok_or_else(|| format!("PROC SORT: invalid data= value {:?}", s))?,
+        Some(s) => {
+            parse_table_ref(s).ok_or_else(|| format!("PROC SORT: invalid data= value {:?}", s))?
+        }
         None => return Err("PROC SORT requires data=<dataset>".into()),
     };
     let data_out = match opts.get("out").and_then(|v| v.as_ref()) {
-        Some(s) => parse_table_ref(s)
-            .ok_or_else(|| format!("PROC SORT: invalid out= value {:?}", s))?,
+        Some(s) => {
+            parse_table_ref(s).ok_or_else(|| format!("PROC SORT: invalid out= value {:?}", s))?
+        }
         None => data_in.clone(),
     };
 
@@ -61,9 +63,9 @@ pub fn build_select_sql(from_clause: &str, spec: &SortSpec) -> String {
         .iter()
         .map(|b| {
             if b.descending {
-                format!("\"{}\" DESC", b.name)
+                format!("{} DESC", crate::quote_ident(&b.name))
             } else {
-                format!("\"{}\"", b.name)
+                crate::quote_ident(&b.name)
             }
         })
         .collect::<Vec<_>>()
@@ -74,7 +76,7 @@ pub fn build_select_sql(from_clause: &str, spec: &SortSpec) -> String {
         let partition = spec
             .by_vars
             .iter()
-            .map(|b| format!("\"{}\"", b.name))
+            .map(|b| crate::quote_ident(&b.name))
             .collect::<Vec<_>>()
             .join(", ");
         format!(

@@ -32,7 +32,9 @@ pub enum RtValue {
 }
 
 impl RtValue {
-    pub fn missing() -> Self { RtValue::Num(f64::NAN) }
+    pub fn missing() -> Self {
+        RtValue::Num(f64::NAN)
+    }
 
     pub fn as_num(&self) -> Option<f64> {
         match self {
@@ -84,7 +86,9 @@ impl WriteTarget {
             WriteTarget::DuckDb { schema, name } => {
                 format!("{}.{}", schema.to_uppercase(), name.to_uppercase())
             }
-            WriteTarget::Parquet { display, .. } | WriteTarget::Csv { display, .. } => display.clone(),
+            WriteTarget::Parquet { display, .. } | WriteTarget::Csv { display, .. } => {
+                display.clone()
+            }
         }
     }
 }
@@ -136,7 +140,11 @@ impl Pdv {
         self.names.push(lower.clone());
         self.index.insert(lower, i);
         self.is_char.push(is_char);
-        self.vals.push(if is_char { RtValue::Str(String::new()) } else { RtValue::missing() });
+        self.vals.push(if is_char {
+            RtValue::Str(String::new())
+        } else {
+            RtValue::missing()
+        });
         self.from_source.push(false);
         self.retained.push(false);
         i
@@ -240,7 +248,6 @@ struct Runtime<'a, 'conn> {
     macro_vars: &'a std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
-
 impl<'a, 'conn> Runtime<'a, 'conn> {
     /// Push one row into the pipeline. Implements a 1-row lookahead so the
     /// processor can see the next row's by-values when computing `last.var`.
@@ -313,8 +320,7 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
 
         // first./last. for by vars.
         if !self.ds.by.is_empty() {
-            let this_by: Vec<RtValue> =
-                self.ds.by.iter().map(|v| self.pdv.get(v)).collect();
+            let this_by: Vec<RtValue> = self.ds.by.iter().map(|v| self.pdv.get(v)).collect();
             for (j, by_var) in self.ds.by.iter().enumerate() {
                 let is_first = match &self.prev_by {
                     None => true,
@@ -494,7 +500,10 @@ pub fn run_data_step(
         }
         results.push((ds.outputs[i].clone(), spec.target, counts[i]));
     }
-    Ok(DataStepResult { outputs: results, rows_in })
+    Ok(DataStepResult {
+        outputs: results,
+        rows_in,
+    })
 }
 
 // ── Output table setup ────────────────────────────────────────────────────
@@ -531,7 +540,10 @@ fn create_output_tables(
                     schema: "main".into(),
                     name: temp,
                     cols: cols.clone(),
-                    copy_to: Some(CopyToFile { path: path.clone(), fmt }),
+                    copy_to: Some(CopyToFile {
+                        path: path.clone(),
+                        fmt,
+                    }),
                     target: target.clone(),
                 }
             }
@@ -696,7 +708,7 @@ where
     let order_sql = if by.is_empty() {
         String::new()
     } else {
-        let cols: Vec<String> = by.iter().map(|v| format!("\"{}\"", v)).collect();
+        let cols: Vec<String> = by.iter().map(|v| crate::quote_ident(v)).collect();
         format!(" ORDER BY {}", cols.join(", "))
     };
     let sql = format!("SELECT * FROM {}{}", from, order_sql);
@@ -750,9 +762,15 @@ where
             continue;
         }
         let toks: Vec<String> = match &infile.dlm {
-            None => trimmed_line.split_whitespace().map(|s| s.to_string()).collect(),
+            None => trimmed_line
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect(),
             Some(d) if infile.dsd => split_dsd(trimmed_line, d.chars().next().unwrap_or(',')),
-            Some(d) => trimmed_line.split(d.as_str()).map(|s| s.to_string()).collect(),
+            Some(d) => trimmed_line
+                .split(d.as_str())
+                .map(|s| s.to_string())
+                .collect(),
         };
         visit(input_vars_to_row(input_vars, &toks))?;
     }
@@ -837,14 +855,21 @@ fn walk_stmt(
     seen: &mut std::collections::HashSet<String>,
 ) {
     match s {
-        Stmt::Assign { target: AssignTarget::Var(name), expr } => {
+        Stmt::Assign {
+            target: AssignTarget::Var(name),
+            expr,
+        } => {
             let key = name.to_ascii_lowercase();
             if seen.insert(key.clone()) {
                 order.push((key, infer_expr_is_char(expr)));
             }
         }
         Stmt::Assign { .. } => {}
-        Stmt::IfThen { then_stmt, else_stmt, .. } => {
+        Stmt::IfThen {
+            then_stmt,
+            else_stmt,
+            ..
+        } => {
             walk_stmt(then_stmt, order, seen);
             if let Some(e) = else_stmt {
                 walk_stmt(e, order, seen);
@@ -858,7 +883,11 @@ fn walk_stmt(
             }
             walk_stmts(body, order, seen);
         }
-        Stmt::Select { branches, otherwise, .. } => {
+        Stmt::Select {
+            branches,
+            otherwise,
+            ..
+        } => {
             for b in branches {
                 walk_stmt(&b.stmt, order, seen);
             }
@@ -873,7 +902,9 @@ fn walk_stmt(
 fn infer_expr_is_char(e: &Expr) -> bool {
     match e {
         Expr::StrLit(_) => true,
-        Expr::Binary { op: BinOp::Concat, .. } => true,
+        Expr::Binary {
+            op: BinOp::Concat, ..
+        } => true,
         Expr::Call { name, .. } => is_char_returning_function(name),
         _ => false,
     }
@@ -995,7 +1026,7 @@ where
     if by.is_empty() {
         return Err(DataStepError::runtime("merge requires a `by` statement"));
     }
-    let order_cols: Vec<String> = by.iter().map(|v| format!("\"{}\"", v)).collect();
+    let order_cols: Vec<String> = by.iter().map(|v| crate::quote_ident(v)).collect();
     let order_clause = order_cols.join(", ");
 
     // 1. Snapshot each source into a TEMP table sorted by the by-vars.
@@ -1008,10 +1039,7 @@ where
             temp, from, order_clause
         );
         conn.execute(&create, [])?;
-        let schema = source_schemas
-            .get(i)
-            .cloned()
-            .unwrap_or_default();
+        let schema = source_schemas.get(i).cloned().unwrap_or_default();
         cursors.push(MergeCursor {
             table: temp.clone(),
             schema,
@@ -1142,7 +1170,11 @@ fn exec_stmt<'conn>(
             }
             Ok(StmtFlow::Continue)
         }
-        Stmt::IfThen { cond, then_stmt, else_stmt } => {
+        Stmt::IfThen {
+            cond,
+            then_stmt,
+            else_stmt,
+        } => {
             let v = eval(cond, pdv, arrays)?;
             if v.truthy() {
                 exec_stmt(then_stmt, pdv, arrays, outs, appenders, macro_vars)
@@ -1194,7 +1226,11 @@ fn exec_stmt<'conn>(
             }
             Ok(StmtFlow::Continue)
         }
-        Stmt::Select { switch, branches, otherwise } => {
+        Stmt::Select {
+            switch,
+            branches,
+            otherwise,
+        } => {
             match switch {
                 Some(sw) => {
                     let switch_val = eval(sw, pdv, arrays)?;
@@ -1202,7 +1238,14 @@ fn exec_stmt<'conn>(
                         for v in &branch.values {
                             let candidate = eval(v, pdv, arrays)?;
                             if compare(&switch_val, &candidate) == 0 {
-                                return exec_stmt(&branch.stmt, pdv, arrays, outs, appenders, macro_vars);
+                                return exec_stmt(
+                                    &branch.stmt,
+                                    pdv,
+                                    arrays,
+                                    outs,
+                                    appenders,
+                                    macro_vars,
+                                );
                             }
                         }
                     }
@@ -1211,7 +1254,14 @@ fn exec_stmt<'conn>(
                     for branch in branches {
                         for v in &branch.values {
                             if eval(v, pdv, arrays)?.truthy() {
-                                return exec_stmt(&branch.stmt, pdv, arrays, outs, appenders, macro_vars);
+                                return exec_stmt(
+                                    &branch.stmt,
+                                    pdv,
+                                    arrays,
+                                    outs,
+                                    appenders,
+                                    macro_vars,
+                                );
                             }
                         }
                     }
@@ -1222,7 +1272,13 @@ fn exec_stmt<'conn>(
             }
             Ok(StmtFlow::Continue)
         }
-        Stmt::DoLoop { var, start, stop, step, body } => {
+        Stmt::DoLoop {
+            var,
+            start,
+            stop,
+            step,
+            body,
+        } => {
             let start_v = eval(start, pdv, arrays)?
                 .as_num()
                 .ok_or_else(|| DataStepError::runtime("do loop start is missing"))?;
@@ -1281,7 +1337,10 @@ fn exec_stmt<'conn>(
                 let mut vars = macro_vars.lock().unwrap();
                 vars.insert(var_name, var_value);
             } else {
-                return Err(DataStepError::runtime(format!("unknown CALL routine '{}'", name)));
+                return Err(DataStepError::runtime(format!(
+                    "unknown CALL routine '{}'",
+                    name
+                )));
             }
             Ok(StmtFlow::Continue)
         }
@@ -1300,15 +1359,29 @@ fn has_explicit_output(stmts: &[Stmt]) -> bool {
 fn has_explicit_stmt_output(s: &Stmt) -> bool {
     match s {
         Stmt::Output { .. } => true,
-        Stmt::IfThen { then_stmt, else_stmt, .. } => {
+        Stmt::IfThen {
+            then_stmt,
+            else_stmt,
+            ..
+        } => {
             has_explicit_stmt_output(then_stmt)
-                || else_stmt.as_ref().map(|e| has_explicit_stmt_output(e)).unwrap_or(false)
+                || else_stmt
+                    .as_ref()
+                    .map(|e| has_explicit_stmt_output(e))
+                    .unwrap_or(false)
         }
         Stmt::Block(inner) => has_explicit_output(inner),
         Stmt::DoLoop { body, .. } => has_explicit_output(body),
-        Stmt::Select { branches, otherwise, .. } => {
+        Stmt::Select {
+            branches,
+            otherwise,
+            ..
+        } => {
             branches.iter().any(|b| has_explicit_stmt_output(&b.stmt))
-                || otherwise.as_ref().map(|o| has_explicit_stmt_output(o)).unwrap_or(false)
+                || otherwise
+                    .as_ref()
+                    .map(|o| has_explicit_stmt_output(o))
+                    .unwrap_or(false)
         }
         _ => false,
     }
@@ -1366,8 +1439,8 @@ fn eval(
             funcs::call(name, &evaluated).map_err(|m| DataStepError::runtime_at(m, *span))?
         }
         Expr::ArrayRef { name, index, span } => {
-            let element = resolve_array_index(name, index, pdv, arrays)
-                .map_err(|e| with_span(e, *span))?;
+            let element =
+                resolve_array_index(name, index, pdv, arrays).map_err(|e| with_span(e, *span))?;
             pdv.get(&element)
         }
         Expr::Unary { op, expr } => {
@@ -1394,9 +1467,21 @@ fn eval(
                         Add => a + b,
                         Sub => a - b,
                         Mul => a * b,
-                        Div => if b == 0.0 { f64::NAN } else { a / b },
+                        Div => {
+                            if b == 0.0 {
+                                f64::NAN
+                            } else {
+                                a / b
+                            }
+                        }
                         Pow => a.powf(b),
-                        Mod => if b == 0.0 { f64::NAN } else { a - (a / b).trunc() * b },
+                        Mod => {
+                            if b == 0.0 {
+                                f64::NAN
+                            } else {
+                                a - (a / b).trunc() * b
+                            }
+                        }
                         _ => unreachable!(),
                     };
                     RtValue::Num(n)
@@ -1462,7 +1547,9 @@ fn value_for_appender(is_char: bool, v: Option<&RtValue>) -> DV {
         (true, Some(RtValue::Num(n))) if !n.is_nan() => DV::Text(RtValue::Num(*n).as_str()),
         (true, _) => DV::Text(String::new()),
         (false, Some(RtValue::Num(n))) if !n.is_nan() => DV::Double(*n),
-        (false, Some(RtValue::Str(s))) => s.trim().parse::<f64>().map(DV::Double).unwrap_or(DV::Null),
+        (false, Some(RtValue::Str(s))) => {
+            s.trim().parse::<f64>().map(DV::Double).unwrap_or(DV::Null)
+        }
         (false, _) => DV::Null,
     }
 }

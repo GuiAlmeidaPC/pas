@@ -34,7 +34,10 @@ pub fn rewrite_create_or_replace(sql: &str) -> String {
     } else if stripped.starts_with("create temp table") {
         ("create temp table", "CREATE OR REPLACE TEMP TABLE")
     } else if stripped.starts_with("create temporary table") {
-        ("create temporary table", "CREATE OR REPLACE TEMPORARY TABLE")
+        (
+            "create temporary table",
+            "CREATE OR REPLACE TEMPORARY TABLE",
+        )
     } else if stripped.starts_with("create view") {
         ("create view", "CREATE OR REPLACE VIEW")
     } else {
@@ -42,7 +45,12 @@ pub fn rewrite_create_or_replace(sql: &str) -> String {
     };
 
     let rest_start = leading_ws + prefix_lower.len();
-    format!("{}{}{}", &sql[..leading_ws], replacement, &sql[rest_start..])
+    format!(
+        "{}{}{}",
+        &sql[..leading_ws],
+        replacement,
+        &sql[rest_start..]
+    )
 }
 
 // ── Token-aware extension rewriter ─────────────────────────────────────────
@@ -135,9 +143,7 @@ fn is_whitespace_or_comment(t: &Tok) -> bool {
     match t {
         Tok::Word(_) => false,
         Tok::Other(s) => {
-            s.starts_with("/*")
-                || s.starts_with("--")
-                || s.chars().all(|c| c.is_whitespace())
+            s.starts_with("/*") || s.starts_with("--") || s.chars().all(|c| c.is_whitespace())
         }
     }
 }
@@ -163,14 +169,22 @@ fn match_empty_parens(toks: &[Tok], from: usize) -> Option<usize> {
     while i < toks.len() && is_whitespace_or_comment(&toks[i]) {
         i += 1;
     }
-    let Tok::Other(s) = toks.get(i)? else { return None; };
-    if s != "(" { return None; }
+    let Tok::Other(s) = toks.get(i)? else {
+        return None;
+    };
+    if s != "(" {
+        return None;
+    }
     let mut j = i + 1;
     while j < toks.len() && is_whitespace_or_comment(&toks[j]) {
         j += 1;
     }
-    let Tok::Other(s2) = toks.get(j)? else { return None; };
-    if s2 != ")" { return None; }
+    let Tok::Other(s2) = toks.get(j)? else {
+        return None;
+    };
+    if s2 != ")" {
+        return None;
+    }
     Some(j + 1)
 }
 
@@ -242,10 +256,10 @@ pub fn extract_into_clause(sql: &str) -> (String, Vec<IntoTarget>) {
     let toks = tokenize(sql);
     let mut clean_toks = Vec::with_capacity(toks.len());
     let mut targets = Vec::new();
-    
+
     let mut i = 0;
     let mut paren_depth: usize = 0;
-    
+
     while i < toks.len() {
         match &toks[i] {
             Tok::Other(s) if s == "(" => {
@@ -266,7 +280,12 @@ pub fn extract_into_clause(sql: &str) -> (String, Vec<IntoTarget>) {
                     match &toks[i] {
                         Tok::Word(w_next) => {
                             let lw = w_next.to_ascii_lowercase();
-                            if lw == "from" || lw == "where" || lw == "group" || lw == "having" || lw == "order" {
+                            if lw == "from"
+                                || lw == "where"
+                                || lw == "group"
+                                || lw == "having"
+                                || lw == "order"
+                            {
                                 stop = true;
                             }
                         }
@@ -289,7 +308,7 @@ pub fn extract_into_clause(sql: &str) -> (String, Vec<IntoTarget>) {
             }
         }
     }
-    
+
     (emit(&clean_toks), targets)
 }
 
@@ -301,7 +320,7 @@ fn parse_into_targets(toks: &[Tok]) -> Vec<IntoTarget> {
             i += 1;
             continue;
         }
-        
+
         if let Tok::Other(s) = &toks[i] {
             if s.contains(':') {
                 let mut var_name = String::new();
@@ -312,10 +331,10 @@ fn parse_into_targets(toks: &[Tok]) -> Vec<IntoTarget> {
                             var_name = w.clone();
                         }
                     }
-                } else if s.starts_with(':') {
-                    var_name = s[1..].to_string();
+                } else if let Some(stripped) = s.strip_prefix(':') {
+                    var_name = stripped.to_string();
                 }
-                
+
                 if !var_name.is_empty() {
                     let mut trimmed = false;
                     let mut j = i + 1;
@@ -333,7 +352,7 @@ fn parse_into_targets(toks: &[Tok]) -> Vec<IntoTarget> {
                             _ => break,
                         }
                     }
-                    
+
                     targets.push(IntoTarget {
                         name: var_name,
                         trimmed,
@@ -433,7 +452,10 @@ mod tests {
     fn test_extract_into_clause_multiple() {
         let sql = "select count(*), max(salary) into :n_emp trimmed, :max_sal from raw_employees;";
         let (rewritten, targets) = extract_into_clause(sql);
-        assert_eq!(rewritten.trim(), "select count(*), max(salary) from raw_employees;");
+        assert_eq!(
+            rewritten.trim(),
+            "select count(*), max(salary) from raw_employees;"
+        );
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].name, "n_emp");
         assert!(targets[0].trimmed);

@@ -16,8 +16,9 @@ pub fn parse(body: &str) -> Result<PrintSpec, String> {
     let (header, rest) = split_body(body);
     let opts = parse_options(&header);
     let data = match opts.get("data").and_then(|v| v.as_ref()) {
-        Some(s) => parse_table_ref(s)
-            .ok_or_else(|| format!("PROC PRINT: invalid data= value {:?}", s))?,
+        Some(s) => {
+            parse_table_ref(s).ok_or_else(|| format!("PROC PRINT: invalid data= value {:?}", s))?
+        }
         None => return Err("PROC PRINT requires data=<dataset>".into()),
     };
     let obs = opts
@@ -44,7 +45,7 @@ pub fn build_select_sql(from_clause: &str, spec: &PrintSpec) -> String {
     } else {
         spec.vars
             .iter()
-            .map(|v| format!("\"{}\"", v))
+            .map(|v| crate::quote_ident(v))
             .collect::<Vec<_>>()
             .join(", ")
     };
