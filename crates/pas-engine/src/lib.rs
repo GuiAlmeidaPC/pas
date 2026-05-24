@@ -463,17 +463,42 @@ impl Session {
     ) {
         let after_create = self.rewrite_create_for_dir(stmt);
         let rewritten = self.rewrite_librefs(&after_create);
-        match run_one(conn, &rewritten) {
+        let (clean_query, targets) = sas_sql::extract_into_clause(&rewritten);
+        match run_one(conn, &clean_query) {
             Ok(StmtResult::Rows(block)) => {
-                let suffix = if block.truncated {
-                    format!(" (showing first {})", block.rows.len())
+                if !targets.is_empty() {
+                    if let Some(first_row) = block.rows.first() {
+                        let mut vars = self.macro_vars.lock().unwrap();
+                        for (idx, target) in targets.iter().enumerate() {
+                            if let Some(val) = first_row.get(idx) {
+                                let mut val_str = match val {
+                                    Value::Null => String::new(),
+                                    Value::Bool(b) => b.to_string(),
+                                    Value::Int(i) => i.to_string(),
+                                    Value::Float(f) => f.to_string(),
+                                    Value::Text(s) => s.clone(),
+                                };
+                                if target.trimmed {
+                                    val_str = val_str.trim().to_string();
+                                }
+                                vars.insert(target.name.clone(), val_str);
+                            }
+                        }
+                    }
+                    events.push(Event::Note {
+                        text: "Statement executed, macro variables assigned.".into(),
+                    });
                 } else {
-                    String::new()
-                };
-                events.push(Event::Note {
-                    text: format!("Statement returned {} row(s){}.", block.rows.len(), suffix),
-                });
-                events.push(Event::Output { block });
+                    let suffix = if block.truncated {
+                        format!(" (showing first {})", block.rows.len())
+                    } else {
+                        String::new()
+                    };
+                    events.push(Event::Note {
+                        text: format!("Statement returned {} row(s){}.", block.rows.len(), suffix),
+                    });
+                    events.push(Event::Output { block });
+                }
             }
             Ok(StmtResult::Affected(n)) => events.push(Event::Note {
                 text: format!("Statement executed ({} row(s) affected).", n),
@@ -1889,6 +1914,29 @@ mod tests {
         if let crate::Value::Int(n) = &page.rows[0][0] {
             assert_eq!(*n, 42);
         }
+    }
+
+    #[test]
+    fn test_proc_sql_into_clause_assigns_macro_vars() {
+        let s = Session::new_in_memory().unwrap();
+        let evs = s.submit(
+            r#"
+            proc sql;
+                create table raw_employees as
+                    select 4500 as salary union all
+                    select 6200 as salary;
+            quit;
+
+            proc sql noprint;
+                select count(*) into :n_employees trimmed
+                from raw_employees;
+            quit;
+
+            %put n_employees count is &n_employees;
+            "#,
+        );
+        assert!(!evs.iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", evs);
+        assert!(evs.iter().any(|e| matches!(e, Event::Note { text } if text.contains("n_employees count is 2"))), "{:?}", evs);
     }
 
     #[test]

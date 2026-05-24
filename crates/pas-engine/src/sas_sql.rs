@@ -232,6 +232,120 @@ fn apply_extension_rewrites(toks: &[Tok]) -> Vec<Tok> {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntoTarget {
+    pub name: String,
+    pub trimmed: bool,
+}
+
+pub fn extract_into_clause(sql: &str) -> (String, Vec<IntoTarget>) {
+    let toks = tokenize(sql);
+    let mut clean_toks = Vec::with_capacity(toks.len());
+    let mut targets = Vec::new();
+    
+    let mut i = 0;
+    let mut paren_depth: usize = 0;
+    
+    while i < toks.len() {
+        match &toks[i] {
+            Tok::Other(s) if s == "(" => {
+                paren_depth += 1;
+                clean_toks.push(toks[i].clone());
+                i += 1;
+            }
+            Tok::Other(s) if s == ")" => {
+                paren_depth = paren_depth.saturating_sub(1);
+                clean_toks.push(toks[i].clone());
+                i += 1;
+            }
+            Tok::Word(w) if paren_depth == 0 && w.eq_ignore_ascii_case("into") => {
+                let mut into_toks = Vec::new();
+                i += 1;
+                while i < toks.len() {
+                    let mut stop = false;
+                    match &toks[i] {
+                        Tok::Word(w_next) => {
+                            let lw = w_next.to_ascii_lowercase();
+                            if lw == "from" || lw == "where" || lw == "group" || lw == "having" || lw == "order" {
+                                stop = true;
+                            }
+                        }
+                        Tok::Other(s_next) if s_next == ";" => {
+                            stop = true;
+                        }
+                        _ => {}
+                    }
+                    if stop {
+                        break;
+                    }
+                    into_toks.push(toks[i].clone());
+                    i += 1;
+                }
+                targets = parse_into_targets(&into_toks);
+            }
+            _ => {
+                clean_toks.push(toks[i].clone());
+                i += 1;
+            }
+        }
+    }
+    
+    (emit(&clean_toks), targets)
+}
+
+fn parse_into_targets(toks: &[Tok]) -> Vec<IntoTarget> {
+    let mut targets = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        if is_whitespace_or_comment(&toks[i]) {
+            i += 1;
+            continue;
+        }
+        
+        if let Tok::Other(s) = &toks[i] {
+            if s.contains(':') {
+                let mut var_name = String::new();
+                if s == ":" {
+                    i += 1;
+                    if i < toks.len() {
+                        if let Tok::Word(w) = &toks[i] {
+                            var_name = w.clone();
+                        }
+                    }
+                } else if s.starts_with(':') {
+                    var_name = s[1..].to_string();
+                }
+                
+                if !var_name.is_empty() {
+                    let mut trimmed = false;
+                    let mut j = i + 1;
+                    while j < toks.len() {
+                        match &toks[j] {
+                            _ if is_whitespace_or_comment(&toks[j]) => j += 1,
+                            Tok::Word(w) if w.eq_ignore_ascii_case("trimmed") => {
+                                trimmed = true;
+                                i = j;
+                                break;
+                            }
+                            Tok::Other(s) if s == "," => {
+                                break;
+                            }
+                            _ => break,
+                        }
+                    }
+                    
+                    targets.push(IntoTarget {
+                        name: var_name,
+                        trimmed,
+                    });
+                }
+            }
+        }
+        i += 1;
+    }
+    targets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +417,27 @@ mod tests {
         let out = rewrite(s);
         assert!(out.contains("/* keep me */"));
         assert!(out.contains("y + 1"));
+    }
+
+    #[test]
+    fn test_extract_into_clause_single() {
+        let sql = "select count(*) into :n_emp trimmed from raw_employees;";
+        let (rewritten, targets) = extract_into_clause(sql);
+        assert_eq!(rewritten.trim(), "select count(*) from raw_employees;");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].name, "n_emp");
+        assert!(targets[0].trimmed);
+    }
+
+    #[test]
+    fn test_extract_into_clause_multiple() {
+        let sql = "select count(*), max(salary) into :n_emp trimmed, :max_sal from raw_employees;";
+        let (rewritten, targets) = extract_into_clause(sql);
+        assert_eq!(rewritten.trim(), "select count(*), max(salary) from raw_employees;");
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].name, "n_emp");
+        assert!(targets[0].trimmed);
+        assert_eq!(targets[1].name, "max_sal");
+        assert!(!targets[1].trimmed);
     }
 }
