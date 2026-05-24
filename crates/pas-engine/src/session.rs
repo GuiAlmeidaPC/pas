@@ -89,33 +89,61 @@ impl Session {
                 break;
             }
 
+            // Reconstruct the raw textual form of this block for macro
+            // preprocessing. The macro processor operates on text, so each
+            // block kind is serialized back to the form a user would have
+            // typed.
+            let raw = match &block {
+                Block::Statement { text, .. } | Block::ProcSqlStmt { text, .. } => text.clone(),
+                Block::DataStep { body, .. } => body.clone(),
+                Block::Proc { name, body, .. } => format!("proc {}; {} run;", name, body),
+            };
+            let macro_result = {
+                let mut vars = self.macro_vars.lock().unwrap();
+                let mut defs = self.macro_defs.lock().unwrap();
+                crate::macros::preprocess(&raw, &mut vars, &mut defs)
+            };
+            tracing::debug!(
+                raw = %raw,
+                expanded = %macro_result.expanded,
+                puts = ?macro_result.puts,
+                "macro preprocessing complete",
+            );
+            for put_text in macro_result.puts {
+                events.push(Event::Note { text: put_text });
+            }
+            // A DataStep with empty expansion is still treated as a parse
+            // error (matches pre-refactor behavior); for the other kinds an
+            // empty expansion is silently skipped.
+            if !matches!(block, Block::DataStep { .. }) && macro_result.expanded.trim().is_empty() {
+                continue;
+            }
+
+            // Dispatch. Statement and Proc admit macro expansions that
+            // introduce additional sibling blocks, so the expanded text is
+            // re-split. DataStep and ProcSqlStmt are dispatched as a single
+            // expanded block.
             match block {
-                Block::Statement {
-                    text,
-                    src_offset: _,
+                Block::DataStep {
+                    datalines,
+                    body_src_offset,
+                    ..
                 } => {
-                    let macro_result = {
-                        let mut vars = self.macro_vars.lock().unwrap();
-                        let mut defs = self.macro_defs.lock().unwrap();
-                        crate::macros::preprocess(&text, &mut vars, &mut defs)
+                    let synthetic = Block::DataStep {
+                        body: macro_result.expanded,
+                        datalines,
+                        body_src_offset,
                     };
-
-                    tracing::debug!(
-                        statement = %text,
-                        expanded = %macro_result.expanded,
-                        puts = ?macro_result.puts,
-                        "macro preprocessing complete",
-                    );
-
-                    for put_text in macro_result.puts {
-                        events.push(Event::Note { text: put_text });
-                    }
-
-                    let expanded_trimmed = macro_result.expanded.trim();
-                    if expanded_trimmed.is_empty() {
-                        continue;
-                    }
-
+                    self.dispatch_block(&conn, synthetic, program, &mut events);
+                }
+                Block::ProcSqlStmt { src_offset, .. } => {
+                    let synthetic = Block::ProcSqlStmt {
+                        text: macro_result.expanded.trim().to_string(),
+                        src_offset,
+                    };
+                    self.dispatch_block(&conn, synthetic, program, &mut events);
+                }
+                Block::Statement { .. } => {
                     let sub_blocks = split_blocks(&macro_result.expanded);
                     tracing::debug!(sub_blocks = ?sub_blocks, "expanded statement split");
                     for sub_block in sub_blocks {
@@ -125,148 +153,12 @@ impl Session {
                             });
                             break;
                         }
-
-                        match sub_block {
-                            Block::Statement {
-                                text: sub_text,
-                                src_offset: sub_offset,
-                            } => {
-                                events.push(Event::Source {
-                                    text: sub_text.clone(),
-                                });
-                                if let Some(handled) = self.try_libname(&conn, &sub_text) {
-                                    events.extend(handled);
-                                    continue;
-                                }
-                                self.run_sql_with_rewrites(
-                                    &conn,
-                                    &sub_text,
-                                    sub_offset,
-                                    &macro_result.expanded,
-                                    &mut events,
-                                );
-                            }
-                            Block::ProcSqlStmt {
-                                text: sub_text,
-                                src_offset: sub_offset,
-                            } => {
-                                events.push(Event::Source {
-                                    text: sub_text.clone(),
-                                });
-                                self.run_sql_with_rewrites(
-                                    &conn,
-                                    &sub_text,
-                                    sub_offset,
-                                    &macro_result.expanded,
-                                    &mut events,
-                                );
-                            }
-                            Block::DataStep {
-                                body: sub_body,
-                                datalines: sub_datalines,
-                                body_src_offset: sub_offset,
-                            } => {
-                                events.push(Event::Source {
-                                    text: sub_body.clone(),
-                                });
-                                self.run_data_step(
-                                    &conn,
-                                    &sub_body,
-                                    sub_datalines,
-                                    sub_offset,
-                                    &macro_result.expanded,
-                                    &mut events,
-                                );
-                            }
-                            Block::Proc {
-                                name: sub_name,
-                                body: sub_body,
-                                ..
-                            } => {
-                                events.push(Event::Source {
-                                    text: format!("proc {}; {} run;", sub_name, sub_body),
-                                });
-                                self.run_proc(&conn, &sub_name, &sub_body, &mut events);
-                            }
-                        }
+                        self.dispatch_block(&conn, sub_block, &macro_result.expanded, &mut events);
                     }
                 }
-                Block::ProcSqlStmt { text, src_offset } => {
-                    let macro_result = {
-                        let mut vars = self.macro_vars.lock().unwrap();
-                        let mut defs = self.macro_defs.lock().unwrap();
-                        crate::macros::preprocess(&text, &mut vars, &mut defs)
-                    };
-
-                    for put_text in macro_result.puts {
-                        events.push(Event::Note { text: put_text });
-                    }
-
-                    let expanded_trimmed = macro_result.expanded.trim();
-                    if expanded_trimmed.is_empty() {
-                        continue;
-                    }
-
-                    events.push(Event::Source {
-                        text: expanded_trimmed.to_string(),
-                    });
-                    self.run_sql_with_rewrites(
-                        &conn,
-                        expanded_trimmed,
-                        src_offset,
-                        program,
-                        &mut events,
-                    );
-                }
-                Block::DataStep {
-                    body,
-                    datalines,
-                    body_src_offset,
-                } => {
-                    let macro_result = {
-                        let mut vars = self.macro_vars.lock().unwrap();
-                        let mut defs = self.macro_defs.lock().unwrap();
-                        crate::macros::preprocess(&body, &mut vars, &mut defs)
-                    };
-
-                    for put_text in macro_result.puts {
-                        events.push(Event::Note { text: put_text });
-                    }
-
-                    let expanded = macro_result.expanded;
-                    events.push(Event::Source {
-                        text: expanded.clone(),
-                    });
-                    self.run_data_step(
-                        &conn,
-                        &expanded,
-                        datalines,
-                        body_src_offset,
-                        program,
-                        &mut events,
-                    );
-                }
-                Block::Proc {
-                    name,
-                    body,
-                    src_offset: _,
-                } => {
-                    let raw_proc = format!("proc {}; {} run;", name, body);
-                    let macro_result = {
-                        let mut vars = self.macro_vars.lock().unwrap();
-                        let mut defs = self.macro_defs.lock().unwrap();
-                        crate::macros::preprocess(&raw_proc, &mut vars, &mut defs)
-                    };
-
-                    for put_text in macro_result.puts {
-                        events.push(Event::Note { text: put_text });
-                    }
-
-                    let expanded_trimmed = macro_result.expanded.trim();
-                    if expanded_trimmed.is_empty() {
-                        continue;
-                    }
-
+                Block::Proc { .. } => {
+                    // Historical quirk: a PROC whose macro expansion yields
+                    // non-PROC sibling blocks silently drops them.
                     let sub_blocks = split_blocks(&macro_result.expanded);
                     for sub_block in sub_blocks {
                         if self.cancel.load(Ordering::SeqCst) {
@@ -275,17 +167,13 @@ impl Session {
                             });
                             break;
                         }
-
-                        if let Block::Proc {
-                            name: sub_name,
-                            body: sub_body,
-                            ..
-                        } = sub_block
-                        {
-                            events.push(Event::Source {
-                                text: format!("proc {}; {} run;", sub_name, sub_body),
-                            });
-                            self.run_proc(&conn, &sub_name, &sub_body, &mut events);
+                        if matches!(sub_block, Block::Proc { .. }) {
+                            self.dispatch_block(
+                                &conn,
+                                sub_block,
+                                &macro_result.expanded,
+                                &mut events,
+                            );
                         }
                     }
                 }
@@ -294,6 +182,53 @@ impl Session {
 
         events.push(Event::Done);
         events
+    }
+
+    /// Execute one concrete block. The caller has already performed any
+    /// macro preprocessing; this method only emits a Source event and
+    /// dispatches to the kind-specific runner.
+    fn dispatch_block(
+        &self,
+        conn: &Connection,
+        block: Block,
+        program_for_spans: &str,
+        events: &mut Vec<Event>,
+    ) {
+        match block {
+            Block::Statement { text, src_offset } => {
+                events.push(Event::Source { text: text.clone() });
+                if let Some(handled) = self.try_libname(conn, &text) {
+                    events.extend(handled);
+                    return;
+                }
+                self.run_sql_with_rewrites(conn, &text, src_offset, program_for_spans, events);
+            }
+            Block::ProcSqlStmt { text, src_offset } => {
+                events.push(Event::Source { text: text.clone() });
+                self.run_sql_with_rewrites(conn, &text, src_offset, program_for_spans, events);
+            }
+            Block::DataStep {
+                body,
+                datalines,
+                body_src_offset,
+            } => {
+                events.push(Event::Source { text: body.clone() });
+                self.run_data_step(
+                    conn,
+                    &body,
+                    datalines,
+                    body_src_offset,
+                    program_for_spans,
+                    events,
+                );
+            }
+            Block::Proc { name, body, .. } => {
+                events.push(Event::Source {
+                    text: format!("proc {}; {} run;", name, body),
+                });
+                self.run_proc(conn, &name, &body, events);
+            }
+        }
     }
 
     fn try_libname(&self, conn: &Connection, stmt: &str) -> Option<Vec<Event>> {
