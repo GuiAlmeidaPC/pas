@@ -769,7 +769,7 @@ kbd {
 
 .chat-message.user .message-body {
   background: var(--accent);
-  color: #ffffff;
+  color: #0a1820;
   border-bottom-right-radius: 2px;
 }
 
