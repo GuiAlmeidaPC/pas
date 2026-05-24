@@ -164,25 +164,107 @@ impl Session {
     }
 }
 
-/// Build a `WHERE col1 LIKE '%v%' AND col2 LIKE '%w%'` clause for the
-/// dataset viewer. Empty values and missing maps return an empty string.
-pub(crate) fn build_where_clause(filters: Option<&HashMap<String, String>>) -> String {
+/// Build a parameterised `WHERE` clause for the dataset viewer.
+///
+/// Returns `(sql, params)` where `sql` is either empty or begins with
+/// `" WHERE …"` and uses `?` placeholders, and `params` is the
+/// corresponding bind values in the same order as the placeholders.
+///
+/// Why parameterised: user-supplied filter text was previously
+/// interpolated literally. While DuckDB doesn't expose dangerous LIKE
+/// metacharacters, the unescaped `%` and `_` in filter input behave as
+/// SQL wildcards — so a user typing `50%` looks for "any prefix" instead
+/// of the literal sequence. Binding the needle with an explicit
+/// `ESCAPE '\\'` clause and escaping `\`, `%`, `_` in the value yields
+/// the substring search the user expects, and removes the last bit of
+/// string-interpolated SQL from the read path.
+pub(crate) fn build_where_clause(
+    filters: Option<&HashMap<String, String>>,
+) -> (String, Vec<String>) {
     let Some(map) = filters else {
-        return String::new();
+        return (String::new(), Vec::new());
     };
-    let mut parts: Vec<String> = map
+    let mut entries: Vec<(String, String)> = map
         .iter()
         .filter(|(_, v)| !v.trim().is_empty())
-        .map(|(k, v)| {
-            let needle = v.replace('\'', "''");
-            format!("CAST({} AS VARCHAR) ILIKE '%{}%'", quote_ident(k), needle)
-        })
+        .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    if parts.is_empty() {
-        return String::new();
+    if entries.is_empty() {
+        return (String::new(), Vec::new());
     }
-    parts.sort();
-    format!(" WHERE {}", parts.join(" AND "))
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut parts = Vec::with_capacity(entries.len());
+    let mut params = Vec::with_capacity(entries.len());
+    for (col, needle) in entries {
+        parts.push(format!(
+            "CAST({} AS VARCHAR) ILIKE ? ESCAPE '\\'",
+            quote_ident(&col)
+        ));
+        params.push(format!("%{}%", escape_like(&needle)));
+    }
+    (format!(" WHERE {}", parts.join(" AND ")), params)
+}
+
+/// Escape SQL LIKE/ILIKE metacharacters so a user-supplied substring is
+/// matched literally. Pairs with `ESCAPE '\\'` in the surrounding clause.
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn none_filters_produce_empty_clause() {
+        let (sql, params) = build_where_clause(None);
+        assert!(sql.is_empty());
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn empty_values_are_skipped() {
+        let mut m = HashMap::new();
+        m.insert("a".to_string(), "  ".to_string());
+        let (sql, params) = build_where_clause(Some(&m));
+        assert!(sql.is_empty());
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn single_filter_uses_placeholder_and_escapes_percent() {
+        let mut m = HashMap::new();
+        m.insert("price".to_string(), "50%".to_string());
+        let (sql, params) = build_where_clause(Some(&m));
+        assert_eq!(sql, " WHERE CAST(\"price\" AS VARCHAR) ILIKE ? ESCAPE '\\'");
+        assert_eq!(params, vec!["%50\\%%".to_string()]);
+    }
+
+    #[test]
+    fn underscore_and_backslash_are_escaped() {
+        let mut m = HashMap::new();
+        m.insert("name".to_string(), "a_b\\c".to_string());
+        let (_, params) = build_where_clause(Some(&m));
+        assert_eq!(params, vec!["%a\\_b\\\\c%".to_string()]);
+    }
+
+    #[test]
+    fn multiple_filters_are_sorted_by_column_for_determinism() {
+        let mut m = HashMap::new();
+        m.insert("b".to_string(), "y".to_string());
+        m.insert("a".to_string(), "x".to_string());
+        let (sql, params) = build_where_clause(Some(&m));
+        assert!(sql.starts_with(" WHERE CAST(\"a\" AS VARCHAR)"));
+        assert!(sql.contains(" AND CAST(\"b\" AS VARCHAR)"));
+        assert_eq!(params, vec!["%x%".to_string(), "%y%".to_string()]);
+    }
 }
 
 pub(crate) fn dir_reader_expr(lib: &Library, dataset: &str) -> String {

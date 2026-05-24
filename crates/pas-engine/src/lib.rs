@@ -72,6 +72,27 @@ mod tests {
     }
 
     #[test]
+    fn dataset_filter_treats_percent_literally() {
+        // Regression: the dataset viewer's WHERE clause used to
+        // interpolate filter text into a literal SQL ILIKE pattern,
+        // turning a user-typed '%' into a SQL wildcard. With
+        // parameterised + ESCAPE'd binding, '%' matches itself.
+        let s = Session::new_in_memory().unwrap();
+        s.submit(
+            "create table marks as \
+             select 'pass' as label union all \
+             select '50%' union all \
+             select 'fail';",
+        );
+        let mut filters = std::collections::HashMap::new();
+        filters.insert("label".to_string(), "%".to_string());
+        let page = s
+            .dataset_page("work", "marks", 0, 100, Some(&filters))
+            .unwrap();
+        assert_eq!(page.total_rows, 1, "expected only the literal '50%' row");
+    }
+
+    #[test]
     fn doubled_quote_inside_string_does_not_break_libref_rewrite() {
         // Regression: the libref rewriter used to terminate strings at
         // the first matching quote, treating SAS-style '' escapes as

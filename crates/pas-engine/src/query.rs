@@ -60,13 +60,13 @@ impl Session {
 
         let lib = self.lookup_library(libref)?;
         let from_clause = dataset_from_clause(&lib, name)?;
-        let where_sql = build_where_clause(filters);
+        let (where_sql, where_params) = build_where_clause(filters);
         let conn = self.read_conn.lock().unwrap();
 
         let total: u64 = {
             let count_sql = format!("SELECT count(*) FROM {}{}", from_clause, where_sql);
             let mut stmt = conn.prepare(&count_sql)?;
-            let mut rows = stmt.query([])?;
+            let mut rows = stmt.query(duckdb::params_from_iter(where_params.iter()))?;
             match rows.next()? {
                 Some(r) => r.get::<_, i64>(0).unwrap_or(0).max(0) as u64,
                 None => 0,
@@ -78,7 +78,7 @@ impl Session {
             from_clause, where_sql, limit, offset
         );
         let mut stmt = conn.prepare(&sql)?;
-        let arrow_iter = stmt.query_arrow([])?;
+        let arrow_iter = stmt.query_arrow(duckdb::params_from_iter(where_params.iter()))?;
         let base_schema = arrow_iter.get_schema();
         let mut md = base_schema.metadata().clone();
         md.insert("total_rows".to_string(), total.to_string());
@@ -115,13 +115,13 @@ impl Session {
     ) -> Result<DatasetPage, EngineError> {
         let lib = self.lookup_library(libref)?;
         let from_clause = dataset_from_clause(&lib, name)?;
-        let where_sql = build_where_clause(filters);
+        let (where_sql, where_params) = build_where_clause(filters);
         let conn = self.read_conn.lock().unwrap();
 
         let total: u64 = {
             let count_sql = format!("SELECT count(*) FROM {}{}", from_clause, where_sql);
             let mut stmt = conn.prepare(&count_sql)?;
-            let mut rows = stmt.query([])?;
+            let mut rows = stmt.query(duckdb::params_from_iter(where_params.iter()))?;
             match rows.next()? {
                 Some(r) => r.get::<_, i64>(0).unwrap_or(0).max(0) as u64,
                 None => 0,
@@ -132,7 +132,7 @@ impl Session {
             "SELECT * FROM {}{} LIMIT {} OFFSET {}",
             from_clause, where_sql, limit, offset
         );
-        let block = match run_query(&conn, &sql, limit as usize)? {
+        let block = match run_query_params(&conn, &sql, limit as usize, &where_params)? {
             crate::query::StmtResult::Rows(b) => b,
             _ => ResultBlock {
                 columns: vec![],
@@ -226,8 +226,20 @@ pub(crate) fn run_query(
     sql: &str,
     max_rows: usize,
 ) -> Result<StmtResult, EngineError> {
+    run_query_params(conn, sql, max_rows, &[] as &[String])
+}
+
+pub(crate) fn run_query_params<P>(
+    conn: &Connection,
+    sql: &str,
+    max_rows: usize,
+    params: &[P],
+) -> Result<StmtResult, EngineError>
+where
+    P: duckdb::ToSql,
+{
     let mut stmt = conn.prepare(sql)?;
-    let mut rows_iter = stmt.query([])?;
+    let mut rows_iter = stmt.query(duckdb::params_from_iter(params.iter()))?;
 
     let col_count = rows_iter.as_ref().map(|s| s.column_count()).unwrap_or(0);
     let col_names: Vec<String> = (0..col_count)
