@@ -39,33 +39,14 @@ pub fn strip_comments(src: &str) -> String {
     while i < bytes.len() {
         let b = bytes[i];
         if b == b'\'' || b == b'"' {
-            let quote = b;
-            out.push(b as char);
-            i += 1;
-            while i < bytes.len() {
-                let c = bytes[i];
-                out.push(c as char);
-                i += 1;
-                if c == quote {
-                    if i < bytes.len() && bytes[i] == quote {
-                        out.push(quote as char);
-                        i += 1;
-                        continue;
-                    }
-                    break;
-                }
-            }
+            let end = crate::scan::skip_string_literal(bytes, i);
+            out.push_str(&src[i..end]);
+            i = end;
             continue;
         }
-        // /* block comment */
         if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            let start = i;
-            i += 2;
-            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            let end = (i + 2).min(bytes.len());
-            for _ in start..end {
+            let end = crate::scan::skip_block_comment(bytes, i);
+            for _ in i..end {
                 out.push(' ');
             }
             i = end;
@@ -338,22 +319,9 @@ fn split_on_semicolons(src: &str) -> Vec<RawStmt> {
         }
         let b = bytes[i];
         if b == b'\'' || b == b'"' {
-            let quote = b;
-            current.push(b as char);
-            i += 1;
-            while i < bytes.len() {
-                let c = bytes[i];
-                current.push(c as char);
-                i += 1;
-                if c == quote {
-                    if i < bytes.len() && bytes[i] == quote {
-                        current.push(quote as char);
-                        i += 1;
-                        continue;
-                    }
-                    break;
-                }
-            }
+            let end = crate::scan::skip_string_literal(bytes, i);
+            current.push_str(&src[i..end]);
+            i = end;
             continue;
         }
         if b == b';' {

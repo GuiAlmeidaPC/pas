@@ -109,19 +109,13 @@ impl Session {
         let mut i = 0;
         while i < bytes.len() {
             let c = bytes[i];
-            // Skip string literals.
+            // Skip string literals (honoring SAS-style doubled-quote
+            // escapes — '' inside a '...' literal is one apostrophe, not
+            // a close-then-open).
             if c == b'\'' || c == b'"' {
-                let q = c;
-                out.push(c as char);
-                i += 1;
-                while i < bytes.len() {
-                    let b = bytes[i];
-                    out.push(b as char);
-                    i += 1;
-                    if b == q {
-                        break;
-                    }
-                }
+                let end = crate::scan::skip_string_literal(bytes, i);
+                out.push_str(&sql[i..end]);
+                i = end;
                 continue;
             }
             if c.is_ascii_alphabetic() || c == b'_' {

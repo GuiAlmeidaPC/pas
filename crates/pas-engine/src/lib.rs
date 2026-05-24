@@ -13,6 +13,7 @@ mod procs;
 mod query;
 mod rewrite;
 mod sas_sql;
+mod scan;
 mod session;
 mod split;
 mod types;
@@ -68,6 +69,25 @@ mod tests {
             .filter(|e| matches!(e, Event::Output { .. }))
             .collect();
         assert_eq!(outputs.len(), 1, "got events: {:?}", evs);
+    }
+
+    #[test]
+    fn doubled_quote_inside_string_does_not_break_libref_rewrite() {
+        // Regression: the libref rewriter used to terminate strings at
+        // the first matching quote, treating SAS-style '' escapes as
+        // close-then-open. A literal 'O''Brien' embedded mid-statement
+        // followed by a libref reference must still rewrite correctly.
+        let s = Session::new_in_memory().unwrap();
+        // WORK is always present; reference work.dual via a query that
+        // also contains a doubled-quote literal.
+        s.submit("create table people as select 'O''Brien' as name, 42 as age;");
+        let evs = s.submit("select name from work.people where name = 'O''Brien';");
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        assert!(evs.iter().any(|e| matches!(e, Event::Output { .. })));
     }
 
     #[test]

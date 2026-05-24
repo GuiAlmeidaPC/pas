@@ -87,29 +87,13 @@ fn tokenize(src: &str) -> Vec<Tok> {
         let start = i;
         // Quoted string literal — keep entire span including quotes.
         if b == b'\'' || b == b'"' {
-            let q = b;
-            i += 1;
-            while i < bytes.len() {
-                let c = bytes[i];
-                i += 1;
-                if c == q {
-                    if i < bytes.len() && bytes[i] == q {
-                        i += 1;
-                        continue;
-                    }
-                    break;
-                }
-            }
+            i = crate::scan::skip_string_literal(bytes, i);
             out.push(Tok::Other(src[start..i].to_string()));
             continue;
         }
         // /* block comment */
         if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            i = (i + 2).min(bytes.len());
+            i = crate::scan::skip_block_comment(bytes, i);
             out.push(Tok::Other(src[start..i].to_string()));
             continue;
         }
