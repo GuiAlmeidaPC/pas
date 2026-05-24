@@ -1,0 +1,9 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.accumulated": {
+      "rows": 3,
+      "columns": ["id", "start_val", "sum_while", "sum_until"]
+    }
+  }
+}

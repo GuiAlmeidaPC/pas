@@ -65,9 +65,9 @@ are listed in §1.2 of `SPEC.md`.
 
 | | |
 |---|---|
-| **SAS** | `do while(<expr>)`, `do until(<expr>)`, and `do i = 1, 3, 5;` (list form) are supported. |
-| **PAS** | Only `do; ... end;` (block) and `do var = a to b [by c]; ... end;` (iterative). |
-| **Why** | Trivial to add; not yet implemented. |
+| **SAS** | `do while(<expr>)`, `do until(<expr>)`, `do i = 1 to n [by s];`, and `do i = 1, 3, 5;` (value-list form) are supported. |
+| **PAS** | Supports `do; ... end;` (block), `do var = a to b [by c]; ... end;` (iterative), `do while(<expr>); ... end;`, and `do until(<expr>); ... end;`. The value-list form (`do i = 1, 3, 5;`) is not yet implemented. |
+| **Why** | The value-list form is rarely used outside index iteration that the indexed form already covers. |
 
 ### 1.8 PROC step coverage
 

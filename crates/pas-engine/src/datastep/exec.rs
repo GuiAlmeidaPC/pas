@@ -883,6 +883,9 @@ fn walk_stmt(
             }
             walk_stmts(body, order, seen);
         }
+        Stmt::DoWhile { body, .. } | Stmt::DoUntil { body, .. } => {
+            walk_stmts(body, order, seen);
+        }
         Stmt::Select {
             branches,
             otherwise,
@@ -1311,6 +1314,34 @@ fn exec_stmt<'conn>(
             }
             Ok(StmtFlow::Continue)
         }
+        Stmt::DoWhile { cond, body } => loop {
+            let c = eval(cond, pdv, arrays)?
+                .as_num()
+                .ok_or_else(|| DataStepError::runtime("do while condition is missing"))?;
+            if c == 0.0 {
+                break Ok(StmtFlow::Continue);
+            }
+            for s in body {
+                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars)? {
+                    StmtFlow::Continue => {}
+                    StmtFlow::Delete => return Ok(StmtFlow::Delete),
+                }
+            }
+        },
+        Stmt::DoUntil { cond, body } => loop {
+            for s in body {
+                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars)? {
+                    StmtFlow::Continue => {}
+                    StmtFlow::Delete => return Ok(StmtFlow::Delete),
+                }
+            }
+            let c = eval(cond, pdv, arrays)?
+                .as_num()
+                .ok_or_else(|| DataStepError::runtime("do until condition is missing"))?;
+            if c != 0.0 {
+                break Ok(StmtFlow::Continue);
+            }
+        },
         Stmt::Call { name, args } => {
             if name.eq_ignore_ascii_case("symput") || name.eq_ignore_ascii_case("symputx") {
                 if args.len() != 2 {
@@ -1372,6 +1403,7 @@ fn has_explicit_stmt_output(s: &Stmt) -> bool {
         }
         Stmt::Block(inner) => has_explicit_output(inner),
         Stmt::DoLoop { body, .. } => has_explicit_output(body),
+        Stmt::DoWhile { body, .. } | Stmt::DoUntil { body, .. } => has_explicit_output(body),
         Stmt::Select {
             branches,
             otherwise,

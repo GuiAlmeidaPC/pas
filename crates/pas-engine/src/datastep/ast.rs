@@ -113,6 +113,18 @@ pub enum Stmt {
         step: Option<Expr>,
         body: Vec<Stmt>,
     },
+    /// `do while(cond); … end;` — evaluates `cond` at the top; the body
+    /// runs zero or more times.
+    DoWhile {
+        cond: Expr,
+        body: Vec<Stmt>,
+    },
+    /// `do until(cond); … end;` — evaluates `cond` at the bottom; the
+    /// body runs at least once and stops when `cond` becomes true.
+    DoUntil {
+        cond: Expr,
+        body: Vec<Stmt>,
+    },
     /// `select [(<switch>)]; when (<v1>, <v2>...) <stmt>; … otherwise <stmt>; end;`
     Select {
         /// `Some(expr)` if `select(expr);` form; `None` for boolean-when form.

@@ -565,9 +565,28 @@ impl Parser {
             });
         }
         if self.eat_keyword("do") {
-            // Either `do; ... end;` (block) or `do var = a to b [by c]; ... end;`.
+            // Three forms after `do`:
+            //   do;                                   block
+            //   do while(cond); / do until(cond);     conditional loop
+            //   do var = a to b [by c];               iterative loop
             if self.eat(&Tok::Semi) {
                 return Ok(Stmt::Block(self.parse_do_body()?));
+            }
+            if self.eat_keyword("while") {
+                self.expect(&Tok::LParen, "do while")?;
+                let cond = self.parse_expr()?;
+                self.expect(&Tok::RParen, "do while")?;
+                self.expect(&Tok::Semi, "do while header")?;
+                let body = self.parse_do_body()?;
+                return Ok(Stmt::DoWhile { cond, body });
+            }
+            if self.eat_keyword("until") {
+                self.expect(&Tok::LParen, "do until")?;
+                let cond = self.parse_expr()?;
+                self.expect(&Tok::RParen, "do until")?;
+                self.expect(&Tok::Semi, "do until header")?;
+                let body = self.parse_do_body()?;
+                return Ok(Stmt::DoUntil { cond, body });
             }
             // Iterative form.
             let var = match self.bump() {
@@ -963,5 +982,18 @@ mod tests {
         let ds =
             parse_data_step("data o; set i; do i = 1 to 5 by 2; y = y + i; end; run;").unwrap();
         assert!(matches!(ds.body[0], Stmt::DoLoop { .. }));
+    }
+
+    #[test]
+    fn parses_do_while() {
+        let ds = parse_data_step("data o; set i; do while (x < 10); x = x + 1; end; run;").unwrap();
+        assert!(matches!(ds.body[0], Stmt::DoWhile { .. }));
+    }
+
+    #[test]
+    fn parses_do_until() {
+        let ds =
+            parse_data_step("data o; set i; do until (x >= 10); x = x + 1; end; run;").unwrap();
+        assert!(matches!(ds.body[0], Stmt::DoUntil { .. }));
     }
 }
