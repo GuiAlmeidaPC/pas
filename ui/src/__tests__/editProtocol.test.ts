@@ -101,4 +101,22 @@ describe("parseEditBlocks", () => {
     ].join("\n");
     expect(parseEditBlocks(md)[0]).toMatchObject({ kind: "error" });
   });
+
+  it("handles CRLF line endings in patch bodies", () => {
+    const md = [
+      '```pas-edit path="a.sas" mode="patch"',
+      "<<<<<<< SEARCH",
+      "old",
+      "=======",
+      "new",
+      ">>>>>>> REPLACE",
+      "```",
+    ].join("\r\n");
+    const edits = parseEditBlocks(md);
+    expect(edits[0]).toMatchObject({
+      kind: "patch",
+      path: "a.sas",
+      hunks: [{ search: "old", replace: "new" }],
+    });
+  });
 });

@@ -45,8 +45,9 @@ function parsePatchBody(body: string): PatchHunk[] | { error: string } {
 }
 
 export function parseEditBlocks(markdown: string): ProposedEdit[] {
+  const normalized = markdown.replace(/\r\n/g, "\n");
   const edits: ProposedEdit[] = [];
-  for (const m of markdown.matchAll(FENCE_RE)) {
+  for (const m of normalized.matchAll(FENCE_RE)) {
     const attrs = parseAttrs(m[1]);
     const body = m[2];
     const raw = m[0];
