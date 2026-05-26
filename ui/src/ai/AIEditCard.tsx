@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { applyPatch, type ProposedEdit } from "./editProtocol";
+import { applyPatch, applyPatchBestEffort, type ProposedEdit } from "./editProtocol";
 import { computeHunks, type Hunk } from "./diff";
 
 interface Props {
@@ -13,7 +13,7 @@ interface Props {
 type Resolved =
   | { state: "loading" }
   | { state: "ready"; before: string; after: string; hunks: Hunk[] }
-  | { state: "stale"; reason: string }
+  | { state: "stale"; reason: string; before: string; after: string; hunks: Hunk[] }
   | { state: "error"; reason: string };
 
 type CardStatus = "pending" | "applying" | "applied" | "rejected";
@@ -48,7 +48,14 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
         // patch
         const r = applyPatch(before, edit.hunks);
         if (!r.ok) {
-          setResolved({ state: "stale", reason: r.error });
+          const after = applyPatchBestEffort(before, edit.hunks);
+          setResolved({
+            state: "stale",
+            reason: r.error,
+            before,
+            after,
+            hunks: computeHunks(before, after),
+          });
           return;
         }
         setResolved({
@@ -86,7 +93,7 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
   const handleReject = () => setStatus("rejected");
 
   const handleReview = () => {
-    if (resolved.state === "ready") {
+    if (resolved.state === "ready" || resolved.state === "stale") {
       onReview(edit, { before: resolved.before, after: resolved.after });
     }
   };
@@ -105,7 +112,7 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
           </button>
           <button
             onClick={handleReview}
-            disabled={resolved.state !== "ready"}
+            disabled={resolved.state !== "ready" && resolved.state !== "stale"}
             title="Open in Monaco diff editor"
           >
             Review in editor
@@ -127,7 +134,7 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
           File changed since proposal: {resolved.reason}. Use "Review in editor" to inspect.
         </div>
       )}
-      {resolved.state === "ready" && (
+      {(resolved.state === "ready" || resolved.state === "stale") && (
         <div className="ai-edit-diff">
           {resolved.hunks.length === 0 && <div className="ai-edit-hint">(no changes)</div>}
           {resolved.hunks.map((h, hi) => (

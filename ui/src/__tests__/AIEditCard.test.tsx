@@ -93,4 +93,32 @@ describe("AIEditCard", () => {
     expect(screen.getByText(/bad mode/)).toBeInTheDocument();
     expect(tauriCore.invoke).not.toHaveBeenCalled();
   });
+
+  it("keeps Review enabled in stale state and still renders a diff", async () => {
+    const onReview = vi.fn();
+    (tauriCore.invoke as ReturnType<typeof vi.fn>).mockResolvedValue("a\nb\nc\n");
+    render(
+      <AIEditCard
+        edit={{
+          kind: "patch",
+          path: "x.sas",
+          hunks: [
+            { search: "missing", replace: "y" },
+            { search: "b", replace: "BB" },
+          ],
+        }}
+        isProjectOpen
+        onApply={vi.fn()}
+        onReview={onReview}
+      />
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/file changed since proposal/i)).toBeInTheDocument();
+    });
+    const reviewBtn = screen.getByRole("button", { name: /review in editor/i });
+    expect(reviewBtn).not.toBeDisabled();
+    await userEvent.click(reviewBtn);
+    expect(onReview).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
+  });
 });

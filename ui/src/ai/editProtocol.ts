@@ -100,3 +100,17 @@ export function applyPatch(contents: string, hunks: PatchHunk[]): PatchResult {
   }
   return { ok: true, value: current };
 }
+
+// Apply hunks where possible, skipping any whose SEARCH is missing or
+// ambiguous. Used to preview the model's intent when strict applyPatch fails.
+export function applyPatchBestEffort(contents: string, hunks: PatchHunk[]): string {
+  let current = contents;
+  for (const { search, replace } of hunks) {
+    const first = current.indexOf(search);
+    if (first === -1) continue;
+    const second = current.indexOf(search, first + 1);
+    if (second !== -1) continue;
+    current = current.slice(0, first) + replace + current.slice(first + search.length);
+  }
+  return current;
+}

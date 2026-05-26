@@ -148,4 +148,14 @@ describe("applyPatch", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/ambiguous|multiple/i);
   });
+
+  it("best-effort variant skips failing hunks but applies the rest", async () => {
+    const { applyPatchBestEffort } = await import("../ai/editProtocol");
+    const out = applyPatchBestEffort("a\nb\nc\n", [
+      { search: "a", replace: "A" },
+      { search: "missing", replace: "X" },
+      { search: "c", replace: "C" },
+    ]);
+    expect(out).toBe("A\nb\nC\n");
+  });
 });
