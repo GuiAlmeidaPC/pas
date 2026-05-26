@@ -303,6 +303,18 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
     });
   };
 
+  // Stable cache of parsed pas-edit blocks keyed by the raw fence text.
+  // Without this, every re-render produces fresh ProposedEdit object
+  // identities, re-running AIEditCard's effect and re-issuing read_file.
+  const editParseCache = useRef<Map<string, ReturnType<typeof parseEditBlocks>[number]>>(new Map());
+  const parseEditOnce = (fenceText: string) => {
+    const cached = editParseCache.current.get(fenceText);
+    if (cached) return cached;
+    const [edit] = parseEditBlocks(fenceText);
+    if (edit) editParseCache.current.set(fenceText, edit);
+    return edit;
+  };
+
   // Helper to parse text and extract code snippets, returning text mixed with CodeBlock items
   const renderMessageContent = (content: string) => {
     const parts: React.ReactNode[] = [];
@@ -325,7 +337,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
 
     segments.forEach((seg, segIdx) => {
       if (seg.kind === "edit") {
-        const [edit] = parseEditBlocks(seg.text);
+        const edit = parseEditOnce(seg.text);
         if (edit) {
           parts.push(
             <AIEditCard

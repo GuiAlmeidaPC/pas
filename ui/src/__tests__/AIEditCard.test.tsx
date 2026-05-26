@@ -12,6 +12,8 @@ describe("AIEditCard", () => {
   });
 
   it("renders a create edit with all green lines and calls onApply", async () => {
+    // read_file rejects → file does not exist → create is allowed.
+    (tauriCore.invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("not found"));
     const onApply = vi.fn().mockResolvedValue(undefined);
     render(
       <AIEditCard
@@ -23,9 +25,24 @@ describe("AIEditCard", () => {
     );
     expect(screen.getByText("programs/new.sas")).toBeInTheDocument();
     expect(screen.getByText("new")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /accept/i })).not.toBeDisabled());
     await userEvent.click(screen.getByRole("button", { name: /accept/i }));
     expect(onApply).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.getByText(/applied/i)).toBeInTheDocument());
+  });
+
+  it("rejects a create when the target path already exists", async () => {
+    (tauriCore.invoke as ReturnType<typeof vi.fn>).mockResolvedValue("existing content\n");
+    render(
+      <AIEditCard
+        edit={{ kind: "create", path: "programs/existing.sas", contents: "data x;\nrun;" }}
+        isProjectOpen
+        onApply={vi.fn()}
+        onReview={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(screen.getByText(/already exists/i)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
   });
 
   it("disables actions when no project is open", () => {

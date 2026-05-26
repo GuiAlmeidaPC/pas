@@ -790,11 +790,16 @@ export default function App() {
         }
 
         if (edit.kind === "create") {
-          const newTab = makeTab({ path, title: basename(path), content: resolved.after });
-          newTab.saved_content = resolved.after;
-          const updatedTabs = [...tabsRef.current, newTab];
-          setTabs(updatedTabs);
-          setActiveId(newTab.id);
+          let updatedTabs = tabsRef.current;
+          if (matchTab) {
+            setActiveId(matchTab.id);
+          } else {
+            const newTab = makeTab({ path, title: basename(path), content: resolved.after });
+            newTab.saved_content = resolved.after;
+            updatedTabs = [...tabsRef.current, newTab];
+            setTabs(updatedTabs);
+            setActiveId(newTab.id);
+          }
           const updatedPrograms = projectProgramsRef.current.some((p) => p.path === path)
             ? projectProgramsRef.current
             : [...projectProgramsRef.current, { path, content: resolved.after }];

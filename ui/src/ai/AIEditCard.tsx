@@ -29,6 +29,18 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
     async function resolve() {
       if (edit.kind === "error") return;
       if (edit.kind === "create") {
+        // Reject create when a file already exists at the target path.
+        try {
+          await invoke<string>("read_file", { path: edit.path });
+          if (cancelled) return;
+          setResolved({
+            state: "error",
+            reason: `${edit.path} already exists. Use mode="replace" or mode="patch" instead.`,
+          });
+          return;
+        } catch {
+          if (cancelled) return;
+        }
         const after = edit.contents;
         setResolved({ state: "ready", before: "", after, hunks: computeHunks("", after) });
         return;
