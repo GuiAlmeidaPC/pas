@@ -13,6 +13,8 @@ import { MenuBar, type MenuDef } from "./MenuBar";
 import { Modal } from "./Modal";
 import { registerSasLanguage } from "./sasLang";
 import { AIChatPanel } from "./AIChatPanel";
+import type { ProposedEdit } from "./ai/editProtocol";
+import { DiffReviewModal } from "./ai/DiffReviewModal";
 import type {
   ColumnInfo,
   DatasetInfo,
@@ -193,6 +195,10 @@ export default function App() {
   });
   const [activeSelection, setActiveSelection] = useState("");
   const [aiTrigger, setAiTrigger] = useState<{ prompt: string; timestamp: number } | null>(null);
+  const [diffReview, setDiffReview] = useState<
+    | { edit: ProposedEdit; before: string; after: string }
+    | null
+  >(null);
 
   const [schemaContext, setSchemaContext] = useState<string>("");
 
@@ -759,6 +765,61 @@ export default function App() {
       setLog((p) => [...p, { level: "error", text: `Failed to add program to project: ${String(e)}` }]);
     }
   }, [performSaveProject]);
+
+  const handleApplyEdit = useCallback(
+    async (edit: ProposedEdit, resolved: { before: string; after: string }) => {
+      if (edit.kind === "error") return;
+      if (!projectPathRef.current) {
+        setLog((p) => [...p, { level: "error", text: "AI edit: open a project first" }]);
+        throw new Error("no project open");
+      }
+      const path = edit.path;
+      try {
+        await invoke("write_file", { path, content: resolved.after });
+
+        // Sync any open tab pointing at this path.
+        const matchTab = tabsRef.current.find((t) => t.path === path);
+        if (matchTab) {
+          setTabs((prev) =>
+            prev.map((t) =>
+              t.id === matchTab.id
+                ? { ...t, content: resolved.after, saved_content: resolved.after }
+                : t,
+            ),
+          );
+        }
+
+        if (edit.kind === "create") {
+          const newTab = makeTab({ path, title: basename(path), content: resolved.after });
+          newTab.saved_content = resolved.after;
+          const updatedTabs = [...tabsRef.current, newTab];
+          setTabs(updatedTabs);
+          setActiveId(newTab.id);
+          const updatedPrograms = projectProgramsRef.current.some((p) => p.path === path)
+            ? projectProgramsRef.current
+            : [...projectProgramsRef.current, { path, content: resolved.after }];
+          setProjectPrograms(updatedPrograms);
+          await performSaveProject(false, updatedTabs, updatedPrograms);
+        }
+        setLog((p) => [
+          ...p,
+          { level: "note", text: `NOTE: AI edit applied to ${basename(path)}` },
+        ]);
+      } catch (e) {
+        setLog((p) => [...p, { level: "error", text: `AI edit failed: ${String(e)}` }]);
+        throw e;
+      }
+    },
+    [performSaveProject],
+  );
+
+  const handleReviewEdit = useCallback(
+    (edit: ProposedEdit, resolved: { before: string; after: string }) => {
+      if (edit.kind === "error") return;
+      setDiffReview({ edit, before: resolved.before, after: resolved.after });
+    },
+    [],
+  );
 
   const reorderPrograms = useCallback((srcIdx: number, destIdx: number) => {
     let updated: TabConfig[] = [];
@@ -1499,6 +1560,8 @@ export default function App() {
               onReplaceCode={handleReplaceCode}
               onNewTab={newTabWithContent}
               onAddToProject={handleAddToProject}
+              onApplyEdit={handleApplyEdit}
+              onReviewEdit={handleReviewEdit}
               isProjectOpen={!!projectPath}
               customTrigger={aiTrigger}
               workspaceContext={workspaceContext}
@@ -1515,6 +1578,20 @@ export default function App() {
         projectName={projectName}
         zoomPercent={zoomPercent}
       />
+      {diffReview && (
+        <DiffReviewModal
+          edit={diffReview.edit}
+          before={diffReview.before}
+          after={diffReview.after}
+          onAccept={() =>
+            handleApplyEdit(diffReview.edit, {
+              before: diffReview.before,
+              after: diffReview.after,
+            })
+          }
+          onClose={() => setDiffReview(null)}
+        />
+      )}
     </div>
   );
 }
