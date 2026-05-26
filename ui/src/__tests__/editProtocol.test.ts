@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseEditBlocks } from "../ai/editProtocol";
+import { parseEditBlocks, applyPatch } from "../ai/editProtocol";
 
 describe("parseEditBlocks", () => {
   it("returns empty array when no pas-edit blocks present", () => {
@@ -118,5 +118,34 @@ describe("parseEditBlocks", () => {
       path: "a.sas",
       hunks: [{ search: "old", replace: "new" }],
     });
+  });
+});
+
+describe("applyPatch", () => {
+  it("applies a single hunk", () => {
+    const r = applyPatch("a\nb\nc\n", [{ search: "b", replace: "BB" }]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBe("a\nBB\nc\n");
+  });
+
+  it("applies multiple hunks in order", () => {
+    const r = applyPatch("a\nb\nc\n", [
+      { search: "a", replace: "A" },
+      { search: "c", replace: "C" },
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBe("A\nb\nC\n");
+  });
+
+  it("fails when SEARCH text is not found", () => {
+    const r = applyPatch("a\nb\nc\n", [{ search: "missing", replace: "x" }]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/not found/i);
+  });
+
+  it("fails when SEARCH text matches more than once (ambiguous)", () => {
+    const r = applyPatch("a\na\n", [{ search: "a", replace: "B" }]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/ambiguous|multiple/i);
   });
 });

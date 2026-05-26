@@ -75,3 +75,28 @@ export function parseEditBlocks(markdown: string): ProposedEdit[] {
   }
   return edits;
 }
+
+export type PatchResult =
+  | { ok: true; value: string }
+  | { ok: false; error: string; hunkIndex: number };
+
+export function applyPatch(contents: string, hunks: PatchHunk[]): PatchResult {
+  let current = contents;
+  for (let i = 0; i < hunks.length; i++) {
+    const { search, replace } = hunks[i];
+    const first = current.indexOf(search);
+    if (first === -1) {
+      return { ok: false, error: `hunk ${i + 1}: SEARCH text not found in file`, hunkIndex: i };
+    }
+    const second = current.indexOf(search, first + 1);
+    if (second !== -1) {
+      return {
+        ok: false,
+        error: `hunk ${i + 1}: SEARCH text is ambiguous (matches multiple locations)`,
+        hunkIndex: i,
+      };
+    }
+    current = current.slice(0, first) + replace + current.slice(first + search.length);
+  }
+  return { ok: true, value: current };
+}
