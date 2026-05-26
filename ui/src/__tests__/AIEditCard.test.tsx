@@ -1,0 +1,96 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { AIEditCard } from "../ai/AIEditCard";
+import * as tauriCore from "@tauri-apps/api/core";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+describe("AIEditCard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders a create edit with all green lines and calls onApply", async () => {
+    const onApply = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AIEditCard
+        edit={{ kind: "create", path: "programs/new.sas", contents: "data x;\nrun;" }}
+        isProjectOpen
+        onApply={onApply}
+        onReview={vi.fn()}
+      />
+    );
+    expect(screen.getByText("programs/new.sas")).toBeInTheDocument();
+    expect(screen.getByText("new")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /accept/i }));
+    expect(onApply).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByText(/applied/i)).toBeInTheDocument());
+  });
+
+  it("disables actions when no project is open", () => {
+    render(
+      <AIEditCard
+        edit={{ kind: "create", path: "x.sas", contents: "x" }}
+        isProjectOpen={false}
+        onApply={vi.fn()}
+        onReview={vi.fn()}
+      />
+    );
+    expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
+    expect(screen.getByText(/open a project/i)).toBeInTheDocument();
+  });
+
+  it("renders a patch edit by fetching current contents and showing -/+ lines", async () => {
+    (tauriCore.invoke as ReturnType<typeof vi.fn>).mockResolvedValue("data want; set have; run;\n");
+    render(
+      <AIEditCard
+        edit={{
+          kind: "patch",
+          path: "programs/foo.sas",
+          hunks: [{ search: "data want; set have; run;", replace: "data want; set have; where x>0; run;" }],
+        }}
+        isProjectOpen
+        onApply={vi.fn()}
+        onReview={vi.fn()}
+      />
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/data want; set have; run;/)).toBeInTheDocument();
+      expect(screen.getByText(/data want; set have; where x>0; run;/)).toBeInTheDocument();
+    });
+  });
+
+  it("surfaces a stale-base error when SEARCH no longer matches", async () => {
+    (tauriCore.invoke as ReturnType<typeof vi.fn>).mockResolvedValue("UNRELATED\n");
+    render(
+      <AIEditCard
+        edit={{
+          kind: "patch",
+          path: "programs/foo.sas",
+          hunks: [{ search: "data want;", replace: "data x;" }],
+        }}
+        isProjectOpen
+        onApply={vi.fn()}
+        onReview={vi.fn()}
+      />
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/file changed since proposal/i)).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
+  });
+
+  it("renders a protocol error edit without contacting the backend", () => {
+    render(
+      <AIEditCard
+        edit={{ kind: "error", path: "a.sas", reason: "bad mode", raw: "" }}
+        isProjectOpen
+        onApply={vi.fn()}
+        onReview={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/bad mode/)).toBeInTheDocument();
+    expect(tauriCore.invoke).not.toHaveBeenCalled();
+  });
+});
