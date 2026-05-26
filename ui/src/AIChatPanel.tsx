@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AISettingsModal, type AIConfig } from "./AISettingsModal";
+import { parseEditBlocks, type ProposedEdit } from "./ai/editProtocol";
+import { AIEditCard } from "./ai/AIEditCard";
 
 interface Message {
   role: "user" | "assistant" | "system";
@@ -17,6 +19,8 @@ interface Props {
   isProjectOpen: boolean;
   customTrigger?: { prompt: string; timestamp: number } | null;
   workspaceContext: string;
+  onApplyEdit: (edit: ProposedEdit, resolved: { before: string; after: string }) => Promise<void>;
+  onReviewEdit: (edit: ProposedEdit, resolved: { before: string; after: string }) => void;
 }
 
 export function AIChatPanel({
@@ -29,6 +33,8 @@ export function AIChatPanel({
   isProjectOpen,
   customTrigger,
   workspaceContext,
+  onApplyEdit,
+  onReviewEdit,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -146,6 +152,38 @@ Programming Constraints & Instructions:
 4. Wrap all code blocks in triple-backticks with the explicit language tag (e.g. \`\`\`sas or \`\`\`sql) to ensure the editor's UI snippet card actions can parse and apply them. Never omit the language tag.
 5. Avoid excessive conversational filler or introductory greetings (e.g., "Sure, I'd be happy to help!"). Jump straight to the core explanation or code solution.
 6. If requested to explain or refactor, briefly detail your logic in 1-2 concise bullet points before showing the code.
+
+File Edit Protocol:
+When the user asks you to modify or create program files, propose edits using \`pas-edit\` fenced
+code blocks. The UI will render them as red/green diff cards with Accept/Reject/Review buttons.
+
+Three modes (always include both \`path\` and \`mode\` as quoted attributes):
+
+1. Surgical edit (preferred):
+\`\`\`pas-edit path="programs/foo.sas" mode="patch"
+<<<<<<< SEARCH
+exact existing text, byte-for-byte
+=======
+new text
+>>>>>>> REPLACE
+\`\`\`
+You may include multiple SEARCH/REPLACE hunks in one block; they apply atomically.
+
+2. New file:
+\`\`\`pas-edit path="programs/new.sas" mode="create"
+<full file contents>
+\`\`\`
+
+3. Full overwrite (only when a patch would be larger than the file):
+\`\`\`pas-edit path="programs/big.sas" mode="replace"
+<full file contents>
+\`\`\`
+
+Rules:
+- The SEARCH text must match the current on-disk file contents exactly (whitespace included).
+- Use file paths from the <active_project> listing in the workspace context.
+- Only .sas files can be edited.
+- For explanation-only snippets the user will copy by hand, continue to use plain \`\`\`sas blocks — do not use pas-edit for non-applicable code samples.
 
 Context Information:
 The user's active workspace state is provided below inside structured XML tags. Analyze this context to answer questions accurately and tailor code references to the active project's libraries and datasets.
@@ -267,58 +305,68 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
 
   // Helper to parse text and extract code snippets, returning text mixed with CodeBlock items
   const renderMessageContent = (content: string) => {
-    const codeBlockRegex = /```(?:sas|sql)?([\s\S]*?)```/g;
     const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match;
 
-    while ((match = codeBlockRegex.exec(content)) !== null) {
-      const textBefore = content.substring(lastIndex, match.index);
-      if (textBefore.trim()) {
-        parts.push(...parseMarkdownToReact(textBefore, `text-${match.index}`));
+    // 1. Slice off pas-edit blocks and render each as an AIEditCard.
+    const editFence = /```pas-edit\b[^\n]*\n[\s\S]*?\n```/g;
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    const segments: Array<{ kind: "text" | "edit"; text: string }> = [];
+    while ((match = editFence.exec(content)) !== null) {
+      if (match.index > cursor) {
+        segments.push({ kind: "text", text: content.slice(cursor, match.index) });
       }
+      segments.push({ kind: "edit", text: match[0] });
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < content.length) {
+      segments.push({ kind: "text", text: content.slice(cursor) });
+    }
 
-      const code = match[1].trim();
-      parts.push(
-        <div key={`code-${match.index}`} className="ai-code-snippet">
-          <pre><code>{code}</code></pre>
-          <div className="snippet-actions">
-            <button
-              onClick={() => onInsertCode(code)}
-              title="Insert at cursor position in editor"
-            >
-              Insert
-            </button>
-            <button
-              onClick={() => onReplaceCode(code)}
-              title="Replace highlighted selection in editor"
-              disabled={!activeSelection}
-            >
-              Replace
-            </button>
-            <button
-              onClick={() => onNewTab(code)}
-              title="Write to a new tab"
-            >
-              New Tab
-            </button>
-            <button
-              onClick={() => onAddToProject(code)}
-              title={isProjectOpen ? "Add this program to the current project JSON" : "Open a project to enable adding programs"}
-              disabled={!isProjectOpen}
-            >
-              Add to Project
-            </button>
+    segments.forEach((seg, segIdx) => {
+      if (seg.kind === "edit") {
+        const [edit] = parseEditBlocks(seg.text);
+        if (edit) {
+          parts.push(
+            <AIEditCard
+              key={`edit-${segIdx}`}
+              edit={edit}
+              isProjectOpen={isProjectOpen}
+              onApply={onApplyEdit}
+              onReview={onReviewEdit}
+            />
+          );
+        }
+        return;
+      }
+      // Existing sas/sql snippet rendering for plain text segments.
+      const codeBlockRegex = /```(?:sas|sql)?([\s\S]*?)```/g;
+      let lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = codeBlockRegex.exec(seg.text)) !== null) {
+        const textBefore = seg.text.substring(lastIndex, m.index);
+        if (textBefore.trim()) {
+          parts.push(...parseMarkdownToReact(textBefore, `text-${segIdx}-${m.index}`));
+        }
+        const code = m[1].trim();
+        parts.push(
+          <div key={`code-${segIdx}-${m.index}`} className="ai-code-snippet">
+            <pre><code>{code}</code></pre>
+            <div className="snippet-actions">
+              <button onClick={() => onInsertCode(code)} title="Insert at cursor position in editor">Insert</button>
+              <button onClick={() => onReplaceCode(code)} title="Replace highlighted selection in editor" disabled={!activeSelection}>Replace</button>
+              <button onClick={() => onNewTab(code)} title="Write to a new tab">New Tab</button>
+              <button onClick={() => onAddToProject(code)} title={isProjectOpen ? "Add this program to the current project JSON" : "Open a project to enable adding programs"} disabled={!isProjectOpen}>Add to Project</button>
+            </div>
           </div>
-        </div>
-      );
-      lastIndex = codeBlockRegex.lastIndex;
-    }
-
-    const remainingText = content.substring(lastIndex);
-    if (remainingText.trim() || parts.length === 0) {
-      parts.push(...parseMarkdownToReact(remainingText || content, "text-end"));
-    }
+        );
+        lastIndex = codeBlockRegex.lastIndex;
+      }
+      const remainingText = seg.text.substring(lastIndex);
+      if (remainingText.trim() || lastIndex === 0) {
+        parts.push(...parseMarkdownToReact(remainingText || seg.text, `text-end-${segIdx}`));
+      }
+    });
 
     return parts;
   };
