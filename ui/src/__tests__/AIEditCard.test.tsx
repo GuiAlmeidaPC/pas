@@ -45,7 +45,36 @@ describe("AIEditCard", () => {
     expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
   });
 
-  it("disables actions when no project is open", () => {
+  it("rejects non-sas edit paths before contacting the backend", async () => {
+    render(
+      <AIEditCard
+        edit={{ kind: "create", path: "programs/new.txt", contents: "x" }}
+        isProjectOpen
+        onApply={vi.fn()}
+        onReview={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(screen.getByText(/only \.sas files/i)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
+    expect(tauriCore.invoke).not.toHaveBeenCalled();
+  });
+
+  it("does not allow create when existence check fails for reasons other than missing file", async () => {
+    (tauriCore.invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Access denied"));
+    render(
+      <AIEditCard
+        edit={{ kind: "create", path: "programs/new.sas", contents: "x" }}
+        isProjectOpen
+        onApply={vi.fn()}
+        onReview={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(screen.getByText(/access denied/i)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
+  });
+
+  it("disables actions when no project is open", async () => {
+    (tauriCore.invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("not found"));
     render(
       <AIEditCard
         edit={{ kind: "create", path: "x.sas", contents: "x" }}
@@ -54,8 +83,9 @@ describe("AIEditCard", () => {
         onReview={vi.fn()}
       />
     );
-    expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
+    await waitFor(() => expect(screen.getByText(/open a project/i)).toBeInTheDocument());
     expect(screen.getByText(/open a project/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
   });
 
   it("renders a patch edit by fetching current contents and showing -/+ lines", async () => {
@@ -136,6 +166,23 @@ describe("AIEditCard", () => {
     expect(reviewBtn).not.toBeDisabled();
     await userEvent.click(reviewBtn);
     expect(onReview).toHaveBeenCalledTimes(1);
+    expect(onReview.mock.calls[0][1]).toMatchObject({ status: "stale" });
     expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
+  });
+
+  it("uses the supplied open-tab reader before falling back to backend reads", async () => {
+    const readFile = vi.fn().mockResolvedValue({ content: "old", source: "tab" });
+    render(
+      <AIEditCard
+        edit={{ kind: "patch", path: "programs/open.sas", hunks: [{ search: "old", replace: "new" }] }}
+        isProjectOpen
+        readFile={readFile}
+        onApply={vi.fn()}
+        onReview={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(screen.getByText("new")).toBeInTheDocument());
+    expect(readFile).toHaveBeenCalledWith("programs/open.sas");
+    expect(tauriCore.invoke).not.toHaveBeenCalled();
   });
 });

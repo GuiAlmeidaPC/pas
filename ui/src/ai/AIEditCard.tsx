@@ -1,24 +1,40 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { applyPatch, applyPatchBestEffort, type ProposedEdit } from "./editProtocol";
+import {
+  applyPatch,
+  applyPatchBestEffort,
+  type EditFileSnapshot,
+  type ProposedEdit,
+  type ResolvedEdit,
+} from "./editProtocol";
 import { computeHunks, type Hunk } from "./diff";
 
 interface Props {
   edit: ProposedEdit;
   isProjectOpen: boolean;
-  onApply: (edit: ProposedEdit, resolved: { before: string; after: string }) => Promise<void>;
-  onReview: (edit: ProposedEdit, resolved: { before: string; after: string }) => void;
+  readFile?: (path: string) => Promise<EditFileSnapshot>;
+  onApply: (edit: ProposedEdit, resolved: ResolvedEdit) => Promise<void>;
+  onReview: (edit: ProposedEdit, resolved: ResolvedEdit) => void;
 }
 
 type Resolved =
   | { state: "loading" }
-  | { state: "ready"; before: string; after: string; hunks: Hunk[] }
-  | { state: "stale"; reason: string; before: string; after: string; hunks: Hunk[] }
+  | { state: "ready"; before: string; after: string; hunks: Hunk[]; source: "tab" | "disk" }
+  | { state: "stale"; reason: string; before: string; after: string; hunks: Hunk[]; source: "tab" | "disk" }
   | { state: "error"; reason: string };
 
 type CardStatus = "pending" | "applying" | "applied" | "rejected";
 
-export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
+function isSasPath(path: string): boolean {
+  return /\.sas$/i.test(path);
+}
+
+function isNotFoundError(e: unknown): boolean {
+  const message = String(e).toLowerCase();
+  return message.includes("not found") || message.includes("no such file") || message.includes("os error 2");
+}
+
+export function AIEditCard({ edit, isProjectOpen, readFile, onApply, onReview }: Props) {
   const [resolved, setResolved] = useState<Resolved>({ state: "loading" });
   const [status, setStatus] = useState<CardStatus>("pending");
 
@@ -28,25 +44,38 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
     let cancelled = false;
     async function resolve() {
       if (edit.kind === "error") return;
+      if (!isSasPath(edit.path)) {
+        setResolved({ state: "error", reason: "only .sas files can be edited" });
+        return;
+      }
+      const loadFile = async (path: string): Promise<EditFileSnapshot> => {
+        if (readFile) return readFile(path);
+        return { content: await invoke<string>("read_file", { path }), source: "disk" };
+      };
       if (edit.kind === "create") {
         // Reject create when a file already exists at the target path.
         try {
-          await invoke<string>("read_file", { path: edit.path });
+          await loadFile(edit.path);
           if (cancelled) return;
           setResolved({
             state: "error",
             reason: `${edit.path} already exists. Use mode="replace" or mode="patch" instead.`,
           });
           return;
-        } catch {
+        } catch (e) {
           if (cancelled) return;
+          if (!isNotFoundError(e)) {
+            setResolved({ state: "error", reason: String(e) });
+            return;
+          }
         }
         const after = edit.contents;
-        setResolved({ state: "ready", before: "", after, hunks: computeHunks("", after) });
+        setResolved({ state: "ready", before: "", after, hunks: computeHunks("", after), source: "disk" });
         return;
       }
       try {
-        const before = await invoke<string>("read_file", { path: edit.path });
+        const snapshot = await loadFile(edit.path);
+        const before = snapshot.content;
         if (cancelled) return;
         if (edit.kind === "replace") {
           setResolved({
@@ -54,6 +83,7 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
             before,
             after: edit.contents,
             hunks: computeHunks(before, edit.contents),
+            source: snapshot.source,
           });
           return;
         }
@@ -67,6 +97,7 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
             before,
             after,
             hunks: computeHunks(before, after),
+            source: snapshot.source,
           });
           return;
         }
@@ -75,6 +106,7 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
           before,
           after: r.value,
           hunks: computeHunks(before, r.value),
+          source: snapshot.source,
         });
       } catch (e) {
         if (cancelled) return;
@@ -83,7 +115,7 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
     }
     resolve();
     return () => { cancelled = true; };
-  }, [edit]);
+  }, [edit, readFile]);
 
   const canAccept = useMemo(() => {
     if (!isProjectOpen) return false;
@@ -95,7 +127,12 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
     if (resolved.state !== "ready") return;
     setStatus("applying");
     try {
-      await onApply(edit, { before: resolved.before, after: resolved.after });
+      await onApply(edit, {
+        before: resolved.before,
+        after: resolved.after,
+        status: "ready",
+        source: resolved.source,
+      });
       setStatus("applied");
     } catch {
       setStatus("pending");
@@ -106,7 +143,12 @@ export function AIEditCard({ edit, isProjectOpen, onApply, onReview }: Props) {
 
   const handleReview = () => {
     if (resolved.state === "ready" || resolved.state === "stale") {
-      onReview(edit, { before: resolved.before, after: resolved.after });
+      onReview(edit, {
+        before: resolved.before,
+        after: resolved.after,
+        status: resolved.state,
+        source: resolved.source,
+      });
     }
   };
 

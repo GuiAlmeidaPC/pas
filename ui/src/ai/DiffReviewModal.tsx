@@ -5,11 +5,12 @@ interface Props {
   edit: ProposedEdit;
   before: string;
   after: string;
-  onAccept: () => void;
+  canAccept: boolean;
+  onAccept: () => Promise<void> | void;
   onClose: () => void;
 }
 
-export function DiffReviewModal({ edit, before, after, onAccept, onClose }: Props) {
+export function DiffReviewModal({ edit, before, after, canAccept, onAccept, onClose }: Props) {
   if (edit.kind === "error") return null;
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -37,7 +38,18 @@ export function DiffReviewModal({ edit, before, after, onAccept, onClose }: Prop
         </div>
         <div className="modal-footer">
           <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" onClick={() => { onAccept(); onClose(); }}>
+          <button
+            className="btn-primary"
+            disabled={!canAccept}
+            onClick={async () => {
+              try {
+                await onAccept();
+                onClose();
+              } catch {
+                // App logs the apply failure; keep the modal open for review.
+              }
+            }}
+          >
             Accept change
           </button>
         </div>

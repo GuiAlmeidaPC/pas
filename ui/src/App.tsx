@@ -13,7 +13,7 @@ import { MenuBar, type MenuDef } from "./MenuBar";
 import { Modal } from "./Modal";
 import { registerSasLanguage } from "./sasLang";
 import { AIChatPanel } from "./AIChatPanel";
-import type { ProposedEdit } from "./ai/editProtocol";
+import { applyPatch, type EditFileSnapshot, type ProposedEdit, type ResolvedEdit } from "./ai/editProtocol";
 import { DiffReviewModal } from "./ai/DiffReviewModal";
 import type {
   ColumnInfo,
@@ -196,7 +196,7 @@ export default function App() {
   const [activeSelection, setActiveSelection] = useState("");
   const [aiTrigger, setAiTrigger] = useState<{ prompt: string; timestamp: number } | null>(null);
   const [diffReview, setDiffReview] = useState<
-    | { edit: ProposedEdit; before: string; after: string }
+    | { edit: ProposedEdit; resolved: ResolvedEdit }
     | null
   >(null);
 
@@ -766,16 +766,53 @@ export default function App() {
     }
   }, [performSaveProject]);
 
+  const readEditFile = useCallback(async (path: string): Promise<EditFileSnapshot> => {
+    const openTab = tabsRef.current.find((t) => t.path === path);
+    if (openTab) {
+      return { content: openTab.content, source: "tab" };
+    }
+    return { content: await invoke<string>("read_file", { path }), source: "disk" };
+  }, []);
+
   const handleApplyEdit = useCallback(
-    async (edit: ProposedEdit, resolved: { before: string; after: string }) => {
+    async (edit: ProposedEdit, resolved: ResolvedEdit) => {
       if (edit.kind === "error") return;
+      if (resolved.status !== "ready") {
+        setLog((p) => [...p, { level: "error", text: "AI edit failed: stale edits must be regenerated before applying" }]);
+        throw new Error("stale AI edit cannot be applied");
+      }
       if (!projectPathRef.current) {
         setLog((p) => [...p, { level: "error", text: "AI edit: open a project first" }]);
         throw new Error("no project open");
       }
       const path = edit.path;
       try {
-        await invoke("write_file", { path, content: resolved.after });
+        let contentToWrite = resolved.after;
+        if (edit.kind === "patch") {
+          const current = await readEditFile(path);
+          const reapplied = applyPatch(current.content, edit.hunks);
+          if (!reapplied.ok) {
+            throw new Error(`current file changed since review: ${reapplied.error}`);
+          }
+          contentToWrite = reapplied.value;
+        } else if (edit.kind === "replace") {
+          const current = await readEditFile(path);
+          if (current.content !== resolved.before) {
+            throw new Error("current file changed since review; regenerate the AI edit before applying");
+          }
+        } else if (edit.kind === "create") {
+          try {
+            await readEditFile(path);
+            throw new Error(`${path} already exists. Use mode=\"replace\" or mode=\"patch\" instead.`);
+          } catch (e) {
+            const message = String(e).toLowerCase();
+            if (!message.includes("not found") && !message.includes("no such file") && !message.includes("os error 2")) {
+              throw e;
+            }
+          }
+        }
+
+        await invoke("write_file", { path, content: contentToWrite });
 
         // Sync any open tab pointing at this path.
         const matchTab = tabsRef.current.find((t) => t.path === path);
@@ -783,7 +820,7 @@ export default function App() {
           setTabs((prev) =>
             prev.map((t) =>
               t.id === matchTab.id
-                ? { ...t, content: resolved.after, saved_content: resolved.after }
+                ? { ...t, content: contentToWrite, saved_content: contentToWrite }
                 : t,
             ),
           );
@@ -794,15 +831,15 @@ export default function App() {
           if (matchTab) {
             setActiveId(matchTab.id);
           } else {
-            const newTab = makeTab({ path, title: basename(path), content: resolved.after });
-            newTab.saved_content = resolved.after;
+            const newTab = makeTab({ path, title: basename(path), content: contentToWrite });
+            newTab.saved_content = contentToWrite;
             updatedTabs = [...tabsRef.current, newTab];
             setTabs(updatedTabs);
             setActiveId(newTab.id);
           }
           const updatedPrograms = projectProgramsRef.current.some((p) => p.path === path)
             ? projectProgramsRef.current
-            : [...projectProgramsRef.current, { path, content: resolved.after }];
+            : [...projectProgramsRef.current, { path, content: contentToWrite }];
           setProjectPrograms(updatedPrograms);
           await performSaveProject(false, updatedTabs, updatedPrograms);
         }
@@ -815,13 +852,13 @@ export default function App() {
         throw e;
       }
     },
-    [performSaveProject],
+    [performSaveProject, readEditFile],
   );
 
   const handleReviewEdit = useCallback(
-    (edit: ProposedEdit, resolved: { before: string; after: string }) => {
+    (edit: ProposedEdit, resolved: ResolvedEdit) => {
       if (edit.kind === "error") return;
-      setDiffReview({ edit, before: resolved.before, after: resolved.after });
+      setDiffReview({ edit, resolved });
     },
     [],
   );
@@ -1565,6 +1602,7 @@ export default function App() {
               onReplaceCode={handleReplaceCode}
               onNewTab={newTabWithContent}
               onAddToProject={handleAddToProject}
+              readEditFile={readEditFile}
               onApplyEdit={handleApplyEdit}
               onReviewEdit={handleReviewEdit}
               isProjectOpen={!!projectPath}
@@ -1586,13 +1624,11 @@ export default function App() {
       {diffReview && (
         <DiffReviewModal
           edit={diffReview.edit}
-          before={diffReview.before}
-          after={diffReview.after}
+          before={diffReview.resolved.before}
+          after={diffReview.resolved.after}
+          canAccept={diffReview.resolved.status === "ready"}
           onAccept={() =>
-            handleApplyEdit(diffReview.edit, {
-              before: diffReview.before,
-              after: diffReview.after,
-            })
+            handleApplyEdit(diffReview.edit, diffReview.resolved)
           }
           onClose={() => setDiffReview(null)}
         />

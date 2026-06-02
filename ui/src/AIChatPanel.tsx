@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AISettingsModal, type AIConfig } from "./AISettingsModal";
-import { parseEditBlocks, type ProposedEdit } from "./ai/editProtocol";
+import { parseEditBlocks, type EditFileSnapshot, type ProposedEdit, type ResolvedEdit } from "./ai/editProtocol";
 import { AIEditCard } from "./ai/AIEditCard";
 
 interface Message {
@@ -19,8 +19,9 @@ interface Props {
   isProjectOpen: boolean;
   customTrigger?: { prompt: string; timestamp: number } | null;
   workspaceContext: string;
-  onApplyEdit: (edit: ProposedEdit, resolved: { before: string; after: string }) => Promise<void>;
-  onReviewEdit: (edit: ProposedEdit, resolved: { before: string; after: string }) => void;
+  readEditFile: (path: string) => Promise<EditFileSnapshot>;
+  onApplyEdit: (edit: ProposedEdit, resolved: ResolvedEdit) => Promise<void>;
+  onReviewEdit: (edit: ProposedEdit, resolved: ResolvedEdit) => void;
 }
 
 export function AIChatPanel({
@@ -33,6 +34,7 @@ export function AIChatPanel({
   isProjectOpen,
   customTrigger,
   workspaceContext,
+  readEditFile,
   onApplyEdit,
   onReviewEdit,
 }: Props) {
@@ -133,6 +135,9 @@ export function AIChatPanel({
     const localTime = new Date().toLocaleTimeString();
     const localDate = new Date().toLocaleDateString();
     const osPlatform = "Linux";
+    const searchMarker = "<<<<<<< SEARCH";
+    const separatorMarker = "=======";
+    const replaceMarker = ">>>>>>> REPLACE";
 
     const systemPrompt = `You are an expert SAS and PAS (Practical Analytics Studio) database programmer.
 Your goal is to help the user write, debug, and explain SAS DATA step programs and PROC SQL scripts.
@@ -161,11 +166,11 @@ Three modes (always include both \`path\` and \`mode\` as quoted attributes):
 
 1. Surgical edit (preferred):
 \`\`\`pas-edit path="programs/foo.sas" mode="patch"
-<<<<<<< SEARCH
+${searchMarker}
 exact existing text, byte-for-byte
-=======
+${separatorMarker}
 new text
->>>>>>> REPLACE
+${replaceMarker}
 \`\`\`
 You may include multiple SEARCH/REPLACE hunks in one block; they apply atomically.
 
@@ -180,7 +185,7 @@ You may include multiple SEARCH/REPLACE hunks in one block; they apply atomicall
 \`\`\`
 
 Rules:
-- The SEARCH text must match the current on-disk file contents exactly (whitespace included).
+- The SEARCH text must match the current file contents exactly (whitespace included).
 - Use file paths from the <active_project> listing in the workspace context.
 - Only .sas files can be edited.
 - For explanation-only snippets the user will copy by hand, continue to use plain \`\`\`sas blocks — do not use pas-edit for non-applicable code samples.
@@ -344,6 +349,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
               key={`edit-${segIdx}`}
               edit={edit}
               isProjectOpen={isProjectOpen}
+              readFile={readEditFile}
               onApply={onApplyEdit}
               onReview={onReviewEdit}
             />

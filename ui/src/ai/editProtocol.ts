@@ -9,6 +9,18 @@ export type ProposedEdit =
   | { kind: "replace"; path: string; contents: string }
   | { kind: "error"; path: string | null; reason: string; raw: string };
 
+export interface EditFileSnapshot {
+  content: string;
+  source: "tab" | "disk";
+}
+
+export interface ResolvedEdit {
+  before: string;
+  after: string;
+  status: "ready" | "stale";
+  source: "tab" | "disk";
+}
+
 const FENCE_RE = /^```pas-edit\b([^\n]*)\n([\s\S]*?)\n```/gm;
 
 function parseAttrs(header: string): Record<string, string> {
