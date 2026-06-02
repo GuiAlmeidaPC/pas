@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing has been released yet. Everything below ships in the first tagged
-release, `v0.1.0`. When that tag is cut, move this content under a
-`## [0.1.0] - YYYY-MM-DD` heading.
+## [0.1.0] - 2026-06-02
+
+First tagged release.
 
 ### Added
 - Initial PAS (Practical Analytics Studio) implementation: a cross-platform
@@ -31,4 +31,5 @@ release, `v0.1.0`. When that tag is cut, move this content under a
 - Tag-based release workflow producing Linux (`.AppImage`, `.deb`), Windows
   (`.msi`, `.exe`), and unsigned macOS (`.dmg`) bundles with SHA-256 checksums.
 
-[Unreleased]: https://github.com/GuiAlmeidaPC/pas/commits/main
+[Unreleased]: https://github.com/GuiAlmeidaPC/pas/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/GuiAlmeidaPC/pas/releases/tag/v0.1.0
