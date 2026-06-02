@@ -74,10 +74,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Rust dependency audit
-        uses: rustsec/audit-check@v2
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+
+      - name: Rust dependency audit
+        # Fails on actual vulnerabilities; known transitive informational
+        # advisories are acknowledged in .cargo/audit.toml.
+        run: cargo audit
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3

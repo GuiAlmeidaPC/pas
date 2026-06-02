@@ -1,0 +1,34 @@
+# cargo-audit configuration (https://github.com/rustsec/rustsec/tree/main/cargo-audit)
+#
+# `cargo audit` fails CI on actual security vulnerabilities. The advisories
+# below are all *informational* notices ("unmaintained"/"unsound") for
+# transitive dependencies we do not control — none are exploitable.
+#
+#   - RUSTSEC-2024-04xx / -0429: gtk-rs GTK3 bindings, pulled in by Tauri's
+#     Linux backend (webkit2gtk → GTK3). Resolved upstream only when Tauri
+#     migrates to GTK4.
+#   - RUSTSEC-2024-0370: proc-macro-error v1, a transitive proc-macro helper.
+#   - RUSTSEC-2025-00xx/-0100: unic-* crates, transitive Unicode helpers.
+#
+# Review periodically and drop entries as upstreams update.
+
+[advisories]
+ignore = [
+  "RUSTSEC-2024-0411", # gdkwayland-sys - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0412", # gdk          - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0413", # atk          - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0414", # gdkx11-sys   - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0415", # gtk          - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0416", # atk-sys      - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0417", # gdkx11       - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0418", # gdk-sys      - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0419", # gtk3-macros  - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0420", # gtk-sys      - GTK3 bindings unmaintained
+  "RUSTSEC-2024-0429", # glib         - unsound VariantStrIter (GTK3 stack)
+  "RUSTSEC-2024-0370", # proc-macro-error - unmaintained
+  "RUSTSEC-2025-0075", # unic-char-range  - unmaintained
+  "RUSTSEC-2025-0080", # unic-common      - unmaintained
+  "RUSTSEC-2025-0081", # unic-char-property - unmaintained
+  "RUSTSEC-2025-0098", # unic-ucd-version - unmaintained
+  "RUSTSEC-2025-0100", # unic-ucd-ident   - unmaintained
+]
