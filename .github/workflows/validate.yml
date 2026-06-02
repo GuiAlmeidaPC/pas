@@ -93,8 +93,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: "pnpm"
-          cache-dependency-path: "ui/pnpm-lock.yaml"
+          # No pnpm cache here: this job only runs `pnpm audit` (no install),
+          # so the pnpm store is never populated and the cache-save post-step
+          # would fail with "Path(s) ... do not exist".
 
       - name: Frontend dependency audit
         working-directory: ./ui
