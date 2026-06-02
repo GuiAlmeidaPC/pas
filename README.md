@@ -25,6 +25,22 @@ PAS is split into a robust Rust backend and a modern React frontend, connected v
 - **`pas-app` (Rust/Tauri)**: The desktop application shell. It manages windowing, native menus, IPC, and filesystem access.
 - **`ui` (React/TypeScript)**: The frontend. Built with React 18, Vite, and the Monaco Editor (customized with a SAS syntax highlighter).
 
+## Installation
+
+Pre-built installers for **Linux**, **Windows**, and **macOS** are published on
+the [Releases page](https://github.com/GuiAlmeidaPC/pas/releases):
+
+- **Linux:** `.AppImage` (portable) or `.deb`
+- **Windows:** `.msi` or `.exe` installer
+- **macOS:** `.dmg` (unsigned — right-click → Open the first time to bypass
+  Gatekeeper)
+
+Verify your download against the `SHA256SUMS.txt` attached to each release:
+
+```bash
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
 ## Building from Source
 
 To build PAS from source, you will need **Node.js**, **pnpm**, and **Rust** installed on your system.
