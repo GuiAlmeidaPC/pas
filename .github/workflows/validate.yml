@@ -98,4 +98,8 @@ jobs:
 
       - name: Frontend dependency audit
         working-directory: ./ui
-        run: pnpm audit --audit-level=high
+        # Audit only production dependencies — those are what ship in the
+        # desktop app. Dev-only tooling (vitest, vite, etc.) is not shipped;
+        # advisories there don't affect users. Keep dev deps current via
+        # routine upgrades instead of gating CI on them.
+        run: pnpm audit --prod --audit-level=high
