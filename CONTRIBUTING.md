@@ -51,6 +51,15 @@ pnpm test           # vitest
 pnpm run test:smoke # security smoke tests
 ```
 
+CI also runs dependency security audits. To reproduce them locally:
+
+```bash
+cargo install cargo-audit   # once
+cargo audit                 # Rust deps; honors .cargo/audit.toml ignores
+
+cd ui && pnpm audit --audit-level=high   # frontend deps
+```
+
 A change is not ready to merge unless all of the above pass.
 
 ## Commit and pull-request conventions

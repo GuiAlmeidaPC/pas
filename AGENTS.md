@@ -35,6 +35,9 @@ pnpm test            # vitest run
 pnpm run test:smoke  # node --test security smoke tests
 ```
 
+CI additionally runs dependency audits (`security` job): `cargo audit` (honors
+`.cargo/audit.toml` ignores) and `pnpm audit --audit-level=high` in `ui/`.
+
 Run the app locally: `cd crates/pas-app && cargo tauri dev`.
 
 ## Conventions

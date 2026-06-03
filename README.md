@@ -72,7 +72,20 @@ The resulting executable will be placed in `crates/pas-app/target/release/bundle
 
 ## Contributing
 
-Please review `SPEC.md` and `DIVERGENCE.md` in the root directory for a detailed specification of the supported language subset and known divergences from standard SAS behavior.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, the checks your
+change must pass, and commit/PR conventions. AI coding agents should also read
+[`AGENTS.md`](AGENTS.md).
+
+Before writing code, review [`SPEC.md`](SPEC.md) and [`DIVERGENCE.md`](DIVERGENCE.md)
+for the supported language subset and known divergences from standard SAS
+behavior. User-visible changes should be noted in [`CHANGELOG.md`](CHANGELOG.md).
+
+## Releases
+
+Releases are automated and triggered by pushing a `vX.Y.Z` tag, which builds the
+Linux/Windows/macOS bundles, attaches SHA-256 checksums, and creates a draft
+GitHub Release. See the "Releasing" section of [`AGENTS.md`](AGENTS.md) for the
+step-by-step flow.
 
 ## License
 
