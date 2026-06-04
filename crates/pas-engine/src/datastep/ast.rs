@@ -67,6 +67,8 @@ pub enum InputReader {
     Modified,
     /// `informat.` (no colon) — read exactly `informat.width` columns.
     Formatted,
+    /// `start-end` column range (1-based, inclusive). `$ start-end` for char.
+    Column { start: usize, end: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

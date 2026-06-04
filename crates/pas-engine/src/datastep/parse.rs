@@ -426,6 +426,20 @@ impl<'a> Parser<'a> {
             // `:informat.` modified-list input.
             let modified = self.eat(&Tok::Colon);
 
+            // Column-range input: `[$] start[-end]` (no colon, no dot). Try this
+            // before informat detection and backtrack if it doesn't match.
+            if !modified {
+                if let Some((is_char, start, end)) = self.try_column_range() {
+                    out.push(InputVar {
+                        name,
+                        is_char,
+                        informat: None,
+                        reader: InputReader::Column { start, end },
+                    });
+                    continue;
+                }
+            }
+
             // An informat is the contiguous run of `$`/letters/digits/`.` that
             // starts at the current token. A lone `$` is plain character input;
             // a run containing `.` is an informat. We read it from raw source to
@@ -485,6 +499,59 @@ impl<'a> Parser<'a> {
         while self.pos < self.toks.len() && self.toks[self.pos].1.start < end {
             self.pos += 1;
         }
+    }
+
+    /// If the current token is an integer column number (a `Number` whose raw
+    /// source has no `.`, distinguishing it from an informat width like `40.`),
+    /// return its value. Does not consume.
+    fn int_column_at_current(&self) -> Option<usize> {
+        if let Tok::Number(n) = self.peek() {
+            let span = self.current_span();
+            let raw = &self.src[span.start..span.end];
+            if !raw.contains('.') && *n >= 1.0 && n.fract() == 0.0 {
+                return Some(*n as usize);
+            }
+        }
+        None
+    }
+
+    /// Try to parse `[$] start[-end]` column-range input at the current
+    /// position. Returns `(is_char, start, end)` (1-based inclusive) and leaves
+    /// the cursor past the range, or restores the cursor and returns `None`.
+    fn try_column_range(&mut self) -> Option<(bool, usize, usize)> {
+        let save = self.pos;
+        let is_char = self.eat(&Tok::Dollar);
+        let start = match self.int_column_at_current() {
+            Some(n) => {
+                self.pos += 1;
+                n
+            }
+            None => {
+                self.pos = save;
+                return None;
+            }
+        };
+        let end = if matches!(self.peek(), Tok::Minus) {
+            let before_minus = self.pos;
+            self.pos += 1;
+            match self.int_column_at_current() {
+                Some(m) => {
+                    self.pos += 1;
+                    m
+                }
+                None => {
+                    self.pos = before_minus; // lone column, leave the '-'
+                    start
+                }
+            }
+        } else {
+            start
+        };
+        if end < start {
+            self.pos = save;
+            return None;
+        }
+        Some((is_char, start, end))
     }
 
     fn parse_array_decl(&mut self) -> Result<ArrayDecl, ParseError> {
@@ -1067,6 +1134,28 @@ mod tests {
         assert_eq!(v[3].reader, InputReader::Modified);
         assert_eq!(v[3].informat.map(|f| f.kind), Some(InformatKind::Date));
         assert!(!v[3].is_char);
+    }
+
+    #[test]
+    fn parses_column_range_input() {
+        let ds = parse_data_step("data t; input id 1-3 name $ 5-20 age 22-24; run;").unwrap();
+        let v = &ds.input_vars;
+        assert_eq!(v[0].reader, InputReader::Column { start: 1, end: 3 });
+        assert!(!v[0].is_char);
+        assert_eq!(v[1].reader, InputReader::Column { start: 5, end: 20 });
+        assert!(v[1].is_char);
+        assert_eq!(v[2].reader, InputReader::Column { start: 22, end: 24 });
+    }
+
+    #[test]
+    fn column_range_does_not_swallow_informats() {
+        // `8.2` must remain a numeric informat, not a column range.
+        let ds = parse_data_step("data t; input x 8.2; run;").unwrap();
+        assert_eq!(ds.input_vars[0].reader, InputReader::Formatted);
+        assert_eq!(
+            ds.input_vars[0].informat.map(|f| (f.width, f.decimals)),
+            Some((8, 2))
+        );
     }
 
     #[test]

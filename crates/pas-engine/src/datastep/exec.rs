@@ -761,6 +761,19 @@ fn read_row_columnar(line: &str, input_vars: &[InputVar]) -> SourceRow {
                     Some(s)
                 }
             }
+            InputReader::Column { start, end } => {
+                // 1-based inclusive columns → 0-based [start-1, end).
+                let s = start.saturating_sub(1);
+                if s >= chars.len() {
+                    pos = chars.len();
+                    None
+                } else {
+                    let e = end.min(chars.len());
+                    let field: String = chars[s..e.max(s)].iter().collect();
+                    pos = e; // pointer rests after the field
+                    Some(field)
+                }
+            }
             InputReader::List | InputReader::Modified => {
                 while pos < chars.len() && chars[pos].is_whitespace() {
                     pos += 1;
@@ -1760,6 +1773,25 @@ mod input_tests {
             "{}",
             err.message
         );
+    }
+
+    #[test]
+    fn column_range_reads_fixed_columns() {
+        // emp_id cols 1-3, name (char) cols 5-12, dept cols 14-15.
+        let vars = vars_from("input emp_id 1-3 name $ 5-12 dept_id 14-15");
+        //              1234567890123456
+        let r = row("101 Jane Doe 14", &vars);
+        assert_eq!(r["emp_id"].as_num(), Some(101.0));
+        assert_eq!(r["name"].as_str(), "Jane Doe");
+        assert_eq!(r["dept_id"].as_num(), Some(14.0));
+    }
+
+    #[test]
+    fn single_column_input() {
+        let vars = vars_from("input grade $ 1 score 3-5");
+        let r = row("A 90", &vars);
+        assert_eq!(r["grade"].as_str(), "A");
+        assert_eq!(r["score"].as_num(), Some(90.0));
     }
 }
 

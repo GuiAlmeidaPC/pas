@@ -1,0 +1,9 @@
+{
+  "no_errors": true,
+  "datasets": {
+    "work.employees": {
+      "rows": 4,
+      "columns": ["emp_id", "name", "dept_id"]
+    }
+  }
+}
