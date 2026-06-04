@@ -15,7 +15,7 @@ This project provides an offline, native experience for executing common data ma
 - **Large Dataset Support**: The dataset viewer supports paginated scrolling for million-row tables using TanStack Virtual.
 - **Cross-Platform**: Builds as a single native redistributable binary (Windows, macOS, Linux).
 
-*Note: Statistical procedures (like `PROC MEANS`, `PROC FREQ`, `PROC REG`), macros, and the proprietary `.sas7bdat` format are explicitly out of scope for the current version.*
+*Note: Statistical procedures (like `PROC MEANS`, `PROC FREQ`, `PROC REG`) and the proprietary `.sas7bdat` format are explicitly out of scope for the current version. The SAS macro language (`%macro`, `%if`, `%do`, macro functions, `&`/`%` substitution) **is** supported — see [`SPEC.md`](SPEC.md) §5.5 and [`DIVERGENCE.md`](DIVERGENCE.md) §1.1 for the exact subset.*
 
 ## Architecture
 
@@ -69,6 +69,37 @@ cargo tauri build
 ```
 
 The resulting executable will be placed in `crates/pas-app/target/release/bundle/`.
+
+### Running without the Tauri CLI (throttled first build)
+
+If you don't have the Tauri CLI (`cargo tauri`) installed, you can run the app
+with plain `cargo`. Start the Vite dev server, then launch the debug binary
+(which loads `http://localhost:5173` in dev builds):
+
+```bash
+# Terminal 1: frontend dev server
+cd ui && pnpm dev
+
+# Terminal 2: from the repo root
+cargo run -p pas-app
+```
+
+The **first** build compiles heavy native dependencies — most notably DuckDB's
+~600 MB C++ amalgamation. On a multi-core machine this can saturate every core
+and make the desktop feel unresponsive. To keep the machine usable during that
+first build, cap parallelism, drop debug info, and deprioritize the job:
+
+```bash
+# from the repo root
+nice -n 19 ionice -c3 env RUSTFLAGS="-C debuginfo=0" cargo run -p pas-app -j 6
+```
+
+- `-j 6` — limit cargo to 6 parallel jobs (tune to roughly half your cores).
+- `RUSTFLAGS="-C debuginfo=0"` — skip debug info; cuts peak memory and build time.
+- `nice`/`ionice` — leave CPU and I/O headroom for the rest of the desktop.
+
+Subsequent builds are incremental and fast, so the throttling mainly matters
+for the initial compile.
 
 ## Contributing
 

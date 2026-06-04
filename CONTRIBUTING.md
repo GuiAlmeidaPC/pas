@@ -9,9 +9,10 @@ conventions we follow.
 - Read [`SPEC.md`](SPEC.md) for the supported SAS-compatible language subset.
 - Read [`DIVERGENCE.md`](DIVERGENCE.md) for known, intentional differences from
   standard SAS behavior.
-- Statistical procedures, macros, and the `.sas7bdat` format are **out of
-  scope** for the current version — please discuss in an issue before working
-  on anything in that space.
+- Statistical procedures and the `.sas7bdat` format are **out of scope** for
+  the current version — please discuss in an issue before working on anything
+  in that space. (The macro language is in scope and largely implemented; see
+  `SPEC.md` §5.5 and `DIVERGENCE.md` §1.1.)
 
 ## Prerequisites
 

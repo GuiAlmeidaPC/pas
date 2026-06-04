@@ -24,7 +24,7 @@ Statistical procedures (`PROC MEANS`, `PROC FREQ`, `PROC REG`, etc.) are explici
 - Mobile or web deployment.
 
 ### 1.3 v1 Scope Boundary
-v1 ships with: PROC SQL, DATA step core (see §5), libraries against DuckDB and CSV/Parquet, a usable EG-like UI. Macro language and `PROC IMPORT`/`PROC EXPORT` are v2. **`.sas7bdat` interop is explicitly out of scope** (the proprietary binary format is a deliberate non-goal).
+v1 ships with: PROC SQL, DATA step core (see §5), libraries against DuckDB and CSV/Parquet, a usable EG-like UI, and a near-complete macro processor (`%macro`/`%mend`, `%if`, `%do` loops, macro functions, and `&`/`%` substitution — see §5.5). `PROC IMPORT`/`PROC EXPORT` are v2. **`.sas7bdat` interop is explicitly out of scope** (the proprietary binary format is a deliberate non-goal).
 
 ---
 
@@ -176,14 +176,14 @@ PAS implements a subset of the SAS language called **PAS/SAS**. Where behaviour 
 - Statements terminated by `;`. Whitespace-insensitive except inside strings and datalines.
 - Comments: `* ... ;` (statement comment) and `/* ... */` (block, non-nesting in v1).
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]{0,31}`, case-insensitive, normalized to lowercase internally, preserved for display.
-- String literals: `'...'` (no escapes except `''`), `"..."` (with `""` escape; macro vars **not** resolved in v1), hex `"deadbeef"x`, date `'01JAN2024'd`, time `'13:30't`, datetime `'01JAN2024:13:30:00'dt`.
+- String literals: `'...'` (no escapes except `''`; macro vars **not** resolved), `"..."` (with `""` escape; macro `&var`/`%macro` references **are** resolved), hex `"deadbeef"x`, date `'01JAN2024'd`, time `'13:30't`, datetime `'01JAN2024:13:30:00'dt`.
 - Numbers: standard decimal, scientific.
-- Special tokens: `&name` (macro var ref — parsed but unresolved in v1), `%name` (macro call — error in v1 unless `%let`/`%put`).
+- Special tokens: `&name` / `&name.` (macro var reference — resolved by the macro processor before lexing), `%name` (macro statement, function, or user-macro call — resolved by the macro processor; see §5.5).
 
 ### 5.2 Program Structure
 A program is a sequence of **global statements**, **DATA steps**, and **PROCs**. Steps are delimited by `run;`, `quit;`, the next `data`/`proc`, or EOF.
 
-Global statements in v1: `libname`, `filename`, `options`, `title`, `footnote`, `%let`, `%put`.
+Global statements in v1: `libname`, `filename`, `options`, `title`, `footnote`, and the macro statements `%let`, `%put`, `%global`, `%local`, `%macro`/`%mend`, `%if`/`%then`/`%else`, `%do`/`%end`, and user-macro calls (`%name`). See §5.5.
 
 ### 5.3 DATA Step
 
@@ -215,6 +215,7 @@ run;
 | `stop;` | Exit DATA step |
 | `return;` | Jump to implicit loop top, emit unless `delete`d |
 | `put <items>;` | Write to log (and to `file` target if set) |
+| `call symput('name', value);` / `call symputx('name', value)` | Assign a macro variable from the DATA step at run time. `symputx` trims leading/trailing blanks. These are the only supported CALL routines. |
 | `infile <path-or-fileref> [opts]; input <vars>;` | Free-form text read; v1 supports `dsd dlm=',' truncover` |
 | `datalines; ... ;` | Inline data block |
 | `attrib var length= label= format= informat= ...;` | Combined |
@@ -261,11 +262,40 @@ Supported:
 
 Implementation: parse the SAS-flavoured SQL into our own AST, rewrite to DuckDB SQL, execute. Result sets without `create table` become **output blocks** displayed in the Output tab.
 
-### 5.5 Macro Language (v1 minimal)
-- `%let name = value;` — stores in session symbol table.
-- `%put <text>;` — emits to log.
-- `&name`/`&name.` — substituted in source text **before** lexing (single pass, no recursion in v1).
-- `%macro`/`%mend`, `%if`, `%do` — **not** in v1; reserved-word error.
+### 5.5 Macro Language
+PAS ships a near-complete macro processor that runs as a text-substitution
+pass over each block before lexing (`crates/pas-engine/src/macros.rs`).
+
+Supported statements:
+- `%let name = value;` — assign a macro variable in the current scope.
+- `%put <text>;` — emit text to the log.
+- `%global name1 name2;` / `%local name1 name2;` — scope declarations.
+- `%macro name(<positional>, key=default); ... %mend [name];` — definitions
+  with positional and keyword parameters (defaults supported).
+- `%name(args)` / `%name` — user-macro invocation.
+- `%if <cond> %then <action>; [%else <action>;]` — conditional logic.
+- `%do; ... %end;` — block.
+- `%do var = start %to end [%by step]; ... %end;` — iterative loop.
+- `%do %while(<cond>); ... %end;` and `%do %until(<cond>); ... %end;`.
+
+Variable references:
+- `&name` / `&name.` — resolved from the macro symbol table. The trailing
+  dot is an optional terminator. Resolution happens before lexing; references
+  inside `"..."` double-quoted strings are resolved, those inside `'...'`
+  single-quoted strings are not.
+
+Built-in macro functions: `%eval`, `%sysevalf`, `%upcase`, `%lowcase`,
+`%substr`, `%length`, `%index`, `%scan`, `%str`, `%quote`, `%bquote`,
+`%superq`.
+
+Automatic macro variables: `&sysdate`, `&sysday`, `&systime`, `&sysuserid`,
+`&syscc`, `&syserr`.
+
+DATA-step → macro binding is available via `call symput`/`call symputx`
+(see §5.3.2).
+
+Known gaps vs SAS are tracked in `DIVERGENCE.md` (notably: no `%sysfunc`, and
+`%put` output is emitted ahead of program output — see DIVERGENCE §5.3).
 
 ### 5.6 Reserved Options (v1)
 `options` accepts and stores (most are no-ops for now): `linesize`, `pagesize`, `nodate`, `nonumber`, `mprint`, `symbolgen`, `obs=`, `firstobs=`, `compress=`. Unknown options warn, do not error.
@@ -525,12 +555,14 @@ A "SAS divergence" doc tracks every known deviation from SAS behaviour, with rat
 - Installers for all three OSes.
 
 ### v1.0
-- Macro language minimal (`%let`, `%put`, `&var`).
+- Macro language (`%let`, `%put`, `&var`, plus `%macro`/`%mend`, `%if`,
+  `%do` loops, and macro functions — see §5.5).
 - Auto-update.  *Deferred: requires a real distribution server with signed manifests. Tracked separately.*
 - SAS divergence document published. See `DIVERGENCE.md`.
 
 ### v2 (post-1.0)
-- Full macro language (`%macro`, `%if`, `%do`).
+- Macro language polish (`%sysfunc`, additional autocall built-ins, ordering
+  parity for `%put`).
 - `PROC IMPORT`/`PROC EXPORT`.
 - ODS-lite for HTML output.
 - Optional: scripting hooks (run a `.sas` from CLI without UI).
@@ -543,7 +575,7 @@ A "SAS divergence" doc tracks every known deviation from SAS behaviour, with rat
 
 1. **Special missing values** (`.a`–`.z`, `._`): store as side-table or encode in NaN payload bits? Decision affects every numeric op.
 2. **Sort stability for `by`**: rely on DuckDB sort (not stable by default) or implement a stable external merge?
-3. **Macro pre-pass vs integrated lex**: a true SAS macro processor interleaves with tokenization. v1 ducks this by limiting macro features; revisit at v2.
+3. **Macro pre-pass vs integrated lex**: a true SAS macro processor interleaves with tokenization. v1 runs macros as a per-block text pre-pass instead; this is why `%put` output is ordered ahead of program output (DIVERGENCE §5.3) and why `%sysfunc` (which calls DATA-step functions) is not yet supported. Revisit interleaving if these gaps matter.
 4. **DuckDB versioning**: pin DuckDB and embed the storage version, or expose `ATTACH` for cross-version files?
 5. **Plug-in surface**: should v2 expose a Rust trait for custom procs / functions? If yes, design now to avoid breaking changes.
 

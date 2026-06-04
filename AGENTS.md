@@ -40,11 +40,19 @@ CI additionally runs dependency audits (`security` job): `cargo audit` (honors
 
 Run the app locally: `cd crates/pas-app && cargo tauri dev`.
 
+Without the Tauri CLI, run `pnpm dev` (in `ui/`) plus `cargo run -p pas-app`
+from the repo root. The first build compiles DuckDB's large C++ amalgamation;
+on multi-core machines throttle it so the desktop stays responsive:
+`nice -n 19 ionice -c3 env RUSTFLAGS="-C debuginfo=0" cargo run -p pas-app -j 6`
+(see README "Running without the Tauri CLI").
+
 ## Conventions
 
 - **Commits:** Conventional Commits (`feat(ui): ...`, `fix(...): ...`,
   `docs: ...`). Match the surrounding style.
-- **Scope guard:** statistical PROCs, macros, and `.sas7bdat` are out of scope.
+- **Scope guard:** statistical PROCs and `.sas7bdat` are out of scope. The
+  macro language *is* supported (`%macro`, `%if`, `%do`, macro functions — see
+  `SPEC.md` §5.5); only `%sysfunc`-style gaps remain (see `DIVERGENCE.md` §1.1).
 - **Tests required** for new behavior. Engine tests live in `crates/pas-engine`;
   UI tests in `ui/src/__tests__`.
 - **Changelog:** update `CHANGELOG.md` under `[Unreleased]` for user-visible

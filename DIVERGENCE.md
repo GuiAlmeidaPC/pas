@@ -5,21 +5,22 @@ language reference. Each entry says **what SAS does**, **what PAS does**, and
 **why** — so we can decide later whether to close the gap or codify it as
 intentional.
 
-Out-of-scope items (`.sas7bdat`, statistical procedures, macro `%macro`/`%if`,
-`PROC IMPORT`, etc.) are not divergences — they are not implemented at all and
-are listed in §1.2 of `SPEC.md`.
+Out-of-scope items (`.sas7bdat`, statistical procedures, `PROC IMPORT`, etc.)
+are not divergences — they are not implemented at all and are listed in §1.2 of
+`SPEC.md`.
 
 ---
 
 ## 1. Language
 
-### 1.1 Macro language is preprocessor-only
+### 1.1 Macro language is near-complete but not full SAS
 
 | | |
 |---|---|
-| **SAS** | Full programmable macro language with `%macro/%mend`, `%if/%then/%else`, `%do`, `%sysfunc`, etc. Macros can generate arbitrary code. |
-| **PAS** | Only `%let`, `%put`, and `&var` (with `.` terminator) substitution. Unrecognized `%` directives pass through and are reported by the downstream parser. |
-| **Why** | Full macro is a large surface; spec defers it to v2. |
+| **SAS** | Full programmable macro language with `%macro/%mend`, `%if/%then/%else`, `%do` (block / iterative / `%while` / `%until`), a large autocall/built-in library including `%sysfunc`, and macros that can generate arbitrary code. |
+| **PAS** | A near-complete text-substitution macro processor (`crates/pas-engine/src/macros.rs`): `%let`, `%put`, `%global`, `%local`, `%macro`/`%mend` with positional + keyword (default) parameters, `%name(...)` calls, `%if/%then/%else`, all four `%do` loop forms, `&var`/`&var.` resolution (including inside `"..."`), and the built-in functions `%eval`, `%sysevalf`, `%upcase`, `%lowcase`, `%substr`, `%length`, `%index`, `%scan`, `%str`, `%quote`, `%bquote`, `%superq`. Automatic vars: `&sysdate`, `&sysday`, `&systime`, `&sysuserid`, `&syscc`, `&syserr`. `call symput`/`symputx` bind macro vars from the DATA step. |
+| **Not yet** | `%sysfunc` / `%qsysfunc` (calling DATA-step functions from macro context) and other autocall functions outside the list above. Unrecognized `%` directives pass through and are reported by the downstream parser. |
+| **Why** | The processor runs as a per-block text pre-pass rather than interleaving with the lexer (see SPEC §16.3); `%sysfunc` needs the function evaluator wired into that pass. |
 
 ### 1.2 Format token shape in expressions
 

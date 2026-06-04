@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- Corrected `SPEC.md`, `DIVERGENCE.md`, `README.md`, `AGENTS.md`, and
+  `CONTRIBUTING.md` to document the macro language as implemented (`%macro`,
+  `%if`, `%do` loops, macro functions, `&`/`%` resolution, automatic vars, and
+  `call symput`/`symputx`) rather than the obsolete "preprocessor-only / out of
+  scope" description. Remaining gaps (e.g. `%sysfunc`) are noted as divergences.
+
 ## [0.1.0] - 2026-06-02
 
 First tagged release.
