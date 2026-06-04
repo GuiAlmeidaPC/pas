@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Agent panel: a **model selector** in the header for switching models on the
-  fly without opening Setup.
+  fly without opening Setup. The list is fetched live from the provider's
+  model endpoint (cached locally) and falls back to a curated list offline;
+  the ChatGPT/Codex list stays curated.
 - AI assistant: **"Sign in with ChatGPT"** (OAuth) as an alternative to an
   OpenAI API key. Uses the PKCE OAuth flow (loopback callback on port 1455) and
   calls the Codex Responses API with the resulting subscription token, so usage
