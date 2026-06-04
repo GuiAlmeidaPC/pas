@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AISettingsModal, type AIConfig } from "./AISettingsModal";
+import { AISettingsModal, type AIConfig, type OAuthStatus } from "./AISettingsModal";
 import { parseEditBlocks, type EditFileSnapshot, type ProposedEdit, type ResolvedEdit } from "./ai/editProtocol";
 import { AIEditCard } from "./ai/AIEditCard";
 
@@ -44,7 +44,32 @@ export function AIChatPanel({
   const [config, setConfig] = useState<AIConfig | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [oauthStatus, setOauthStatus] = useState<OAuthStatus | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Fetch ChatGPT sign-in status from the Rust backend.
+  const refreshOauthStatus = async () => {
+    try {
+      const s = await invoke<OAuthStatus>("openai_oauth_status");
+      setOauthStatus(s);
+    } catch (e) {
+      console.error("Failed to read OAuth status", e);
+    }
+  };
+
+  useEffect(() => {
+    refreshOauthStatus();
+  }, []);
+
+  const handleOauthLogin = async () => {
+    const s = await invoke<OAuthStatus>("openai_oauth_login");
+    setOauthStatus(s);
+  };
+
+  const handleOauthLogout = async () => {
+    await invoke("openai_oauth_logout");
+    await refreshOauthStatus();
+  };
 
   // Load non-secret configuration from localStorage on mount.
   useEffect(() => {
@@ -74,13 +99,16 @@ export function AIChatPanel({
         apiKey: newConfig.apiKey,
         model: newConfig.model,
         customUrl: newConfig.customUrl,
+        authMode: newConfig.authMode,
       },
     });
     setConfig(newConfig);
+    // authMode is non-secret, so it is safe to persist alongside the public config.
     localStorage.setItem("pas.ai_config_public", JSON.stringify({
       provider: newConfig.provider,
       model: newConfig.model,
       customUrl: newConfig.customUrl,
+      authMode: newConfig.authMode,
     }));
     setErrorMsg(null);
   };
@@ -97,6 +125,13 @@ export function AIChatPanel({
 
     if (!config) {
       setIsSettingsOpen(true);
+      return;
+    }
+
+    // In ChatGPT mode the user must be signed in before sending.
+    if (config.authMode === "chatgpt" && !oauthStatus?.signedIn) {
+      setIsSettingsOpen(true);
+      setErrorMsg("Sign in with ChatGPT in Setup to use this mode.");
       return;
     }
 
@@ -204,6 +239,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         provider: config.provider,
         model: config.model,
         customUrl: config.customUrl,
+        authMode: config.authMode,
         systemPrompt,
         messages: history,
       },
@@ -487,6 +523,9 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         onClose={() => setIsSettingsOpen(false)}
         onSave={saveConfig}
         initialConfig={config}
+        oauthStatus={oauthStatus}
+        onOauthLogin={handleOauthLogin}
+        onOauthLogout={handleOauthLogout}
       />
     </div>
   );
