@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Renamed the AI assistant to **"Agent"** throughout the UI (panel title, View
+  menu, setup dialog, and the editor right-click actions).
+
 ### Added
+- Agent panel: a **model selector** in the header for switching models on the
+  fly without opening Setup.
 - AI assistant: **"Sign in with ChatGPT"** (OAuth) as an alternative to an
   OpenAI API key. Uses the PKCE OAuth flow (loopback callback on port 1455) and
   calls the Codex Responses API with the resulting subscription token, so usage
