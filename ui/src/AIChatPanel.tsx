@@ -45,7 +45,30 @@ export function AIChatPanel({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [oauthStatus, setOauthStatus] = useState<OAuthStatus | null>(null);
+  const [dynamicModels, setDynamicModels] = useState<string[] | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Populate the model dropdown from the provider's live model list, falling
+  // back to the curated list (ChatGPT/Codex always stays curated). Cached in
+  // localStorage so the dropdown is populated instantly on the next launch.
+  const refreshModels = async (cfg: AIConfig) => {
+    if (cfg.authMode === "chatgpt") {
+      setDynamicModels(null); // use curated CHATGPT list via availableModels()
+      return;
+    }
+    const cacheKey = `pas.ai_models.${cfg.provider}`;
+    const cached = localStorage.getItem(cacheKey);
+    setDynamicModels(cached ? JSON.parse(cached) : null);
+    try {
+      const models = await invoke<string[]>("list_ai_models");
+      if (Array.isArray(models) && models.length > 0) {
+        setDynamicModels(models);
+        localStorage.setItem(cacheKey, JSON.stringify(models));
+      }
+    } catch {
+      // Offline / no key / unsupported — keep cache or curated fallback.
+    }
+  };
 
   // Fetch ChatGPT sign-in status from the Rust backend.
   const refreshOauthStatus = async () => {
@@ -79,6 +102,7 @@ export function AIChatPanel({
       try {
         const parsed = JSON.parse(saved);
         setConfig({ ...parsed, apiKey: "" });
+        refreshModels({ ...parsed, apiKey: "" });
       } catch (e) {
         console.error("Failed to parse saved AI config", e);
       }
@@ -114,6 +138,7 @@ export function AIChatPanel({
     });
     setConfig(newConfig);
     persistPublicConfig(newConfig);
+    refreshModels(newConfig);
     setErrorMsg(null);
   };
 
@@ -451,7 +476,12 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
               onChange={(e) => changeModel(e.target.value)}
               title="Model"
             >
-              {Array.from(new Set([...availableModels(config.provider, config.authMode), config.model]))
+              {Array.from(new Set([
+                ...(dynamicModels && dynamicModels.length > 0
+                  ? dynamicModels
+                  : availableModels(config.provider, config.authMode)),
+                config.model,
+              ]))
                 .filter(Boolean)
                 .map((m) => (
                   <option key={m} value={m}>{m}</option>

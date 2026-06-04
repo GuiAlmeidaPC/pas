@@ -33,7 +33,7 @@ const DEFAULT_MODELS: Record<AIConfig["provider"], string[]> = {
 };
 
 // Models reachable through the ChatGPT (Codex Responses) backend.
-const CHATGPT_MODELS = ["gpt-5.5", "gpt-5.2-codex", "gpt-5.3-codex"];
+const CHATGPT_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2-codex", "gpt-5.3-codex"];
 
 /** The model choices to offer for a given provider and auth mode. */
 export function availableModels(

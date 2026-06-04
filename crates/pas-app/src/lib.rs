@@ -1016,6 +1016,160 @@ fn parse_ai_response(provider: &str, text: &str) -> Result<String, String> {
         .ok_or_else(|| "AI response did not contain text".to_string())
 }
 
+/// Build the request to a provider's model-list endpoint.
+fn build_models_request(
+    provider: &str,
+    api_key: &str,
+    custom_url: Option<&str>,
+) -> Result<(String, HeaderMap), String> {
+    let mut headers = HeaderMap::new();
+    let url = match provider {
+        "openai" | "deepseek" | "openrouter" => {
+            let bearer = HeaderValue::from_str(&format!("Bearer {}", api_key))
+                .map_err(|e| format!("invalid API key header: {}", e))?;
+            headers.insert(reqwest::header::AUTHORIZATION, bearer);
+            // Derive the models endpoint from a custom completions URL when given.
+            custom_url
+                .and_then(|u| u.strip_suffix("/chat/completions"))
+                .map(|base| format!("{base}/models"))
+                .unwrap_or_else(|| {
+                    match provider {
+                        "deepseek" => "https://api.deepseek.com/v1/models",
+                        "openrouter" => "https://openrouter.ai/api/v1/models",
+                        _ => "https://api.openai.com/v1/models",
+                    }
+                    .to_string()
+                })
+        }
+        "anthropic" => {
+            let key = HeaderValue::from_str(api_key)
+                .map_err(|e| format!("invalid API key header: {}", e))?;
+            headers.insert(HeaderName::from_static("x-api-key"), key);
+            headers.insert(
+                HeaderName::from_static("anthropic-version"),
+                HeaderValue::from_static("2023-06-01"),
+            );
+            "https://api.anthropic.com/v1/models".to_string()
+        }
+        "gemini" => format!(
+            "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+            api_key
+        ),
+        other => return Err(format!("unsupported AI provider: {}", other)),
+    };
+    Ok((url, headers))
+}
+
+/// Heuristic: keep models usable for chat, drop embeddings/audio/image/etc.
+fn is_chat_model(provider: &str, id: &str) -> bool {
+    let l = id.to_lowercase();
+    const EXCLUDE: &[&str] = &[
+        "embedding",
+        "whisper",
+        "tts",
+        "dall-e",
+        "moderation",
+        "audio",
+        "realtime",
+        "transcribe",
+        "image",
+        "-search",
+        "guard",
+    ];
+    if EXCLUDE.iter().any(|e| l.contains(e)) {
+        return false;
+    }
+    match provider {
+        "openai" => {
+            (l.starts_with("gpt")
+                || l.starts_with("chatgpt")
+                || l.starts_with("o1")
+                || l.starts_with("o3")
+                || l.starts_with("o4"))
+                && !l.contains("instruct")
+        }
+        _ => true,
+    }
+}
+
+/// Extract chat-capable model ids from a provider's model-list response.
+fn parse_models_response(provider: &str, text: &str) -> Result<Vec<String>, String> {
+    let data: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("parse models response: {}", e))?;
+    let mut ids: Vec<String> = match provider {
+        "openai" | "deepseek" | "openrouter" | "anthropic" => data
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        "gemini" => data
+            .get("models")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|m| {
+                        m.get("supportedGenerationMethods")
+                            .and_then(|v| v.as_array())
+                            .map(|ms| ms.iter().any(|x| x.as_str() == Some("generateContent")))
+                            .unwrap_or(true)
+                    })
+                    .filter_map(|m| {
+                        m.get("name")
+                            .and_then(|v| v.as_str())
+                            .map(|n| n.strip_prefix("models/").unwrap_or(n).to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    ids.retain(|id| is_chat_model(provider, id));
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// List the chat models available to the stored credential. The UI falls back
+/// to its curated list when this errors (offline, no key, unsupported).
+#[tauri::command]
+async fn list_ai_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let stored = state
+        .ai_config
+        .lock()
+        .map_err(|_| "AI config lock poisoned")?
+        .clone()
+        .ok_or_else(|| "AI Setup required".to_string())?;
+    if stored.api_key.trim().is_empty() {
+        return Err("no API key for model listing".to_string());
+    }
+    let (url, headers) = build_models_request(
+        &stored.provider,
+        &stored.api_key,
+        stored.custom_url.as_deref(),
+    )?;
+    let client = reqwest::Client::new();
+    let res = client
+        .get(url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|e| format!("model list request failed: {}", e))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "model list error ({}): {}",
+            status.as_u16(),
+            parse_ai_error(&text)
+        ));
+    }
+    parse_models_response(&stored.provider, &text)
+}
+
 #[tauri::command]
 async fn pick_project_file(
     app: AppHandle,
@@ -1171,6 +1325,7 @@ pub fn run() {
             set_ai_config,
             clear_ai_config,
             ai_completion,
+            list_ai_models,
             openai_oauth_login,
             openai_oauth_status,
             openai_oauth_logout,
@@ -1188,6 +1343,41 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn parses_openai_models_and_filters_non_chat() {
+        let body = r#"{"data":[
+            {"id":"gpt-4o"},
+            {"id":"gpt-3.5-turbo-instruct"},
+            {"id":"text-embedding-3-small"},
+            {"id":"o3-mini"},
+            {"id":"dall-e-3"},
+            {"id":"gpt-4o-audio-preview"}
+        ]}"#;
+        let models = parse_models_response("openai", body).unwrap();
+        assert_eq!(models, vec!["gpt-4o".to_string(), "o3-mini".to_string()]);
+    }
+
+    #[test]
+    fn parses_gemini_models_by_generate_content() {
+        let body = r#"{"models":[
+            {"name":"models/gemini-1.5-pro","supportedGenerationMethods":["generateContent"]},
+            {"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}
+        ]}"#;
+        let models = parse_models_response("gemini", body).unwrap();
+        assert_eq!(models, vec!["gemini-1.5-pro".to_string()]);
+    }
+
+    #[test]
+    fn builds_models_url_from_custom_completions_url() {
+        let (url, _) = build_models_request(
+            "openai",
+            "k",
+            Some("https://proxy.example.com/v1/chat/completions"),
+        )
+        .unwrap();
+        assert_eq!(url, "https://proxy.example.com/v1/models");
+    }
 
     #[test]
     fn test_canonicalize_path() {
