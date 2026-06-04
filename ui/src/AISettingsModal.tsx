@@ -5,6 +5,13 @@ export interface AIConfig {
   apiKey: string;
   model: string;
   customUrl?: string;
+  /** "api_key" (default) | "chatgpt". Only meaningful for the openai provider. */
+  authMode?: "api_key" | "chatgpt";
+}
+
+export interface OAuthStatus {
+  signedIn: boolean;
+  email?: string;
 }
 
 interface Props {
@@ -12,6 +19,9 @@ interface Props {
   onClose: () => void;
   onSave: (config: AIConfig) => void | Promise<void>;
   initialConfig?: AIConfig | null;
+  oauthStatus?: OAuthStatus | null;
+  onOauthLogin?: () => Promise<void>;
+  onOauthLogout?: () => Promise<void>;
 }
 
 const DEFAULT_MODELS: Record<AIConfig["provider"], string[]> = {
@@ -22,13 +32,26 @@ const DEFAULT_MODELS: Record<AIConfig["provider"], string[]> = {
   openrouter: ["meta-llama/llama-3.3-70b-instruct", "google/gemini-2.5-pro"],
 };
 
-export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Props) {
+// Models reachable through the ChatGPT (Codex Responses) backend.
+const CHATGPT_MODELS = ["gpt-5.5", "gpt-5.2-codex", "gpt-5.3-codex"];
+
+export function AISettingsModal({
+  isOpen,
+  onClose,
+  onSave,
+  initialConfig,
+  oauthStatus,
+  onOauthLogin,
+  onOauthLogout,
+}: Props) {
   const [provider, setProvider] = useState<AIConfig["provider"]>("openai");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [customUrl, setCustomUrl] = useState("");
   const [customModel, setCustomModel] = useState("");
   const [useCustomModel, setUseCustomModel] = useState(false);
+  const [authMode, setAuthMode] = useState<"api_key" | "chatgpt">("api_key");
+  const [oauthBusy, setOauthBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -37,7 +60,8 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
       setProvider(initialConfig.provider);
       setApiKey(initialConfig.apiKey || "");
       setCustomUrl(initialConfig.customUrl || "");
-      
+      setAuthMode(initialConfig.authMode === "chatgpt" ? "chatgpt" : "api_key");
+
       const defaults = DEFAULT_MODELS[initialConfig.provider] || [];
       if (defaults.includes(initialConfig.model)) {
         setModel(initialConfig.model);
@@ -55,6 +79,7 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
       setModel("");
       setCustomModel("");
       setUseCustomModel(true);
+      setAuthMode("api_key");
     }
   }, [initialConfig, isOpen]);
 
@@ -65,6 +90,33 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
     setModel(defaults[0] || "");
     setUseCustomModel(defaults.length === 0);
     setCustomUrl("");
+    if (p !== "openai") setAuthMode("api_key");
+  };
+
+  // Switch between API-key and ChatGPT-login auth (openai only).
+  const handleAuthModeChange = (mode: "api_key" | "chatgpt") => {
+    setAuthMode(mode);
+    if (mode === "chatgpt") {
+      setModel(CHATGPT_MODELS[0]);
+      setUseCustomModel(false);
+    } else {
+      const defaults = DEFAULT_MODELS.openai;
+      setModel(defaults[0] || "");
+      setUseCustomModel(false);
+    }
+  };
+
+  const runOauth = async (fn?: () => Promise<void>) => {
+    if (!fn) return;
+    setOauthBusy(true);
+    setFormError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setFormError(String(e));
+    } finally {
+      setOauthBusy(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -78,6 +130,7 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
         apiKey: apiKey.trim(),
         model: useCustomModel ? customModel.trim() : model,
         customUrl: customUrl.trim() || undefined,
+        authMode: provider === "openai" ? authMode : undefined,
       });
       onClose();
     } catch (e) {
@@ -85,7 +138,8 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
     }
   };
 
-  const defaultModels = DEFAULT_MODELS[provider] || [];
+  const isChatgpt = provider === "openai" && authMode === "chatgpt";
+  const defaultModels = isChatgpt ? CHATGPT_MODELS : DEFAULT_MODELS[provider] || [];
 
   return (
     <div className="modal-overlay">
@@ -110,17 +164,64 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
             </select>
           </div>
 
-          <div className="form-group">
-            <label htmlFor="ai-apikey">API Key</label>
-            <input
-              id="ai-apikey"
-              type="password"
-              placeholder={`Enter your ${provider.toUpperCase()} API key`}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              required
-            />
-          </div>
+          {provider === "openai" && (
+            <div className="form-group">
+              <label htmlFor="ai-authmode">Authentication</label>
+              <select
+                id="ai-authmode"
+                value={authMode}
+                onChange={(e) => handleAuthModeChange(e.target.value as "api_key" | "chatgpt")}
+              >
+                <option value="api_key">API Key</option>
+                <option value="chatgpt">Sign in with ChatGPT</option>
+              </select>
+              <span className="field-hint">
+                ChatGPT login uses your ChatGPT subscription via the Codex backend instead of an API key.
+              </span>
+            </div>
+          )}
+
+          {isChatgpt ? (
+            <div className="form-group">
+              <label>ChatGPT Account</label>
+              {oauthStatus?.signedIn ? (
+                <div className="oauth-status">
+                  <span className="oauth-signed-in">
+                    ✅ Signed in{oauthStatus.email ? ` as ${oauthStatus.email}` : ""}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    disabled={oauthBusy}
+                    onClick={() => runOauth(onOauthLogout)}
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={oauthBusy}
+                  onClick={() => runOauth(onOauthLogin)}
+                >
+                  {oauthBusy ? "Waiting for browser…" : "Sign in with ChatGPT"}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="form-group">
+              <label htmlFor="ai-apikey">API Key</label>
+              <input
+                id="ai-apikey"
+                type="password"
+                placeholder={`Enter your ${provider.toUpperCase()} API key`}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                required
+              />
+            </div>
+          )}
 
           <div className="form-group">
             <label>Model Selection</label>
@@ -158,7 +259,7 @@ export function AISettingsModal({ isOpen, onClose, onSave, initialConfig }: Prop
             </div>
           </div>
 
-          {(provider === "openrouter" || provider === "deepseek" || provider === "openai") && (
+          {!isChatgpt && (provider === "openrouter" || provider === "deepseek" || provider === "openai") && (
             <div className="form-group">
               <label htmlFor="ai-customurl">Custom Base URL (Optional)</label>
               <input

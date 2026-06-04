@@ -1009,6 +1009,18 @@ kbd {
   margin-top: -2px;
 }
 
+.ai-settings-form .oauth-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ai-settings-form .oauth-signed-in {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .ai-settings-form .form-actions {
   display: flex;
   justify-content: flex-end;
