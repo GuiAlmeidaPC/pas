@@ -731,12 +731,123 @@ where
 }
 
 fn parse_datalines_line(line: &str, input_vars: &[InputVar]) -> Option<SourceRow> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
+    // Trim only the trailing newline/CR; leading/inner columns matter for
+    // formatted (column) input.
+    let line = line.trim_end_matches(['\r', '\n']);
+    if line.trim().is_empty() {
         return None;
     }
-    let toks: Vec<String> = trimmed.split_whitespace().map(|s| s.to_string()).collect();
-    Some(input_vars_to_row(input_vars, &toks))
+    Some(read_row_columnar(line, input_vars))
+}
+
+/// Read a row using a column pointer, honoring each variable's reader:
+/// formatted input consumes a fixed column width; list/modified input consumes
+/// the next whitespace-delimited token.
+fn read_row_columnar(line: &str, input_vars: &[InputVar]) -> SourceRow {
+    let chars: Vec<char> = line.chars().collect();
+    let mut pos = 0usize;
+    let mut row = SourceRow::with_capacity(input_vars.len());
+    for iv in input_vars {
+        let key = iv.name.to_ascii_lowercase();
+        let field: Option<String> = match iv.reader {
+            InputReader::Formatted => {
+                if pos >= chars.len() {
+                    None
+                } else {
+                    let width = iv.informat.map(|f| f.width).unwrap_or(8);
+                    let end = (pos + width).min(chars.len());
+                    let s: String = chars[pos..end].iter().collect();
+                    pos = end;
+                    Some(s)
+                }
+            }
+            InputReader::List | InputReader::Modified => {
+                while pos < chars.len() && chars[pos].is_whitespace() {
+                    pos += 1;
+                }
+                if pos >= chars.len() {
+                    None
+                } else {
+                    let start = pos;
+                    while pos < chars.len() && !chars[pos].is_whitespace() {
+                        pos += 1;
+                    }
+                    Some(chars[start..pos].iter().collect())
+                }
+            }
+        };
+        row.insert(key, field_to_value(iv, field.as_deref()));
+    }
+    row
+}
+
+/// Convert a raw field to a value, applying the variable's informat (or the
+/// default list-input typing when there is none).
+fn field_to_value(iv: &InputVar, field: Option<&str>) -> RtValue {
+    if let Some(inf) = &iv.informat {
+        return apply_informat(inf, field);
+    }
+    match (iv.is_char, field) {
+        (true, Some(t)) => RtValue::Str(t.trim().to_string()),
+        (true, None) => RtValue::Str(String::new()),
+        (false, Some(t)) if !t.trim().is_empty() => parse_num(t.trim()),
+        (false, _) => RtValue::missing(),
+    }
+}
+
+fn parse_num(s: &str) -> RtValue {
+    match s.parse::<f64>() {
+        Ok(n) => RtValue::Num(n),
+        Err(_) => RtValue::missing(),
+    }
+}
+
+fn apply_informat(inf: &Informat, field: Option<&str>) -> RtValue {
+    let raw = match field {
+        Some(s) => s,
+        None => {
+            return if inf.is_char() {
+                RtValue::Str(String::new())
+            } else {
+                RtValue::missing()
+            }
+        }
+    };
+    match inf.kind {
+        // $charW. preserves leading blanks; $w. left-aligns (trims leading).
+        InformatKind::CharPreserve => RtValue::Str(raw.trim_end().to_string()),
+        InformatKind::CharTrim => RtValue::Str(raw.trim().to_string()),
+        InformatKind::Numeric => {
+            let t = raw.trim();
+            match parse_num(t) {
+                RtValue::Num(n) if inf.decimals > 0 && !t.contains('.') => {
+                    RtValue::Num(n / 10f64.powi(inf.decimals as i32))
+                }
+                other => other,
+            }
+        }
+        InformatKind::Date => {
+            let t = raw.trim();
+            if t.is_empty() {
+                RtValue::missing()
+            } else {
+                super::lex::parse_sas_date(t)
+                    .map(RtValue::Num)
+                    .unwrap_or_else(|_| RtValue::missing())
+            }
+        }
+        InformatKind::NumericSymbol => {
+            let neg = raw.contains('(');
+            let cleaned: String = raw
+                .chars()
+                .filter(|c| !matches!(c, '$' | ',' | ' ' | '(' | ')'))
+                .collect();
+            match parse_num(cleaned.trim()) {
+                RtValue::Num(n) if neg => RtValue::Num(-n),
+                other => other,
+            }
+        }
+    }
 }
 
 fn stream_infile_rows<F>(
@@ -761,18 +872,21 @@ where
         if trimmed_line.is_empty() {
             continue;
         }
-        let toks: Vec<String> = match &infile.dlm {
-            None => trimmed_line
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect(),
-            Some(d) if infile.dsd => split_dsd(trimmed_line, d.chars().next().unwrap_or(',')),
-            Some(d) => trimmed_line
-                .split(d.as_str())
-                .map(|s| s.to_string())
-                .collect(),
-        };
-        visit(input_vars_to_row(input_vars, &toks))?;
+        match &infile.dlm {
+            // Whitespace input honors column/formatted readers.
+            None => visit(read_row_columnar(trimmed_line, input_vars))?,
+            Some(d) => {
+                let toks: Vec<String> = if infile.dsd {
+                    split_dsd(trimmed_line, d.chars().next().unwrap_or(','))
+                } else {
+                    trimmed_line
+                        .split(d.as_str())
+                        .map(|s| s.to_string())
+                        .collect()
+                };
+                visit(input_vars_to_row(input_vars, &toks))?;
+            }
+        }
     }
     Ok(())
 }
@@ -810,17 +924,7 @@ fn input_vars_to_row(input_vars: &[InputVar], toks: &[String]) -> SourceRow {
     let mut row = SourceRow::with_capacity(input_vars.len());
     for (i, iv) in input_vars.iter().enumerate() {
         let key = iv.name.to_ascii_lowercase();
-        let tok = toks.get(i).map(|s| s.trim());
-        let val = match (iv.is_char, tok) {
-            (true, Some(t)) => RtValue::Str(t.to_string()),
-            (true, None) => RtValue::Str(String::new()),
-            (false, Some(t)) if !t.is_empty() => match t.parse::<f64>() {
-                Ok(n) => RtValue::Num(n),
-                Err(_) => RtValue::missing(),
-            },
-            (false, _) => RtValue::missing(),
-        };
-        row.insert(key, val);
+        row.insert(key, field_to_value(iv, toks.get(i).map(|s| s.as_str())));
     }
     row
 }
@@ -1583,6 +1687,79 @@ fn value_for_appender(is_char: bool, v: Option<&RtValue>) -> DV {
             s.trim().parse::<f64>().map(DV::Double).unwrap_or(DV::Null)
         }
         (false, _) => DV::Null,
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::super::parse::parse_data_step_with_datalines;
+    use super::*;
+
+    fn row(line: &str, vars: &[InputVar]) -> SourceRow {
+        read_row_columnar(line, vars)
+    }
+
+    fn vars_from(input: &str) -> Vec<InputVar> {
+        // Parse just an input statement via a minimal data step.
+        let src = format!("data t; {} ; run;", input);
+        parse_data_step_with_datalines(&src, vec![])
+            .expect("parse")
+            .input_vars
+    }
+
+    #[test]
+    fn modified_list_date_informat() {
+        let vars = vars_from("input id name $ d :date9. amt");
+        // id(list) name(list char) d(:date9.) amt(list)
+        let r = row("7 Grace 22JUL2019 95000", &vars);
+        assert_eq!(r["id"].as_num(), Some(7.0));
+        assert_eq!(r["name"].as_str(), "Grace");
+        // 22JUL2019 → SAS date serial.
+        assert_eq!(r["d"].as_num(), Some(21752.0));
+        assert_eq!(r["amt"].as_num(), Some(95000.0));
+    }
+
+    #[test]
+    fn formatted_char_reads_embedded_spaces() {
+        // emp_id list, then a 40-column $char field starting at the blank in col 4.
+        // Field cols 4..43 hold " Jane Doe" + padding; dept_id begins at col 44.
+        let name_field = format!(" {:<39}", "Jane Doe"); // 40 chars total
+        let line = format!("101{}10", name_field);
+        let vars = vars_from("input emp_id name $char40. dept_id");
+        let r = row(&line, &vars);
+        assert_eq!(r["emp_id"].as_num(), Some(101.0));
+        // $char preserves the leading blank from the pointer position.
+        assert_eq!(r["name"].as_str(), " Jane Doe");
+        assert_eq!(r["dept_id"].as_num(), Some(10.0));
+    }
+
+    #[test]
+    fn dollar_trim_informat_left_aligns() {
+        let vars = vars_from("input emp_id name $40. dept_id");
+        let name_field = format!(" {:<39}", "Jane Doe");
+        let line = format!("101{}10", name_field);
+        let r = row(&line, &vars);
+        // $w. left-aligns (trims leading blanks).
+        assert_eq!(r["name"].as_str(), "Jane Doe");
+    }
+
+    #[test]
+    fn numeric_symbol_informat_strips() {
+        let vars = vars_from("input x :dollar12.2 y :comma8.");
+        let r = row("$1,234.50 2,000", &vars);
+        assert_eq!(r["x"].as_num(), Some(1234.50));
+        assert_eq!(r["y"].as_num(), Some(2000.0));
+    }
+
+    #[test]
+    fn unsupported_informat_is_an_error() {
+        let src = "data t; input x :weird9.; run;";
+        let err = parse_data_step_with_datalines(src, vec![]).unwrap_err();
+        assert!(
+            err.message.contains("unsupported informat"),
+            "{}",
+            err.message
+        );
     }
 }
 

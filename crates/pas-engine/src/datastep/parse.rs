@@ -32,18 +32,19 @@ pub fn parse_data_step_with_datalines(
             message: m,
             span: Span::point(0),
         })?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser { toks, pos: 0, src };
     let mut ds = p.parse_data_step()?;
     ds.datalines = datalines;
     Ok(ds)
 }
 
-struct Parser {
+struct Parser<'a> {
     toks: Vec<(Tok, Span)>,
     pos: usize,
+    src: &'a str,
 }
 
-impl Parser {
+impl<'a> Parser<'a> {
     fn peek(&self) -> &Tok {
         &self.toks[self.pos].0
     }
@@ -263,6 +264,15 @@ impl Parser {
             self.expect(&Tok::Semi, "datalines")?;
             return Ok(());
         }
+        // `format` / `informat` / `label` are accepted and recorded as no-ops.
+        // (Display formatting is not applied yet — see DIVERGENCE.md §1.6.)
+        if self.eat_keyword("format") || self.eat_keyword("informat") || self.eat_keyword("label") {
+            while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+                self.bump();
+            }
+            self.expect(&Tok::Semi, "format/informat/label")?;
+            return Ok(());
+        }
 
         let s = self.parse_stmt()?;
         ds.body.push(s);
@@ -412,10 +422,69 @@ impl Parser {
                     )
                 }
             };
-            let is_char = self.eat(&Tok::Dollar);
-            out.push(InputVar { name, is_char });
+
+            // `:informat.` modified-list input.
+            let modified = self.eat(&Tok::Colon);
+
+            // An informat is the contiguous run of `$`/letters/digits/`.` that
+            // starts at the current token. A lone `$` is plain character input;
+            // a run containing `.` is an informat. We read it from raw source to
+            // avoid the awkward tokenization of forms like `dollar12.2`.
+            let run = self.raw_run_at_current();
+            let (informat, reader) = if modified {
+                let inf = parse_informat_str(run).map_err(|e| self.err(e))?;
+                self.advance_past(run);
+                (Some(inf), InputReader::Modified)
+            } else if run == "$" {
+                self.bump(); // consume the lone Dollar
+                (None, InputReader::List)
+            } else if run.starts_with('$') || run.contains('.') {
+                let inf = parse_informat_str(run).map_err(|e| self.err(e))?;
+                self.advance_past(run);
+                (Some(inf), InputReader::Formatted)
+            } else {
+                (None, InputReader::List)
+            };
+
+            let is_char = match &informat {
+                Some(inf) => inf.is_char(),
+                None => matches!(reader, InputReader::List) && run == "$",
+            };
+            out.push(InputVar {
+                name,
+                is_char,
+                informat,
+                reader,
+            });
         }
         Ok(out)
+    }
+
+    /// The contiguous `$`/alnum/`.`/`_` run beginning at the current token's
+    /// source offset (used to read an informat verbatim).
+    fn raw_run_at_current(&self) -> &'a str {
+        let start = self.current_span().start;
+        let bytes = self.src.as_bytes();
+        let mut end = start;
+        while end < bytes.len() {
+            let c = bytes[end];
+            if c.is_ascii_alphanumeric() || c == b'$' || c == b'.' || c == b'_' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        &self.src[start..end]
+    }
+
+    /// Advance the token cursor past every token contained in `run` (matched by
+    /// source offset).
+    fn advance_past(&mut self, run: &str) {
+        let start = self.current_span().start;
+        let end = start + run.len();
+        while self.pos < self.toks.len() && self.toks[self.pos].1.start < end {
+            self.pos += 1;
+        }
     }
 
     fn parse_array_decl(&mut self) -> Result<ArrayDecl, ParseError> {
@@ -895,6 +964,60 @@ impl Parser {
     }
 }
 
+/// Parse a raw informat string (e.g. `$char40.`, `date9.`, `dollar12.2`, `8.2`)
+/// into a structured [`Informat`].
+fn parse_informat_str(raw: &str) -> Result<Informat, String> {
+    let s = raw.trim();
+    let has_dollar = s.starts_with('$');
+    let body = if has_dollar { &s[1..] } else { s };
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    let name = body[..i].to_ascii_lowercase();
+    let wstart = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    let width: usize = body[wstart..i].parse().unwrap_or(0);
+    let mut decimals = 0usize;
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        let dstart = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if dstart < i {
+            decimals = body[dstart..i].parse().unwrap_or(0);
+        }
+    }
+    if i != bytes.len() {
+        return Err(format!("unsupported informat {:?}", raw));
+    }
+    let kind = match (has_dollar, name.as_str()) {
+        (true, "") => InformatKind::CharTrim,
+        (true, "char") => InformatKind::CharPreserve,
+        (false, "") | (false, "best") => InformatKind::Numeric,
+        (false, "date") => InformatKind::Date,
+        (false, "comma") | (false, "dollar") => InformatKind::NumericSymbol,
+        _ => return Err(format!("unsupported informat {:?}", raw)),
+    };
+    let width = if width == 0 {
+        match kind {
+            InformatKind::CharPreserve | InformatKind::CharTrim => 8,
+            _ => 12,
+        }
+    } else {
+        width
+    };
+    Ok(Informat {
+        kind,
+        width,
+        decimals,
+    })
+}
+
 #[cfg(test)]
 pub fn parse_expr_for_test(src: &str) -> Result<Expr, ParseError> {
     let toks = Lexer::new(src)
@@ -903,7 +1026,7 @@ pub fn parse_expr_for_test(src: &str) -> Result<Expr, ParseError> {
             message: m,
             span: Span::point(0),
         })?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser { toks, pos: 0, src };
     p.parse_expr()
 }
 
@@ -916,6 +1039,41 @@ mod tests {
         let ds = parse_data_step("data out; set in; x = 1 + 2; run;").unwrap();
         assert_eq!(ds.outputs[0].name, "out");
         assert!(matches!(ds.input, Some(DataInput::Set(ref v)) if v.len() == 1));
+    }
+
+    #[test]
+    fn parses_input_informats_and_readers() {
+        let ds = parse_data_step(
+            "data t; input emp_id name $char40. dept_id hire_date :date9. base_salary; run;",
+        )
+        .unwrap();
+        let v = &ds.input_vars;
+        assert_eq!(v.len(), 5);
+        // emp_id: plain list numeric
+        assert_eq!(v[0].reader, InputReader::List);
+        assert!(v[0].informat.is_none() && !v[0].is_char);
+        // name: formatted $char40.
+        assert_eq!(v[1].reader, InputReader::Formatted);
+        assert_eq!(
+            v[1].informat,
+            Some(Informat {
+                kind: InformatKind::CharPreserve,
+                width: 40,
+                decimals: 0
+            })
+        );
+        assert!(v[1].is_char);
+        // hire_date: modified-list :date9.
+        assert_eq!(v[3].reader, InputReader::Modified);
+        assert_eq!(v[3].informat.map(|f| f.kind), Some(InformatKind::Date));
+        assert!(!v[3].is_char);
+    }
+
+    #[test]
+    fn format_statement_is_accepted() {
+        let ds = parse_data_step("data t; set s; format d date9. amt dollar12.2; run;").unwrap();
+        // Parsed without error; format is a no-op so the body stays empty.
+        assert!(ds.body.is_empty());
     }
 
     #[test]

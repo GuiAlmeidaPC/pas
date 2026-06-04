@@ -53,6 +53,50 @@ pub struct InfileSpec {
 pub struct InputVar {
     pub name: String,
     pub is_char: bool,
+    /// Optional informat governing how the field is read and interpreted.
+    pub informat: Option<Informat>,
+    /// How the field is delimited from the line.
+    pub reader: InputReader,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InputReader {
+    /// Whitespace/delimiter-separated token (default list input).
+    List,
+    /// `:informat.` — skip leading blanks, read one token, apply the informat.
+    Modified,
+    /// `informat.` (no colon) — read exactly `informat.width` columns.
+    Formatted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Informat {
+    pub kind: InformatKind,
+    pub width: usize,
+    pub decimals: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InformatKind {
+    /// `$charW.` — character, leading blanks preserved.
+    CharPreserve,
+    /// `$w.` — character, left-aligned (leading blanks trimmed).
+    CharTrim,
+    /// `w.d` / `best.` — plain numeric.
+    Numeric,
+    /// `dateW.` — `DDMONYYYY` → SAS date serial (days since 1960-01-01).
+    Date,
+    /// `commaW.d` / `dollarW.d` — numeric with `$ , ( )` stripped.
+    NumericSymbol,
+}
+
+impl Informat {
+    pub fn is_char(&self) -> bool {
+        matches!(
+            self.kind,
+            InformatKind::CharPreserve | InformatKind::CharTrim
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

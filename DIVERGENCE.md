@@ -58,9 +58,9 @@ are not divergences — they are not implemented at all and are listed in §1.2 
 
 | | |
 |---|---|
-| **SAS** | Supports column-position input (`input name $1-10 age 11-13;`), pointer controls (`@col`), and modified-list input (`name : $20.`). |
-| **PAS** | Only free-form, whitespace- (datalines) or delimiter- (infile) separated input. Each variable consumes one token. |
-| **Why** | Free-form covers the modern CSV / TSV use case. Column-position input is most relevant to fixed-width legacy files; deferred. |
+| **SAS** | Supports column-range input (`input name $1-10 age 11-13;`), pointer controls (`@col`, `+n`), modified-list input (`name :$20.`), and formatted input with informats. |
+| **PAS** | Supports list input, **modified-list input** (`var :informat.`), and **formatted/column input** via informat width (`var informat.`), with a column pointer that advances as fields are read. Informats: `$charW.` (preserves leading blanks), `$w.` (left-aligns), `w.d` numeric, `dateW.` → SAS date serial, and `commaW.d` / `dollarW.d` (strip `$ , ( )`). Unknown informats raise an error. **Not yet:** explicit column-range syntax (`$1-10`), `@`/`+n` pointer controls, and other informats (time/datetime, `mmddyy`, `yymmdd`, etc.). The `format` / `informat` / `label` statements parse but are **not applied** — values read with `dateW.` are stored as the SAS date serial number and display as a number, not `15JAN2021` (display formatting is deferred). |
+| **Why** | Informat and column input cover fixed-width and typed legacy files. Column-range and pointer syntax, plus display formatting, are the remaining pieces. |
 
 ### 1.7 DO loop variants
 

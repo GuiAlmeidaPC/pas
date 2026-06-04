@@ -46,6 +46,7 @@ pub enum Tok {
     Concat,
     Dot,
     Dollar,
+    Colon,
     Eof,
 }
 
@@ -129,6 +130,10 @@ impl<'a> Lexer<'a> {
             b',' => {
                 self.bump();
                 Ok(Tok::Comma)
+            }
+            b':' => {
+                self.bump();
+                Ok(Tok::Colon)
             }
             b'(' => {
                 self.bump();
