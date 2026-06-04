@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- AI assistant: **"Sign in with ChatGPT"** (OAuth) as an alternative to an
+  OpenAI API key. Uses the PKCE OAuth flow (loopback callback on port 1455) and
+  calls the Codex Responses API with the resulting subscription token, so usage
+  bills against the ChatGPT plan. Tokens are stored AES-GCM-encrypted in the app
+  data directory and survive restarts; sign-in lives behind an auth-mode toggle
+  on the OpenAI provider in AI Setup.
+
 ### Documentation
 - Corrected `SPEC.md`, `DIVERGENCE.md`, `README.md`, `AGENTS.md`, and
   `CONTRIBUTING.md` to document the macro language as implemented (`%macro`,

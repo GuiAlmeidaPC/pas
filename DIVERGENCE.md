@@ -166,6 +166,19 @@ unsaved buffer is lost if the app is closed.
 The log clears on each new submission. SAS Enterprise Guide writes per-program
 logs to disk; PAS only shows the most recent log in the bottom pane.
 
+### 4.4 AI assistant: ChatGPT OAuth and token storage
+
+Not a SAS divergence — a PAS-specific integration note. The AI assistant offers
+"Sign in with ChatGPT" alongside API-key providers. This embeds the **public**
+OpenAI Codex OAuth `client_id` (`app_EMoamEEZ73f0CkXaXp7hrann`) and talks to the
+Codex Responses API (`chatgpt.com/backend-api/codex/responses`), the same client
+the Codex CLI uses; it is not an officially documented third-party API and may
+change without notice. OAuth tokens are persisted in
+`chatgpt_tokens.enc` (app data dir), AES-256-GCM-encrypted with a key **derived
+from a stable install path** — this is obfuscation against casual inspection,
+**not** strong at-rest protection (anyone with the file and the app binary can
+decrypt). API keys, by contrast, remain in memory only and are never persisted.
+
 ---
 
 ## 5. Defaults and quirks
