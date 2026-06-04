@@ -71,6 +71,7 @@ pub struct AppState {
     session: Arc<Session>,
     project_root: Mutex<Option<PathBuf>>,
     ai_config: Mutex<Option<StoredAiConfig>>,
+    chatgpt_tokens: Mutex<Option<oauth::StoredTokens>>,
     allowed_paths: Mutex<HashSet<PathBuf>>,
 }
 
@@ -82,6 +83,9 @@ pub struct AiConfigInput {
     pub model: String,
     #[serde(default)]
     pub custom_url: Option<String>,
+    /// "api_key" (default) | "chatgpt". Only meaningful for the openai provider.
+    #[serde(default)]
+    pub auth_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +95,8 @@ pub struct AiCompletionRequest {
     pub model: String,
     #[serde(default)]
     pub custom_url: Option<String>,
+    #[serde(default)]
+    pub auth_mode: Option<String>,
     pub system_prompt: String,
     pub messages: Vec<AiMessage>,
 }
@@ -674,7 +680,8 @@ fn validate_https_url(url: &str) -> Result<(), String> {
 #[tauri::command]
 fn set_ai_config(config: AiConfigInput, state: State<'_, AppState>) -> Result<(), String> {
     validate_ai_provider(&config.provider)?;
-    if config.api_key.trim().is_empty() {
+    let is_chatgpt = config.provider == "openai" && config.auth_mode.as_deref() == Some("chatgpt");
+    if !is_chatgpt && config.api_key.trim().is_empty() {
         return Err("API key is required".to_string());
     }
     if config.model.trim().is_empty() {
@@ -709,12 +716,113 @@ fn clear_ai_config(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+fn chatgpt_token_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("chatgpt_tokens.enc"))
+}
+
+fn load_chatgpt_tokens(app: &AppHandle) -> Option<oauth::StoredTokens> {
+    let path = chatgpt_token_path(app).ok()?;
+    let blob = std::fs::read(&path).ok()?;
+    let key = oauth::derive_key(path.parent()?);
+    oauth::decrypt_tokens(&key, &blob).ok()
+}
+
+fn save_chatgpt_tokens(app: &AppHandle, tokens: &oauth::StoredTokens) -> Result<(), String> {
+    let path = chatgpt_token_path(app)?;
+    let key = oauth::derive_key(path.parent().ok_or("no parent dir for token file")?);
+    let blob = oauth::encrypt_tokens(&key, tokens)?;
+    std::fs::write(&path, blob).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct OauthStatus {
+    signed_in: bool,
+    email: Option<String>,
+}
+
+#[tauri::command]
+async fn openai_oauth_login(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<OauthStatus, String> {
+    let tokens = oauth::interactive_login().await?;
+    save_chatgpt_tokens(&app, &tokens)?;
+    let status = OauthStatus {
+        signed_in: true,
+        email: tokens.email.clone(),
+    };
+    *state
+        .chatgpt_tokens
+        .lock()
+        .map_err(|_| "token lock poisoned")? = Some(tokens);
+    Ok(status)
+}
+
+#[tauri::command]
+fn openai_oauth_status(state: State<'_, AppState>) -> Result<OauthStatus, String> {
+    let guard = state
+        .chatgpt_tokens
+        .lock()
+        .map_err(|_| "token lock poisoned")?;
+    Ok(match guard.as_ref() {
+        Some(t) => OauthStatus {
+            signed_in: true,
+            email: t.email.clone(),
+        },
+        None => OauthStatus {
+            signed_in: false,
+            email: None,
+        },
+    })
+}
+
+#[tauri::command]
+fn openai_oauth_logout(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    *state
+        .chatgpt_tokens
+        .lock()
+        .map_err(|_| "token lock poisoned")? = None;
+    if let Ok(path) = chatgpt_token_path(&app) {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn ai_completion(
     request: AiCompletionRequest,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     validate_ai_provider(&request.provider)?;
+
+    // ChatGPT OAuth path: use the Codex Responses API with the stored token.
+    if request.provider == "openai" && request.auth_mode.as_deref() == Some("chatgpt") {
+        let mut tokens = state
+            .chatgpt_tokens
+            .lock()
+            .map_err(|_| "token lock poisoned")?
+            .clone()
+            .ok_or("Not signed in with ChatGPT")?;
+        let client = reqwest::Client::new();
+        let access = oauth::valid_access_token(&mut tokens, &client).await?;
+        save_chatgpt_tokens(&app, &tokens)?;
+        *state
+            .chatgpt_tokens
+            .lock()
+            .map_err(|_| "token lock poisoned")? = Some(tokens.clone());
+        let model = if request.model.trim().is_empty() {
+            "gpt-5.5"
+        } else {
+            request.model.as_str()
+        };
+        let body = oauth::build_responses_body(model, &request.system_prompt, &request.messages);
+        return oauth::responses_completion(&client, &access, &tokens.account_id, &body).await;
+    }
+
     let stored = state
         .ai_config
         .lock()
@@ -1023,6 +1131,7 @@ pub fn run() {
         session: Arc::new(session),
         project_root: Mutex::new(None),
         ai_config: Mutex::new(None),
+        chatgpt_tokens: Mutex::new(None),
         allowed_paths: Mutex::new(HashSet::new()),
     };
 
@@ -1033,6 +1142,14 @@ pub fn run() {
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
                 window.open_devtools();
+            }
+            // Restore a previously saved ChatGPT OAuth session, if any.
+            if let Some(tokens) = load_chatgpt_tokens(app.handle()) {
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut g) = state.chatgpt_tokens.lock() {
+                        *g = Some(tokens);
+                    }
+                }
             }
             Ok(())
         })
@@ -1054,6 +1171,9 @@ pub fn run() {
             set_ai_config,
             clear_ai_config,
             ai_completion,
+            openai_oauth_login,
+            openai_oauth_status,
+            openai_oauth_logout,
             pick_project_file,
             pick_sas_file,
             pick_save_sas_file,
@@ -1102,6 +1222,7 @@ mod tests {
             session,
             project_root: Mutex::new(Some(canonical_root.clone())),
             ai_config: Mutex::new(None),
+            chatgpt_tokens: Mutex::new(None),
             allowed_paths: Mutex::new(HashSet::new()),
         };
 

@@ -44,7 +44,10 @@ pub fn generate_pkce() -> Pkce {
     let verifier = B64URL.encode(bytes);
     let digest = Sha256::digest(verifier.as_bytes());
     let challenge = B64URL.encode(digest);
-    Pkce { verifier, challenge }
+    Pkce {
+        verifier,
+        challenge,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +207,7 @@ fn now_unix() -> u64 {
 }
 
 fn parse_callback_query(path: &str) -> (Option<String>, Option<String>) {
-    let query = path.splitn(2, '?').nth(1).unwrap_or("");
+    let query = path.split_once('?').map(|x| x.1).unwrap_or("");
     let mut code = None;
     let mut state = None;
     for pair in query.split('&') {
