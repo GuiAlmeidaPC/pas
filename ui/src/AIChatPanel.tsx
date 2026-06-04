@@ -137,16 +137,17 @@ export function AIChatPanel({
 
     setErrorMsg(null);
 
-    // Closure-safe state capture of messages history
-    let currentMessages: Message[] = [];
-    setMessages((prev) => {
-      currentMessages = [...prev, { role: "user", content: promptText }];
-      return currentMessages;
-    });
+    // Build the history explicitly from current state instead of relying on the
+    // setMessages updater running synchronously. React's eager-state
+    // optimization that invokes the updater inline is not guaranteed, so the
+    // previous side-effect capture could (and did) send an empty history.
+    const userMessage: Message = { role: "user", content: promptText };
+    const history = [...messages, userMessage];
+    setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
 
     try {
-      const responseText = await fetchLLMCompletion(currentMessages);
+      const responseText = await fetchLLMCompletion(history);
       setMessages((prev) => [...prev, { role: "assistant", content: responseText }]);
     } catch (err) {
       console.error(err);

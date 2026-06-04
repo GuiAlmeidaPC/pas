@@ -381,6 +381,7 @@ pub fn build_responses_body(
                 "input_text"
             };
             serde_json::json!({
+                "type": "message",
                 "role": if m.role == "assistant" { "assistant" } else { "user" },
                 "content": [{ "type": content_type, "text": m.content }],
             })
@@ -564,8 +565,14 @@ data: {\"response\":{\"status\":\"completed\"}}
         let body = build_responses_body("gpt-5.5", "sys", &history);
         assert_eq!(body["model"], "gpt-5.5");
         assert_eq!(body["instructions"], "sys");
+        // Each input item must carry the "message" type discriminator that the
+        // Codex Responses backend requires, or it rejects the request as if no
+        // input were provided.
+        assert_eq!(body["input"][0]["type"], "message");
         assert_eq!(body["input"][0]["role"], "user");
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][1]["type"], "message");
+        assert_eq!(body["input"][1]["role"], "assistant");
         assert_eq!(body["input"][1]["content"][0]["type"], "output_text");
     }
 }
