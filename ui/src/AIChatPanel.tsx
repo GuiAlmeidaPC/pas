@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AISettingsModal, type AIConfig, type OAuthStatus } from "./AISettingsModal";
+import { AISettingsModal, availableModels, type AIConfig, type OAuthStatus } from "./AISettingsModal";
 import { parseEditBlocks, type EditFileSnapshot, type ProposedEdit, type ResolvedEdit } from "./ai/editProtocol";
 import { AIEditCard } from "./ai/AIEditCard";
 
@@ -92,6 +92,16 @@ export function AIChatPanel({
     }
   }, [messages, loading]);
 
+  // Persist only the non-secret config (never the API key) to localStorage.
+  const persistPublicConfig = (cfg: AIConfig) => {
+    localStorage.setItem("pas.ai_config_public", JSON.stringify({
+      provider: cfg.provider,
+      model: cfg.model,
+      customUrl: cfg.customUrl,
+      authMode: cfg.authMode,
+    }));
+  };
+
   const saveConfig = async (newConfig: AIConfig) => {
     await invoke("set_ai_config", {
       config: {
@@ -103,14 +113,17 @@ export function AIChatPanel({
       },
     });
     setConfig(newConfig);
-    // authMode is non-secret, so it is safe to persist alongside the public config.
-    localStorage.setItem("pas.ai_config_public", JSON.stringify({
-      provider: newConfig.provider,
-      model: newConfig.model,
-      customUrl: newConfig.customUrl,
-      authMode: newConfig.authMode,
-    }));
+    persistPublicConfig(newConfig);
     setErrorMsg(null);
+  };
+
+  // Quick model switch from the panel header. The model travels with each
+  // request (ai_completion honors request.model), so no backend call is needed.
+  const changeModel = (model: string) => {
+    if (!config || model === config.model) return;
+    const next = { ...config, model };
+    setConfig(next);
+    persistPublicConfig(next);
   };
 
   // Listen for Monaco right-click context menu actions
@@ -429,12 +442,26 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
   return (
     <div className="ai-chat-panel">
       <div className="panel-header">
-        <span className="title">AI Assistant</span>
+        <span className="title">Agent</span>
         <div className="actions">
+          {config && (
+            <select
+              className="agent-model-select"
+              value={config.model}
+              onChange={(e) => changeModel(e.target.value)}
+              title="Model"
+            >
+              {Array.from(new Set([...availableModels(config.provider, config.authMode), config.model]))
+                .filter(Boolean)
+                .map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+            </select>
+          )}
           <button className="icon-btn" onClick={clearChat} title="Clear Chat history">
             Clear
           </button>
-          <button className="icon-btn" onClick={() => setIsSettingsOpen(true)} title="AI Setup Configuration">
+          <button className="icon-btn" onClick={() => setIsSettingsOpen(true)} title="Agent Setup Configuration">
             Setup
           </button>
         </div>
@@ -443,7 +470,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
       <div className="chat-body" ref={listRef}>
         {messages.length === 0 && (
           <div className="empty-state">
-            <h4>Welcome to the PAS AI Assistant!</h4>
+            <h4>Welcome to the PAS Agent!</h4>
             <p>Type a prompt to write, edit, or refactor SAS DATA steps and SQL statements.</p>
             
             <div className="suggestion-cards">
@@ -472,7 +499,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         {messages.map((m, i) => (
           <div key={i} className={`chat-message ${m.role}`}>
             <div className="message-header">
-              <span className="sender">{m.role === "user" ? "You" : `${config?.provider.toUpperCase() || "AI"} Assistant`}</span>
+              <span className="sender">{m.role === "user" ? "You" : `${config?.provider.toUpperCase() || "AI"} Agent`}</span>
             </div>
             <div className="message-body">
               {m.role === "user" ? <p className="chat-text">{m.content}</p> : renderMessageContent(m.content)}
@@ -483,7 +510,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         {loading && (
           <div className="chat-message assistant thinking">
             <div className="message-header">
-              <span className="sender">Assistant is thinking...</span>
+              <span className="sender">Agent is thinking...</span>
             </div>
             <div className="message-body">
               <div className="thinking-loader">
@@ -509,7 +536,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
       <form onSubmit={handleSend} className="chat-input-form">
         <input
           type="text"
-          placeholder={config ? `Ask ${config.provider.toUpperCase()} Assistant...` : "Setup AI credentials first..."}
+          placeholder={config ? `Ask ${config.provider.toUpperCase()} Agent...` : "Set up the Agent first..."}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={loading}

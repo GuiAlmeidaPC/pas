@@ -35,6 +35,15 @@ const DEFAULT_MODELS: Record<AIConfig["provider"], string[]> = {
 // Models reachable through the ChatGPT (Codex Responses) backend.
 const CHATGPT_MODELS = ["gpt-5.5", "gpt-5.2-codex", "gpt-5.3-codex"];
 
+/** The model choices to offer for a given provider and auth mode. */
+export function availableModels(
+  provider: AIConfig["provider"],
+  authMode?: "api_key" | "chatgpt",
+): string[] {
+  if (provider === "openai" && authMode === "chatgpt") return CHATGPT_MODELS;
+  return DEFAULT_MODELS[provider] || [];
+}
+
 export function AISettingsModal({
   isOpen,
   onClose,
@@ -145,7 +154,7 @@ export function AISettingsModal({
     <div className="modal-overlay">
       <div className="modal-content ai-settings-modal">
         <div className="modal-header">
-          <h3>AI Assistant Setup</h3>
+          <h3>Agent Setup</h3>
           <button className="close-btn" onClick={onClose}>&times;</button>
         </div>
         <form onSubmit={handleSubmit} className="ai-settings-form">

@@ -694,6 +694,18 @@ kbd {
 .ai-chat-panel .panel-header .actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.ai-chat-panel .panel-header .agent-model-select {
+  background: var(--panel, transparent);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  font-size: 11px;
+  border-radius: 3px;
+  cursor: pointer;
+  max-width: 150px;
 }
 
 .ai-chat-panel .panel-header .icon-btn {

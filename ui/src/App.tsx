@@ -1032,7 +1032,7 @@ export default function App() {
 
     editor.addAction({
       id: "ai-explain-code",
-      label: "AI: Explain Selection",
+      label: "Agent: Explain Selection",
       contextMenuGroupId: "1_modification",
       contextMenuOrder: 1,
       precondition: "editorHasSelection",
@@ -1052,7 +1052,7 @@ export default function App() {
 
     editor.addAction({
       id: "ai-refactor-code",
-      label: "AI: Refactor/Optimize Selection",
+      label: "Agent: Refactor/Optimize Selection",
       contextMenuGroupId: "1_modification",
       contextMenuOrder: 2,
       precondition: "editorHasSelection",
@@ -1206,7 +1206,7 @@ export default function App() {
           },
           { separator: true },
           {
-            label: showAIPanel ? "Hide AI Assistant" : "Show AI Assistant",
+            label: showAIPanel ? "Hide Agent" : "Show Agent",
             onClick: () => setShowAIPanel((s) => !s),
           },
           { separator: true },
