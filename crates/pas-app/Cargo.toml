@@ -22,3 +22,7 @@ tracing.workspace = true
 reqwest.workspace = true
 tracing-subscriber = "0.3"
 uuid.workspace = true
+sha2 = "0.10"
+base64 = "0.22"
+aes-gcm = "0.10"
+rand = "0.8"
