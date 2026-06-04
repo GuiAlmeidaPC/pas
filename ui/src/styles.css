@@ -829,6 +829,7 @@ kbd {
 
 .ai-code-snippet .snippet-actions {
   display: flex;
+  flex-wrap: wrap;
   background: var(--panel-2);
   border-top: 1px solid var(--border);
   padding: 6px;
@@ -1201,7 +1202,9 @@ kbd {
 .ai-edit-card-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  row-gap: 6px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border, #2d2d2d);
   background: rgba(255,255,255,0.02);
@@ -1216,8 +1219,15 @@ kbd {
 .ai-edit-badge-new { background: #1f5b2a; color: #d4f7d4; }
 .ai-edit-badge-modified { background: #4a3c0d; color: #ffe699; }
 .ai-edit-badge-error { background: #5b1f1f; color: #ffd4d4; }
-.ai-edit-path { flex: 1; font-family: inherit; }
-.ai-edit-card-actions { display: flex; gap: 4px; }
+.ai-edit-path {
+  flex: 1 1 120px;
+  min-width: 0;
+  font-family: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-edit-card-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
 .ai-edit-card-actions button {
   font-size: 11px;
   padding: 2px 8px;
