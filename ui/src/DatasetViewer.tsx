@@ -11,7 +11,7 @@ interface Props {
 }
 
 interface PageView {
-  columns: { name: string; ty: string }[];
+  columns: { name: string; ty: string; format?: string }[];
   rows: unknown[][];
   totalRows: number;
 }
@@ -155,7 +155,7 @@ export function DatasetViewer({ ds }: Props) {
                 <td className="rownum">{offset + ri + 1}</td>
                 {row.map((cell, ci) => (
                   <td key={ci} className={cell === null || cell === undefined ? "null" : ""}>
-                    {formatCell(cell)}
+                    {formatCell(cell, page.columns[ci]?.format)}
                   </td>
                 ))}
               </tr>
@@ -175,6 +175,7 @@ function decodePage(buf: ArrayBuffer): PageView {
   const columns = table.schema.fields.map((f) => ({
     name: f.name,
     ty: typeLabel(f.typeId),
+    format: f.metadata?.get("pas_format") ?? undefined,
   }));
 
   const rowCount = table.numRows;
@@ -214,8 +215,12 @@ function typeLabel(typeId: Type): string {
   }
 }
 
-function formatCell(v: unknown): string {
+function formatCell(v: unknown, sasFormat?: string): string {
   if (v === null || v === undefined) return "·";
+  if (sasFormat) {
+    const formatted = formatSasCell(v, sasFormat);
+    if (formatted !== null) return formatted;
+  }
   if (typeof v === "bigint") return v.toString();
   if (v instanceof Date) return v.toISOString();
   if (typeof v === "object") {
@@ -226,4 +231,51 @@ function formatCell(v: unknown): string {
     }
   }
   return String(v);
+}
+
+function formatSasCell(v: unknown, spec: string): string | null {
+  const fmt = parseSasFormat(spec);
+  if (!fmt) return null;
+  const n = typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : Number(v);
+  if (!Number.isFinite(n)) return null;
+
+  switch (fmt.name) {
+    case "date":
+      return formatSasDate(n);
+    case "comma":
+      return formatNumber(n, fmt.decimals, false);
+    case "dollar":
+      return formatNumber(n, fmt.decimals, true);
+    case "":
+    case "best":
+      return fmt.decimals === undefined ? String(v) : n.toFixed(fmt.decimals);
+    default:
+      return null;
+  }
+}
+
+function parseSasFormat(spec: string): { name: string; decimals?: number } | null {
+  const trimmed = spec.trim().replace(/\.$/, "").toLowerCase();
+  const match = /^([a-z]*)(?:\d+)?(?:\.(\d+))?$/.exec(trimmed);
+  if (!match) return null;
+  return {
+    name: match[1],
+    decimals: match[2] === undefined ? undefined : parseInt(match[2], 10),
+  };
+}
+
+function formatSasDate(serial: number): string {
+  const base = Date.UTC(1960, 0, 1);
+  const d = new Date(base + Math.trunc(serial) * 86_400_000);
+  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  return `${String(d.getUTCDate()).padStart(2, "0")}${months[d.getUTCMonth()]}${d.getUTCFullYear()}`;
+}
+
+function formatNumber(n: number, decimals: number | undefined, dollar: boolean): string {
+  const fractionDigits = decimals ?? 0;
+  const body = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(n);
+  return dollar ? `$${body}` : body;
 }

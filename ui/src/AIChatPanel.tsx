@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { AISettingsModal, availableModels, type AIConfig, type OAuthStatus } from "./AISettingsModal";
 import { parseEditBlocks, type EditFileSnapshot, type ProposedEdit, type ResolvedEdit } from "./ai/editProtocol";
 import { AIEditCard } from "./ai/AIEditCard";
@@ -7,6 +8,22 @@ import { AIEditCard } from "./ai/AIEditCard";
 interface Message {
   role: "user" | "assistant" | "system";
   content: string;
+}
+
+interface AiCompletionRequest {
+  provider: string;
+  model: string;
+  customUrl?: string;
+  authMode?: string;
+  systemPrompt: string;
+  messages: Message[];
+}
+
+interface AiStreamPayload {
+  requestId: string;
+  kind: "chunk" | "done" | "error";
+  text?: string;
+  message?: string;
 }
 
 interface Props {
@@ -44,30 +61,46 @@ export function AIChatPanel({
   const [config, setConfig] = useState<AIConfig | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [streamingStarted, setStreamingStarted] = useState(false);
   const [oauthStatus, setOauthStatus] = useState<OAuthStatus | null>(null);
   const [dynamicModels, setDynamicModels] = useState<string[] | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Populate the model dropdown from the provider's live model list, falling
-  // back to the curated list (ChatGPT/Codex always stays curated). Cached in
-  // localStorage so the dropdown is populated instantly on the next launch.
-  const refreshModels = async (cfg: AIConfig) => {
+  const loadCachedModels = (cfg: AIConfig) => {
     if (cfg.authMode === "chatgpt") {
-      setDynamicModels(null); // use curated CHATGPT list via availableModels()
+      setDynamicModels(null);
       return;
     }
     const cacheKey = `pas.ai_models.${cfg.provider}`;
     const cached = localStorage.getItem(cacheKey);
     setDynamicModels(cached ? JSON.parse(cached) : null);
-    try {
-      const models = await invoke<string[]>("list_ai_models");
-      if (Array.isArray(models) && models.length > 0) {
-        setDynamicModels(models);
-        localStorage.setItem(cacheKey, JSON.stringify(models));
-      }
-    } catch {
-      // Offline / no key / unsupported — keep cache or curated fallback.
+  };
+
+  const cacheDynamicModels = (cfg: AIConfig, models: string[]) => {
+    if (cfg.authMode === "chatgpt") {
+      setDynamicModels(null);
+      return;
     }
+    const cacheKey = `pas.ai_models.${cfg.provider}`;
+    localStorage.setItem(cacheKey, JSON.stringify(models));
+    setDynamicModels(models);
+  };
+
+  const resizeInput = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const styles = window.getComputedStyle(el);
+    const lineHeight = Number.parseFloat(styles.lineHeight) || 18;
+    const padding = Number.parseFloat(styles.paddingTop)
+      + Number.parseFloat(styles.paddingBottom)
+      + Number.parseFloat(styles.borderTopWidth)
+      + Number.parseFloat(styles.borderBottomWidth);
+    const maxHeight = lineHeight * 8 + padding;
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
   };
 
   // Fetch ChatGPT sign-in status from the Rust backend.
@@ -102,12 +135,16 @@ export function AIChatPanel({
       try {
         const parsed = JSON.parse(saved);
         setConfig({ ...parsed, apiKey: "" });
-        refreshModels({ ...parsed, apiKey: "" });
+        loadCachedModels({ ...parsed, apiKey: "" });
       } catch (e) {
         console.error("Failed to parse saved AI config", e);
       }
     }
   }, []);
+
+  useLayoutEffect(() => {
+    resizeInput();
+  }, [input]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -138,8 +175,24 @@ export function AIChatPanel({
     });
     setConfig(newConfig);
     persistPublicConfig(newConfig);
-    refreshModels(newConfig);
+    loadCachedModels(newConfig);
     setErrorMsg(null);
+  };
+
+  const fetchModelsForSetup = async (cfg: AIConfig) => {
+    await invoke("set_ai_config", {
+      config: {
+        provider: cfg.provider,
+        apiKey: cfg.apiKey,
+        model: cfg.model || availableModels(cfg.provider, cfg.authMode)[0] || "placeholder",
+        customUrl: cfg.customUrl,
+        authMode: cfg.authMode,
+      },
+    });
+    const models = await invoke<string[]>("list_ai_models");
+    const nextModels = Array.from(new Set(models.filter(Boolean)));
+    cacheDynamicModels(cfg, nextModels);
+    return nextModels;
   };
 
   // Quick model switch from the panel header. The model travels with each
@@ -181,17 +234,26 @@ export function AIChatPanel({
     // previous side-effect capture could (and did) send an empty history.
     const userMessage: Message = { role: "user", content: promptText };
     const history = [...messages, userMessage];
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => [...prev, userMessage, { role: "assistant", content: "" }]);
     setLoading(true);
+    setStreamingStarted(false);
 
     try {
-      const responseText = await fetchLLMCompletion(history);
-      setMessages((prev) => [...prev, { role: "assistant", content: responseText }]);
+      const responseText = await streamLLMCompletion(history, (chunk) => {
+        if (!chunk) return;
+        setStreamingStarted(true);
+        setMessages((prev) => updateLastAssistantMessage(prev, (content) => content + chunk));
+      });
+      setMessages((prev) =>
+        updateLastAssistantMessage(prev, (content) => responseText || content),
+      );
     } catch (err) {
       console.error(err);
       setErrorMsg(String(err));
+      setMessages((prev) => prev.filter((message) => message.role !== "assistant" || message.content.trim() !== ""));
     } finally {
       setLoading(false);
+      setStreamingStarted(false);
     }
   };
 
@@ -202,7 +264,64 @@ export function AIChatPanel({
     sendMessageDirectly(promptText);
   };
 
-  const fetchLLMCompletion = async (history: Message[]): Promise<string> => {
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const updateLastAssistantMessage = (
+    items: Message[],
+    update: (content: string) => string,
+  ): Message[] => {
+    const next = [...items];
+    for (let i = next.length - 1; i >= 0; i -= 1) {
+      if (next[i].role === "assistant") {
+        next[i] = { ...next[i], content: update(next[i].content) };
+        return next;
+      }
+    }
+    return [...next, { role: "assistant", content: update("") }];
+  };
+
+  const createRequestId = () => {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+    return `ai-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  };
+
+  const streamLLMCompletion = async (
+    history: Message[],
+    onChunk: (chunk: string) => void,
+  ): Promise<string> => {
+    const request = buildLLMRequest(history);
+    const requestId = createRequestId();
+    let unlisten: UnlistenFn | null = null;
+    let streamedText = "";
+    let streamError: string | null = null;
+
+    try {
+      unlisten = await listen<AiStreamPayload>("pas://ai-stream", (event) => {
+        const payload = event.payload;
+        if (!payload || payload.requestId !== requestId) return;
+        if (payload.kind === "chunk" && payload.text) {
+          streamedText += payload.text;
+          onChunk(payload.text);
+        } else if (payload.kind === "error") {
+          streamError = payload.message ?? "AI stream failed";
+        }
+      });
+      const finalText = await invoke<string>("ai_completion_stream", { request, requestId });
+      if (streamError) throw new Error(streamError);
+      return finalText || streamedText;
+    } finally {
+      if (unlisten) unlisten();
+    }
+  };
+
+  const buildLLMRequest = (history: Message[]): AiCompletionRequest => {
     if (!config) throw new Error("AI Setup required");
 
     // Gather system metadata
@@ -273,16 +392,14 @@ ${activeContent ? `<open_file_buffer>\n${activeContent}\n</open_file_buffer>` : 
 ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>` : ""}
 </workspace_context>`;
 
-    return invoke<string>("ai_completion", {
-      request: {
-        provider: config.provider,
-        model: config.model,
-        customUrl: config.customUrl,
-        authMode: config.authMode,
-        systemPrompt,
-        messages: history,
-      },
-    });
+    return {
+      provider: config.provider,
+      model: config.model,
+      customUrl: config.customUrl,
+      authMode: config.authMode,
+      systemPrompt,
+      messages: history,
+    };
   };
 
   const insertSuggestedContext = (text: string) => {
@@ -537,16 +654,15 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
           </div>
         ))}
 
-        {loading && (
+        {loading && !streamingStarted && (
           <div className="chat-message assistant thinking">
             <div className="message-header">
-              <span className="sender">Agent is thinking...</span>
+              <span className="sender">Agent is working</span>
             </div>
             <div className="message-body">
-              <div className="thinking-loader">
-                <span></span>
-                <span></span>
-                <span></span>
+              <div className="thinking-loader" aria-live="polite" aria-label="Agent is working">
+                <span className="thinking-spinner" aria-hidden="true" />
+                <span>Working...</span>
               </div>
             </div>
           </div>
@@ -564,11 +680,13 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
       </div>
 
       <form onSubmit={handleSend} className="chat-input-form">
-        <input
-          type="text"
+        <textarea
+          ref={inputRef}
+          rows={1}
           placeholder={config ? `Ask ${config.provider.toUpperCase()} Agent...` : "Set up the Agent first..."}
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleInputKeyDown}
           disabled={loading}
         />
         <button type="submit" className="btn-primary" disabled={loading || !input.trim()}>
@@ -580,6 +698,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         onSave={saveConfig}
+        onFetchModels={fetchModelsForSetup}
         initialConfig={config}
         oauthStatus={oauthStatus}
         onOauthLogin={handleOauthLogin}

@@ -11,14 +11,14 @@ export type ProposedEdit =
 
 export interface EditFileSnapshot {
   content: string;
-  source: "tab" | "disk";
+  source: "tab" | "project" | "disk";
 }
 
 export interface ResolvedEdit {
   before: string;
   after: string;
   status: "ready" | "stale";
-  source: "tab" | "disk";
+  source: "tab" | "project" | "disk";
 }
 
 const FENCE_RE = /^```pas-edit\b([^\n]*)\n([\s\S]*?)\n```/gm;

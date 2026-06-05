@@ -6,6 +6,7 @@ export interface Column {
 }
 
 export interface ResultBlock {
+  title?: string;
   columns: Column[];
   rows: Value[][];
   truncated: boolean;

@@ -18,6 +18,7 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   onSave: (config: AIConfig) => void | Promise<void>;
+  onFetchModels?: (config: AIConfig) => Promise<string[]>;
   initialConfig?: AIConfig | null;
   oauthStatus?: OAuthStatus | null;
   onOauthLogin?: () => Promise<void>;
@@ -48,6 +49,7 @@ export function AISettingsModal({
   isOpen,
   onClose,
   onSave,
+  onFetchModels,
   initialConfig,
   oauthStatus,
   onOauthLogin,
@@ -61,7 +63,14 @@ export function AISettingsModal({
   const [useCustomModel, setUseCustomModel] = useState(false);
   const [authMode, setAuthMode] = useState<"api_key" | "chatgpt">("api_key");
   const [oauthBusy, setOauthBusy] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [fetchedModels, setFetchedModels] = useState<string[] | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const resetFetchedModels = () => {
+    setFetchedModels(null);
+    setFetchError(null);
+  };
 
   useEffect(() => {
     if (initialConfig) {
@@ -71,23 +80,28 @@ export function AISettingsModal({
       setCustomUrl(initialConfig.customUrl || "");
       setAuthMode(initialConfig.authMode === "chatgpt" ? "chatgpt" : "api_key");
 
-      const defaults = DEFAULT_MODELS[initialConfig.provider] || [];
+      const defaults = availableModels(initialConfig.provider, initialConfig.authMode);
+      resetFetchedModels();
       if (defaults.includes(initialConfig.model)) {
         setModel(initialConfig.model);
+        setCustomModel("");
         setUseCustomModel(false);
       } else {
+        setModel(defaults[0] || "");
         setCustomModel(initialConfig.model);
         setUseCustomModel(true);
       }
     } else {
       // Set defaults
+      const defaults = availableModels("openai", "api_key");
       setFormError(null);
+      resetFetchedModels();
       setProvider("openai");
       setApiKey("");
       setCustomUrl("");
-      setModel("");
+      setModel(defaults[0] || "");
       setCustomModel("");
-      setUseCustomModel(true);
+      setUseCustomModel(false);
       setAuthMode("api_key");
     }
   }, [initialConfig, isOpen]);
@@ -95,8 +109,10 @@ export function AISettingsModal({
   // Adjust model select when provider changes
   const handleProviderChange = (p: AIConfig["provider"]) => {
     setProvider(p);
-    const defaults = DEFAULT_MODELS[p] || [];
+    const defaults = availableModels(p, p === "openai" ? authMode : undefined);
+    resetFetchedModels();
     setModel(defaults[0] || "");
+    setCustomModel("");
     setUseCustomModel(defaults.length === 0);
     setCustomUrl("");
     if (p !== "openai") setAuthMode("api_key");
@@ -105,14 +121,11 @@ export function AISettingsModal({
   // Switch between API-key and ChatGPT-login auth (openai only).
   const handleAuthModeChange = (mode: "api_key" | "chatgpt") => {
     setAuthMode(mode);
-    if (mode === "chatgpt") {
-      setModel(CHATGPT_MODELS[0]);
-      setUseCustomModel(false);
-    } else {
-      const defaults = DEFAULT_MODELS.openai;
-      setModel(defaults[0] || "");
-      setUseCustomModel(false);
-    }
+    const defaults = availableModels("openai", mode);
+    resetFetchedModels();
+    setModel(defaults[0] || "");
+    setCustomModel("");
+    setUseCustomModel(false);
   };
 
   const runOauth = async (fn?: () => Promise<void>) => {
@@ -125,6 +138,31 @@ export function AISettingsModal({
       setFormError(String(e));
     } finally {
       setOauthBusy(false);
+    }
+  };
+  const handleFetchModels = async () => {
+    if (!onFetchModels) return;
+    setFetchingModels(true);
+    setFetchError(null);
+    try {
+      const models = await onFetchModels({
+        provider,
+        apiKey: apiKey.trim(),
+        model: useCustomModel ? customModel.trim() : model,
+        customUrl: customUrl.trim() || undefined,
+        authMode: provider === "openai" ? authMode : undefined,
+      });
+      const nextModels = Array.from(new Set(models.filter(Boolean)));
+      setFetchedModels(nextModels);
+      if (nextModels.length > 0) {
+        setModel((current) => (nextModels.includes(current) ? current : nextModels[0]));
+        setUseCustomModel(false);
+      }
+    } catch (e) {
+      setFetchedModels(null);
+      setFetchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFetchingModels(false);
     }
   };
 
@@ -148,7 +186,12 @@ export function AISettingsModal({
   };
 
   const isChatgpt = provider === "openai" && authMode === "chatgpt";
-  const defaultModels = isChatgpt ? CHATGPT_MODELS : DEFAULT_MODELS[provider] || [];
+  const defaultModels = availableModels(provider, authMode);
+  const visibleModels = isChatgpt
+    ? defaultModels
+    : fetchedModels && fetchedModels.length > 0
+      ? fetchedModels
+      : defaultModels;
 
   return (
     <div className="modal-overlay">
@@ -226,7 +269,10 @@ export function AISettingsModal({
                 type="password"
                 placeholder={`Enter your ${provider.toUpperCase()} API key`}
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => {
+                  resetFetchedModels();
+                  setApiKey(e.target.value);
+                }}
                 required
               />
             </div>
@@ -239,9 +285,9 @@ export function AISettingsModal({
                 <select
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                  disabled={useCustomModel || defaultModels.length === 0}
+                  disabled={useCustomModel || visibleModels.length === 0 || fetchingModels}
                 >
-                  {defaultModels.map((m) => (
+                  {visibleModels.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
@@ -260,12 +306,25 @@ export function AISettingsModal({
                 <input
                   type="checkbox"
                   checked={useCustomModel}
-                  onChange={(e) => setUseCustomModel(defaultModels.length === 0 ? true : e.target.checked)}
-                  disabled={defaultModels.length === 0}
+                  onChange={(e) => setUseCustomModel(visibleModels.length === 0 ? true : e.target.checked)}
+                  disabled={visibleModels.length === 0}
                 />
                 Use custom model name
               </label>
             </div>
+            {!isChatgpt && (
+              <div className="model-actions">
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  disabled={fetchingModels || !apiKey.trim() || !onFetchModels}
+                  onClick={handleFetchModels}
+                >
+                  {fetchingModels ? "Fetching…" : "Fetch Models"}
+                </button>
+                {fetchError && <span className="field-hint field-error">{fetchError}</span>}
+              </div>
+            )}
           </div>
 
           {!isChatgpt && (provider === "openrouter" || provider === "deepseek" || provider === "openai") && (
@@ -276,7 +335,10 @@ export function AISettingsModal({
                 type="text"
                 placeholder="https://..."
                 value={customUrl}
-                onChange={(e) => setCustomUrl(e.target.value)}
+                onChange={(e) => {
+                  resetFetchedModels();
+                  setCustomUrl(e.target.value);
+                }}
               />
               <span className="field-hint">Leave blank to use default API endpoints.</span>
             </div>

@@ -448,6 +448,96 @@ pub async fn responses_completion(
     parse_responses_sse(&text)
 }
 
+pub async fn responses_completion_stream<F>(
+    client: &reqwest::Client,
+    access_token: &str,
+    account_id: &str,
+    body: &serde_json::Value,
+    mut emit_chunk: F,
+) -> Result<String, String>
+where
+    F: FnMut(String),
+{
+    let mut res = client
+        .post(RESPONSES_URL)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("chatgpt-account-id", account_id)
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| format!("Responses request: {e}"))?;
+    let status = res.status();
+    if !status.is_success() {
+        let text = res.text().await.map_err(|e| e.to_string())?;
+        return Err(format!("Responses API {}: {}", status.as_u16(), text));
+    }
+
+    let mut buffer = String::new();
+    let mut out = String::new();
+    while let Some(chunk) = res
+        .chunk()
+        .await
+        .map_err(|e| format!("Responses stream: {e}"))?
+    {
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        drain_responses_sse(&mut buffer, |delta| {
+            out.push_str(delta);
+            emit_chunk(delta.to_string());
+        })?;
+    }
+    drain_responses_sse(&mut buffer, |delta| {
+        out.push_str(delta);
+        emit_chunk(delta.to_string());
+    })?;
+    if out.is_empty() {
+        return Err("Responses API returned no text".into());
+    }
+    Ok(out)
+}
+
+fn drain_responses_sse<F>(buffer: &mut String, mut on_delta: F) -> Result<(), String>
+where
+    F: FnMut(&str),
+{
+    while let Some(idx) = buffer.find("\n\n") {
+        let event = buffer[..idx].to_string();
+        buffer.replace_range(..idx + 2, "");
+        parse_responses_event(&event, &mut on_delta)?;
+    }
+    if buffer.ends_with('\n') {
+        let event = std::mem::take(buffer);
+        parse_responses_event(&event, &mut on_delta)?;
+    }
+    Ok(())
+}
+
+fn parse_responses_event<F>(event: &str, on_delta: &mut F) -> Result<(), String>
+where
+    F: FnMut(&str),
+{
+    for line in event.lines() {
+        let line = line.trim_start();
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data == "[DONE]" || data.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(data).map_err(|e| format!("Responses stream json: {e}"))?;
+        if let Some(d) = v.get("delta").and_then(|x| x.as_str()).or_else(|| {
+            v.pointer("/response/output_text/delta")
+                .and_then(|x| x.as_str())
+        }) {
+            on_delta(d);
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -19,8 +19,8 @@ interface Props {
 
 type Resolved =
   | { state: "loading" }
-  | { state: "ready"; before: string; after: string; hunks: Hunk[]; source: "tab" | "disk" }
-  | { state: "stale"; reason: string; before: string; after: string; hunks: Hunk[]; source: "tab" | "disk" }
+  | { state: "ready"; before: string; after: string; hunks: Hunk[]; source: "tab" | "project" | "disk" }
+  | { state: "stale"; reason: string; before: string; after: string; hunks: Hunk[]; source: "tab" | "project" | "disk" }
   | { state: "error"; reason: string };
 
 type CardStatus = "pending" | "applying" | "applied" | "rejected";

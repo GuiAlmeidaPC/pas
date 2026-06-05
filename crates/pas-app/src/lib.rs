@@ -107,6 +107,17 @@ pub struct AiMessage {
     pub content: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AiStreamPayload {
+    request_id: String,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct StoredAiConfig {
     provider: String,
@@ -879,6 +890,177 @@ async fn ai_completion(
     parse_ai_response(&stored.provider, &text)
 }
 
+#[tauri::command]
+async fn ai_completion_stream(
+    request: AiCompletionRequest,
+    request_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let emit_chunk = |text: String| {
+        let _ = app.emit(
+            "pas://ai-stream",
+            AiStreamPayload {
+                request_id: request_id.clone(),
+                kind: "chunk",
+                text: Some(text),
+                message: None,
+            },
+        );
+    };
+
+    let result = ai_completion_stream_inner(request, &app, state, emit_chunk).await;
+    match &result {
+        Ok(_) => {
+            let _ = app.emit(
+                "pas://ai-stream",
+                AiStreamPayload {
+                    request_id,
+                    kind: "done",
+                    text: None,
+                    message: None,
+                },
+            );
+        }
+        Err(message) => {
+            let _ = app.emit(
+                "pas://ai-stream",
+                AiStreamPayload {
+                    request_id,
+                    kind: "error",
+                    text: None,
+                    message: Some(message.clone()),
+                },
+            );
+        }
+    }
+    result
+}
+
+async fn ai_completion_stream_inner<F>(
+    request: AiCompletionRequest,
+    app: &AppHandle,
+    state: State<'_, AppState>,
+    mut emit_chunk: F,
+) -> Result<String, String>
+where
+    F: FnMut(String),
+{
+    validate_ai_provider(&request.provider)?;
+
+    if request.provider == "openai" && request.auth_mode.as_deref() == Some("chatgpt") {
+        let mut tokens = state
+            .chatgpt_tokens
+            .lock()
+            .map_err(|_| "token lock poisoned")?
+            .clone()
+            .ok_or("Not signed in with ChatGPT")?;
+        let client = reqwest::Client::new();
+        let access = oauth::valid_access_token(&mut tokens, &client).await?;
+        save_chatgpt_tokens(app, &tokens)?;
+        *state
+            .chatgpt_tokens
+            .lock()
+            .map_err(|_| "token lock poisoned")? = Some(tokens.clone());
+        let model = if request.model.trim().is_empty() {
+            "gpt-5.5"
+        } else {
+            request.model.as_str()
+        };
+        let body = oauth::build_responses_body(model, &request.system_prompt, &request.messages);
+        return oauth::responses_completion_stream(
+            &client,
+            &access,
+            &tokens.account_id,
+            &body,
+            emit_chunk,
+        )
+        .await;
+    }
+
+    let stored = state
+        .ai_config
+        .lock()
+        .map_err(|_| "AI config lock poisoned")?
+        .clone()
+        .ok_or_else(|| "AI Setup required".to_string())?;
+
+    if stored.provider != request.provider {
+        return Err("saved AI provider does not match the request".to_string());
+    }
+
+    let model = if request.model.trim().is_empty() {
+        stored.model.as_str()
+    } else {
+        request.model.as_str()
+    };
+    let custom_url = request
+        .custom_url
+        .as_deref()
+        .filter(|u| !u.trim().is_empty())
+        .or(stored.custom_url.as_deref());
+    if let Some(url) = custom_url {
+        validate_https_url(url)?;
+    }
+
+    if stored.provider == "gemini" {
+        let text = ai_completion(request, app.clone(), state).await?;
+        emit_chunk(text.clone());
+        return Ok(text);
+    }
+
+    let (url, headers, body) = build_ai_stream_request(
+        &stored.provider,
+        &stored.api_key,
+        model,
+        custom_url,
+        &request.system_prompt,
+        &request.messages,
+    )?;
+    let client = reqwest::Client::new();
+    let mut res = client
+        .post(url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("AI request failed: {}", e))?;
+    let status = res.status();
+    if !status.is_success() {
+        let text = res
+            .text()
+            .await
+            .map_err(|e| format!("AI response read failed: {}", e))?;
+        return Err(format!(
+            "API Error ({}): {}",
+            status.as_u16(),
+            parse_ai_error(&text)
+        ));
+    }
+
+    let mut buffer = String::new();
+    let mut out = String::new();
+    while let Some(chunk) = res
+        .chunk()
+        .await
+        .map_err(|e| format!("AI stream read failed: {}", e))?
+    {
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        drain_sse_events(&stored.provider, &mut buffer, |delta| {
+            out.push_str(delta);
+            emit_chunk(delta.to_string());
+        })?;
+    }
+    drain_sse_events(&stored.provider, &mut buffer, |delta| {
+        out.push_str(delta);
+        emit_chunk(delta.to_string());
+    })?;
+    if out.is_empty() {
+        return Err("AI response did not contain text".to_string());
+    }
+    Ok(out)
+}
+
 fn build_ai_request(
     provider: &str,
     api_key: &str,
@@ -985,6 +1167,83 @@ fn build_ai_request(
         other => return Err(format!("unsupported AI provider: {}", other)),
     }
     Ok((url, headers, body))
+}
+
+fn build_ai_stream_request(
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    custom_url: Option<&str>,
+    system_prompt: &str,
+    history: &[AiMessage],
+) -> Result<(String, HeaderMap, serde_json::Value), String> {
+    let (url, headers, mut body) =
+        build_ai_request(provider, api_key, model, custom_url, system_prompt, history)?;
+    match provider {
+        "openai" | "deepseek" | "openrouter" | "anthropic" => {
+            body["stream"] = json!(true);
+        }
+        _ => {}
+    }
+    Ok((url, headers, body))
+}
+
+fn drain_sse_events<F>(provider: &str, buffer: &mut String, mut on_delta: F) -> Result<(), String>
+where
+    F: FnMut(&str),
+{
+    while let Some(idx) = buffer.find("\n\n") {
+        let event = buffer[..idx].to_string();
+        buffer.replace_range(..idx + 2, "");
+        parse_sse_event(provider, &event, &mut on_delta)?;
+    }
+    if !buffer.trim().is_empty() && !buffer.contains('\n') {
+        return Ok(());
+    }
+    if buffer.ends_with('\n') {
+        let event = std::mem::take(buffer);
+        parse_sse_event(provider, &event, &mut on_delta)?;
+    }
+    Ok(())
+}
+
+fn parse_sse_event<F>(provider: &str, event: &str, on_delta: &mut F) -> Result<(), String>
+where
+    F: FnMut(&str),
+{
+    for line in event.lines() {
+        let line = line.trim_start();
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(data).map_err(|e| format!("parse AI stream event: {}", e))?;
+        if let Some(delta) = ai_stream_delta(provider, &v) {
+            on_delta(delta);
+        }
+    }
+    Ok(())
+}
+
+fn ai_stream_delta<'a>(provider: &str, v: &'a serde_json::Value) -> Option<&'a str> {
+    match provider {
+        "openai" | "deepseek" | "openrouter" => v
+            .pointer("/choices/0/delta/content")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("delta").and_then(|x| x.as_str())),
+        "anthropic" => v
+            .pointer("/delta/text")
+            .and_then(|x| x.as_str())
+            .or_else(|| {
+                v.pointer("/content_block/delta/text")
+                    .and_then(|x| x.as_str())
+            }),
+        _ => None,
+    }
 }
 
 fn parse_ai_error(text: &str) -> String {
@@ -1325,6 +1584,7 @@ pub fn run() {
             set_ai_config,
             clear_ai_config,
             ai_completion,
+            ai_completion_stream,
             list_ai_models,
             openai_oauth_login,
             openai_oauth_status,
@@ -1377,6 +1637,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(url, "https://proxy.example.com/v1/models");
+    }
+
+    #[test]
+    fn stream_request_enables_openai_compatible_streaming() {
+        let (_, _, body) = build_ai_stream_request(
+            "openai",
+            "k",
+            "gpt-4o",
+            None,
+            "system",
+            &[AiMessage {
+                role: "user".into(),
+                content: "hello".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(body.get("stream").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn parses_provider_stream_deltas() {
+        let openai = serde_json::json!({
+            "choices": [{ "delta": { "content": "hello" } }]
+        });
+        assert_eq!(ai_stream_delta("openai", &openai), Some("hello"));
+
+        let anthropic = serde_json::json!({
+            "type": "content_block_delta",
+            "delta": { "type": "text_delta", "text": "world" }
+        });
+        assert_eq!(ai_stream_delta("anthropic", &anthropic), Some("world"));
+    }
+
+    #[test]
+    fn drains_sse_events_across_chunk_boundaries() {
+        let mut buffer = "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n".to_string();
+        buffer.push_str("data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n");
+        let mut out = String::new();
+        drain_sse_events("openai", &mut buffer, |delta| out.push_str(delta)).unwrap();
+        assert_eq!(out, "hello");
+        assert!(buffer.is_empty());
     }
 
     #[test]

@@ -15,6 +15,12 @@ import { registerSasLanguage } from "./sasLang";
 import { AIChatPanel } from "./AIChatPanel";
 import { applyPatch, type EditFileSnapshot, type ProposedEdit, type ResolvedEdit } from "./ai/editProtocol";
 import { DiffReviewModal } from "./ai/DiffReviewModal";
+import {
+  DEFAULT_UNSAVED_PROGRAM_PATH,
+  createUnsavedProjectWorkspace,
+  defaultAgentPanelOpen,
+  isProjectOpen,
+} from "./projectWorkspace";
 import type {
   ColumnInfo,
   DatasetInfo,
@@ -115,6 +121,8 @@ run;
 %put NOTE: Top employee resolved dynamically via SYMPUTX: "&top_employee";
 `;
 
+const INITIAL_WORKSPACE = createUnsavedProjectWorkspace(STARTER_PROGRAM);
+
 interface Tab {
   id: string;
   path: string | null;
@@ -149,7 +157,13 @@ export default function App() {
   const monacoRef = useRef<Parameters<OnMount>[1] | null>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
-  const [tabs, setTabs] = useState<Tab[]>(() => [makeTab({ content: STARTER_PROGRAM })]);
+  const [tabs, setTabs] = useState<Tab[]>(() => [
+    makeTab({
+      path: DEFAULT_UNSAVED_PROGRAM_PATH,
+      title: basename(DEFAULT_UNSAVED_PROGRAM_PATH),
+      content: STARTER_PROGRAM,
+    }),
+  ]);
   const [activeId, setActiveId] = useState<string>(() => tabs[0].id);
   const [log, setLog] = useState<LogLine[]>([]);
   const [outputs, setOutputs] = useState<ResultBlock[]>([]);
@@ -163,9 +177,9 @@ export default function App() {
   const [layoutOrientation, setLayoutOrientation] = useState<"vertical" | "horizontal">("vertical");
   const [showBottomPane, setShowBottomPane] = useState(true);
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
-  const [projectPath, setProjectPath] = useState<string | null>(null);
-  const [projectName, setProjectName] = useState<string | null>(null);
-  const [projectPrograms, setProjectPrograms] = useState<TabConfig[]>([]);
+  const [projectPath, setProjectPath] = useState<string | null>(INITIAL_WORKSPACE.projectPath);
+  const [projectName, setProjectName] = useState<string | null>(INITIAL_WORKSPACE.projectName);
+  const [projectPrograms, setProjectPrograms] = useState<TabConfig[]>(INITIAL_WORKSPACE.programs);
   const [projectSplit, setProjectSplit] = useState<number | null>(null);
   const [libCount, setLibCount] = useState(1);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -177,12 +191,7 @@ export default function App() {
   });
 
   const [showAIPanel, setShowAIPanel] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem("pas.show_ai_panel");
-      return saved === "true";
-    } catch {
-      return false;
-    }
+    return defaultAgentPanelOpen(typeof localStorage !== "undefined" ? localStorage : null);
   });
   const [aiPanelW, setAiPanelW] = useState<number>(() => {
     try {
@@ -266,6 +275,7 @@ export default function App() {
   layoutOrientationRef.current = layoutOrientation;
 
   const activeTab = tabs.find((t) => t.id === activeId) ?? null;
+  const hasProject = isProjectOpen(projectName);
 
   const workspaceContext = useMemo(() => {
     let xmlParts: string[] = [];
@@ -621,7 +631,7 @@ export default function App() {
           t.id === tab.id ? { ...t, path, title: basename(path), saved_content: t.content } : t,
         ),
       );
-      if (projectPathRef.current) {
+      if (isProjectOpen(projectNameRef.current)) {
         setProjectPrograms((prev) =>
           prev.some((p) => p.path === path) ? prev : [...prev, { path }],
         );
@@ -735,7 +745,7 @@ export default function App() {
   const saveProjectAs = useCallback(() => performSaveProject(true), [performSaveProject]);
 
   const handleAddToProject = useCallback(async (code: string) => {
-    if (!projectPathRef.current) return;
+    if (!isProjectOpen(projectNameRef.current)) return;
 
     // 1. Prompt for program name inside the project
     const defaultTitle = "ai_program.sas";
@@ -757,10 +767,13 @@ export default function App() {
         : [...projectProgramsRef.current, { path: filename, content: code }];
       setProjectPrograms(updatedPrograms);
 
-      // 4. Trigger auto-save of the project JSON with the newly embedded content
-      await performSaveProject(false, [...tabsRef.current, newTab], updatedPrograms);
+      // 4. Saved projects auto-persist; unsaved projects stay in memory until
+      // the user chooses where to save the project JSON.
+      if (projectPathRef.current) {
+        await performSaveProject(false, [...tabsRef.current, newTab], updatedPrograms);
+      }
 
-      setLog((p) => [...p, { level: "note", text: `NOTE: Program successfully added to project JSON: ${basename(filename)}` }]);
+      setLog((p) => [...p, { level: "note", text: `NOTE: Program added to project: ${basename(filename)}` }]);
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `Failed to add program to project: ${String(e)}` }]);
     }
@@ -770,6 +783,10 @@ export default function App() {
     const openTab = tabsRef.current.find((t) => t.path === path);
     if (openTab) {
       return { content: openTab.content, source: "tab" };
+    }
+    const projectProgram = projectProgramsRef.current.find((p) => p.path === path);
+    if (projectProgram?.content !== undefined) {
+      return { content: projectProgram.content, source: "project" };
     }
     return { content: await invoke<string>("read_file", { path }), source: "disk" };
   }, []);
@@ -781,7 +798,7 @@ export default function App() {
         setLog((p) => [...p, { level: "error", text: "AI edit failed: stale edits must be regenerated before applying" }]);
         throw new Error("stale AI edit cannot be applied");
       }
-      if (!projectPathRef.current) {
+      if (!isProjectOpen(projectNameRef.current)) {
         setLog((p) => [...p, { level: "error", text: "AI edit: open a project first" }]);
         throw new Error("no project open");
       }
@@ -812,7 +829,9 @@ export default function App() {
           }
         }
 
-        await invoke("write_file", { path, content: contentToWrite });
+        if (projectPathRef.current) {
+          await invoke("write_file", { path, content: contentToWrite });
+        }
 
         // Sync any open tab pointing at this path.
         const matchTab = tabsRef.current.find((t) => t.path === path);
@@ -826,8 +845,8 @@ export default function App() {
           );
         }
 
+        let updatedTabs = tabsRef.current;
         if (edit.kind === "create") {
-          let updatedTabs = tabsRef.current;
           if (matchTab) {
             setActiveId(matchTab.id);
           } else {
@@ -837,10 +856,14 @@ export default function App() {
             setTabs(updatedTabs);
             setActiveId(newTab.id);
           }
-          const updatedPrograms = projectProgramsRef.current.some((p) => p.path === path)
-            ? projectProgramsRef.current
-            : [...projectProgramsRef.current, { path, content: contentToWrite }];
-          setProjectPrograms(updatedPrograms);
+        }
+        const updatedPrograms = projectProgramsRef.current.some((p) => p.path === path)
+          ? projectProgramsRef.current.map((p) =>
+              p.path === path ? { ...p, content: contentToWrite } : p,
+            )
+          : [...projectProgramsRef.current, { path, content: contentToWrite }];
+        setProjectPrograms(updatedPrograms);
+        if (projectPathRef.current && edit.kind === "create") {
           await performSaveProject(false, updatedTabs, updatedPrograms);
         }
         setLog((p) => [
@@ -881,7 +904,7 @@ export default function App() {
     const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
     if (!tab) return;
 
-    if (projectPathRef.current) {
+    if (isProjectOpen(projectNameRef.current)) {
       // If project is open, save directly inside project file
       let path = tab.path;
       if (!path) {
@@ -948,7 +971,7 @@ export default function App() {
   // ── project file operations ──────────────────────────────────────────
   const newProject = useCallback(() => {
     setProjectPath(null);
-    setProjectName(null);
+    setProjectName(INITIAL_WORKSPACE.projectName);
     setProjectPrograms([]);
   }, []);
 
@@ -1122,7 +1145,7 @@ export default function App() {
           { separator: true },
           { label: "Save", shortcut: "Ctrl+S", onClick: saveActiveTab },
           { label: "Save As…", onClick: saveActiveTabAs },
-          ...(projectPath
+          ...(hasProject
             ? [{ label: "Save to Standalone SAS File…", onClick: saveActiveTabAs }]
             : []),
           { separator: true },
@@ -1279,7 +1302,9 @@ export default function App() {
       clearLog,
       clearOutputs,
       showBottomPane,
-      projectPath,
+      showAIPanel,
+      hasProject,
+      projectPrograms,
     ],
   );
 
@@ -1312,10 +1337,10 @@ export default function App() {
         <button
           className="toolbar-btn"
           onClick={saveActiveTab}
-          title={projectPath ? "Save to Project (Ctrl+S)" : "Save (Ctrl+S)"}
+          title={hasProject ? "Save to Project (Ctrl+S)" : "Save (Ctrl+S)"}
         >
           <span className="toolbar-icon">💾</span>
-          {projectPath ? "Save to Project" : "Save"}
+          {hasProject ? "Save to Project" : "Save"}
         </button>
         <button
           className="toolbar-btn"
@@ -1333,6 +1358,15 @@ export default function App() {
         >
           <span className="toolbar-icon">🔍</span>
           Find
+        </button>
+        <button
+          className="toolbar-btn"
+          onClick={() => setShowAIPanel((s) => !s)}
+          title={showAIPanel ? "Hide Agent Panel" : "Show Agent Panel"}
+          aria-pressed={showAIPanel}
+        >
+          <span className="toolbar-icon">▣</span>
+          Agent Panel
         </button>
       </div>
 
@@ -1377,8 +1411,8 @@ export default function App() {
         className="main"
         style={{
           gridTemplateColumns: showAIPanel
-            ? `${sidebarW}px 4px 1fr 4px ${aiPanelW}px`
-            : `${sidebarW}px 4px 1fr`,
+            ? `${sidebarW}px 4px minmax(0, 1fr) 4px ${aiPanelW}px`
+            : `${sidebarW}px 4px minmax(0, 1fr)`,
         }}
       >
         <aside
@@ -1439,18 +1473,18 @@ export default function App() {
               ? {
                   gridTemplateColumns: showBottomPane
                     ? bottomW !== null
-                      ? `1fr 4px ${bottomW}px`
-                      : "1fr 4px 1fr"
-                    : "1fr",
-                  gridTemplateRows: "1fr",
+                      ? `minmax(0, 1fr) 4px ${bottomW}px`
+                      : "minmax(0, 1fr) 4px minmax(0, 1fr)"
+                    : "minmax(0, 1fr)",
+                  gridTemplateRows: "minmax(0, 1fr)",
                 }
               : {
                   gridTemplateRows: showBottomPane
                     ? bottomH !== null
-                      ? `1fr 4px ${bottomH}px`
-                      : "1fr 4px 1fr"
-                    : "1fr",
-                  gridTemplateColumns: "1fr",
+                      ? `minmax(0, 1fr) 4px ${bottomH}px`
+                      : "minmax(0, 1fr) 4px minmax(0, 1fr)"
+                    : "minmax(0, 1fr)",
+                  gridTemplateColumns: "minmax(0, 1fr)",
                 }
           }
         >
@@ -1605,7 +1639,7 @@ export default function App() {
               readEditFile={readEditFile}
               onApplyEdit={handleApplyEdit}
               onReviewEdit={handleReviewEdit}
-              isProjectOpen={!!projectPath}
+              isProjectOpen={hasProject}
               customTrigger={aiTrigger}
               workspaceContext={workspaceContext}
             />
@@ -1698,6 +1732,7 @@ function OutputView({ blocks }: { blocks: ResultBlock[] }) {
 function BlockTable({ block, index }: { block: ResultBlock; index: number }) {
   return (
     <div className="block">
+      {block.title && <div className="block-title">{block.title}</div>}
       <div className="block-header">
         Result #{index + 1} — {block.rows.length} row(s)
         {block.truncated ? " (truncated)" : ""}
