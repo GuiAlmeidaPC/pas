@@ -10,13 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Renamed the AI assistant to **"Agent"** throughout the UI (panel title, View
   menu, setup dialog, and the editor right-click actions).
+- PAS now opens with the Agent panel visible by default and starts in an
+  unsaved project workspace so Agent-created programs can be collected and
+  saved as a project later.
+- Output tables now stay constrained to the output pane and scroll horizontally
+  instead of widening into the Agent panel.
+- `PROC PRINT` output now displays the active SAS `title` statement above the
+  result table.
 
 ### Added
+
+### Fixed
+- DATA step `merge` now accepts per-dataset `in=` options (for example
+  `merge emps(in=e) depts(in=d);`) and populates the resulting 0/1 flags so
+  post-merge filtering like `if e;` and unmatched-row handling like
+  `if e and not d then ...;` work as expected.
+- Toolbar: an **Agent Panel** button next to Find for quickly showing or hiding
+  the Agent panel.
+- Agent panel: a compact loading indicator appears while a response is being
+  generated, then streamed text replaces it as soon as content arrives.
+- Agent panel: responses now stream into the chat as text arrives from
+  OpenAI-compatible, Anthropic, and ChatGPT OAuth providers.
 - DATA step **informat / column input**: modified-list input (`var :informat.`),
   fixed-width formatted input (`var informat.`), and **column-range input**
   (`var [$] start-end`), all driven by a column pointer. Informats: `$charW.`,
   `$w.`, `w.d`, `dateW.` (→ SAS date serial), and `commaW.d` / `dollarW.d`. The
-  `format` / `informat` / `label` statements are accepted (not yet applied).
+  `format` statement is applied for supported display formats in dataset pages
+  and PROC PRINT; `informat` / `label` statements are accepted but not applied.
   See `DIVERGENCE.md` §1.6.
 - Agent panel: a **model selector** in the header for switching models on the
   fly without opening Setup. The list is fetched live from the provider's
