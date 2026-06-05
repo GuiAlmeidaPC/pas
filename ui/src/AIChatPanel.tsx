@@ -127,19 +127,33 @@ export function AIChatPanel({
     await refreshOauthStatus();
   };
 
-  // Load non-secret configuration from localStorage on mount.
+  // Load AI config on mount: prefer the persisted backend config (includes
+  // API key), then fall back to the public localStorage cache.
   useEffect(() => {
     localStorage.removeItem("pas.ai_config");
-    const saved = localStorage.getItem("pas.ai_config_public");
-    if (saved) {
+    (async () => {
       try {
-        const parsed = JSON.parse(saved);
-        setConfig({ ...parsed, apiKey: "" });
-        loadCachedModels({ ...parsed, apiKey: "" });
+        const backend = await invoke<AIConfig | null>("get_ai_config");
+        if (backend) {
+          setConfig(backend);
+          persistPublicConfig(backend);
+          loadCachedModels(backend);
+          return;
+        }
       } catch (e) {
-        console.error("Failed to parse saved AI config", e);
+        console.error("Failed to load AI config from backend", e);
       }
-    }
+      const saved = localStorage.getItem("pas.ai_config_public");
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          setConfig({ ...parsed, apiKey: "" });
+          loadCachedModels({ ...parsed, apiKey: "" });
+        } catch (e) {
+          console.error("Failed to parse saved AI config", e);
+        }
+      }
+    })();
   }, []);
 
   useLayoutEffect(() => {

@@ -107,13 +107,15 @@ describe("AIChatPanel", () => {
     vi.mocked(tauriCore.invoke).mockImplementation((cmd: string) => {
       if (cmd === "openai_oauth_status") return Promise.resolve({ signedIn: false });
       if (cmd === "list_ai_models") return Promise.reject(new Error("offline"));
+      if (cmd === "get_ai_config") return Promise.resolve(null);
       if (cmd === "ai_completion_stream") return completion.promise;
       return Promise.resolve(null);
     });
 
     renderPanel();
 
-    await userEvent.type(screen.getByPlaceholderText(/ask openai agent/i), "Create a report");
+    const prompt = await screen.findByPlaceholderText(/ask openai agent/i);
+    await userEvent.type(prompt, "Create a report");
     await userEvent.click(screen.getByRole("button", { name: /send/i }));
 
     expect(await screen.findByLabelText(/agent is working/i)).toBeInTheDocument();
@@ -137,6 +139,7 @@ describe("AIChatPanel", () => {
     vi.mocked(tauriCore.invoke).mockImplementation((cmd: string, args?: unknown) => {
       if (cmd === "openai_oauth_status") return Promise.resolve({ signedIn: false });
       if (cmd === "list_ai_models") return Promise.reject(new Error("offline"));
+      if (cmd === "get_ai_config") return Promise.resolve(null);
       if (cmd === "ai_completion_stream") {
         activeRequestId = (args as { requestId: string }).requestId;
         return streamDone.promise;
@@ -146,7 +149,8 @@ describe("AIChatPanel", () => {
 
     renderPanel();
 
-    await userEvent.type(screen.getByPlaceholderText(/ask openai agent/i), "Create a report");
+    const prompt = await screen.findByPlaceholderText(/ask openai agent/i);
+    await userEvent.type(prompt, "Create a report");
     await userEvent.click(screen.getByRole("button", { name: /send/i }));
 
     await waitFor(() => expect(tauriEvent.listen).toHaveBeenCalledWith("pas://ai-stream", expect.any(Function)));

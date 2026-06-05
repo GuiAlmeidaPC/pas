@@ -118,12 +118,14 @@ struct AiStreamPayload {
     message: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StoredAiConfig {
     provider: String,
     api_key: String,
     model: String,
     custom_url: Option<String>,
+    auth_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -689,7 +691,11 @@ fn validate_https_url(url: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_ai_config(config: AiConfigInput, state: State<'_, AppState>) -> Result<(), String> {
+fn set_ai_config(
+    config: AiConfigInput,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     validate_ai_provider(&config.provider)?;
     let is_chatgpt = config.provider == "openai" && config.auth_mode.as_deref() == Some("chatgpt");
     if !is_chatgpt && config.api_key.trim().is_empty() {
@@ -710,21 +716,39 @@ fn set_ai_config(config: AiConfigInput, state: State<'_, AppState>) -> Result<()
         api_key: config.api_key,
         model: config.model,
         custom_url: config.custom_url.filter(|u| !u.trim().is_empty()),
+        auth_mode: config.auth_mode,
     };
     *state
         .ai_config
         .lock()
-        .map_err(|_| "AI config lock poisoned")? = Some(stored);
+        .map_err(|_| "AI config lock poisoned")? = Some(stored.clone());
+    save_ai_config_to_disk(&app, &stored)?;
     Ok(())
 }
 
 #[tauri::command]
-fn clear_ai_config(state: State<'_, AppState>) -> Result<(), String> {
+fn clear_ai_config(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     *state
         .ai_config
         .lock()
         .map_err(|_| "AI config lock poisoned")? = None;
+    delete_ai_config_from_disk(&app);
     Ok(())
+}
+
+#[tauri::command]
+fn get_ai_config(state: State<'_, AppState>) -> Result<Option<AiConfigInput>, String> {
+    let guard = state
+        .ai_config
+        .lock()
+        .map_err(|_| "AI config lock poisoned")?;
+    Ok(guard.as_ref().map(|s| AiConfigInput {
+        provider: s.provider.clone(),
+        api_key: s.api_key.clone(),
+        model: s.model.clone(),
+        custom_url: s.custom_url.clone(),
+        auth_mode: s.auth_mode.clone(),
+    }))
 }
 
 fn chatgpt_token_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -745,6 +769,64 @@ fn save_chatgpt_tokens(app: &AppHandle, tokens: &oauth::StoredTokens) -> Result<
     let key = oauth::derive_key(path.parent().ok_or("no parent dir for token file")?);
     let blob = oauth::encrypt_tokens(&key, tokens)?;
     std::fs::write(&path, blob).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// AI config persistence (encrypted at rest)
+// ---------------------------------------------------------------------------
+
+fn ai_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("ai_config.enc"))
+}
+
+fn encrypt_ai_config(key: &[u8; 32], config: &StoredAiConfig) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    use rand::RngCore;
+    let cipher = Aes256Gcm::new(key.into());
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let plaintext = serde_json::to_vec(config).map_err(|e| e.to_string())?;
+    let ct = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_ref())
+        .map_err(|e| format!("encrypt: {e}"))?;
+    let mut out = nonce_bytes.to_vec();
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+fn decrypt_ai_config(key: &[u8; 32], blob: &[u8]) -> Option<StoredAiConfig> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    if blob.len() < 12 {
+        return None;
+    }
+    let (nonce_bytes, ct) = blob.split_at(12);
+    let cipher = Aes256Gcm::new(key.into());
+    let plaintext = cipher.decrypt(Nonce::from_slice(nonce_bytes), ct).ok()?;
+    serde_json::from_slice(&plaintext).ok()
+}
+
+fn save_ai_config_to_disk(app: &AppHandle, config: &StoredAiConfig) -> Result<(), String> {
+    let path = ai_config_path(app)?;
+    let key = oauth::derive_key(path.parent().ok_or("no parent dir for ai config file")?);
+    let blob = encrypt_ai_config(&key, config)?;
+    std::fs::write(&path, blob).map_err(|e| e.to_string())
+}
+
+fn load_ai_config_from_disk(app: &AppHandle) -> Option<StoredAiConfig> {
+    let path = ai_config_path(app).ok()?;
+    let key = oauth::derive_key(path.parent()?);
+    let blob = std::fs::read(&path).ok()?;
+    decrypt_ai_config(&key, &blob)
+}
+
+fn delete_ai_config_from_disk(app: &AppHandle) {
+    if let Ok(path) = ai_config_path(app) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1564,6 +1646,14 @@ pub fn run() {
                     }
                 }
             }
+            // Restore a previously saved AI config (including API key), if any.
+            if let Some(cfg) = load_ai_config_from_disk(app.handle()) {
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut g) = state.ai_config.lock() {
+                        *g = Some(cfg);
+                    }
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1583,6 +1673,7 @@ pub fn run() {
             apply_project_libnames,
             set_ai_config,
             clear_ai_config,
+            get_ai_config,
             ai_completion,
             ai_completion_stream,
             list_ai_models,
