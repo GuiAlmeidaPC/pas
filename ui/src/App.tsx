@@ -208,6 +208,7 @@ export default function App() {
     | { edit: ProposedEdit; resolved: ResolvedEdit }
     | null
   >(null);
+  const [appliedEditPaths, setAppliedEditPaths] = useState<Set<string>>(new Set());
 
   const [schemaContext, setSchemaContext] = useState<string>("");
 
@@ -866,6 +867,7 @@ export default function App() {
         if (projectPathRef.current && edit.kind === "create") {
           await performSaveProject(false, updatedTabs, updatedPrograms);
         }
+        setAppliedEditPaths((p) => new Set([...p, path]));
         setLog((p) => [
           ...p,
           { level: "note", text: `NOTE: AI edit applied to ${basename(path)}` },
@@ -1642,6 +1644,7 @@ export default function App() {
               isProjectOpen={hasProject}
               customTrigger={aiTrigger}
               workspaceContext={workspaceContext}
+              appliedEditPaths={appliedEditPaths}
             />
           </>
         )}

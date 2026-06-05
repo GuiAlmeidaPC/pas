@@ -39,6 +39,7 @@ interface Props {
   readEditFile: (path: string) => Promise<EditFileSnapshot>;
   onApplyEdit: (edit: ProposedEdit, resolved: ResolvedEdit) => Promise<void>;
   onReviewEdit: (edit: ProposedEdit, resolved: ResolvedEdit) => void;
+  appliedEditPaths?: Set<string>;
 }
 
 export function AIChatPanel({
@@ -54,6 +55,7 @@ export function AIChatPanel({
   readEditFile,
   onApplyEdit,
   onReviewEdit,
+  appliedEditPaths,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -558,6 +560,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
               readFile={readEditFile}
               onApply={onApplyEdit}
               onReview={onReviewEdit}
+              appliedPaths={appliedEditPaths}
             />
           );
         }

@@ -15,6 +15,7 @@ interface Props {
   readFile?: (path: string) => Promise<EditFileSnapshot>;
   onApply: (edit: ProposedEdit, resolved: ResolvedEdit) => Promise<void>;
   onReview: (edit: ProposedEdit, resolved: ResolvedEdit) => void;
+  appliedPaths?: Set<string>;
 }
 
 type Resolved =
@@ -34,9 +35,16 @@ function isNotFoundError(e: unknown): boolean {
   return message.includes("not found") || message.includes("no such file") || message.includes("os error 2");
 }
 
-export function AIEditCard({ edit, isProjectOpen, readFile, onApply, onReview }: Props) {
+export function AIEditCard({ edit, isProjectOpen, readFile, onApply, onReview, appliedPaths }: Props) {
   const [resolved, setResolved] = useState<Resolved>({ state: "loading" });
   const [status, setStatus] = useState<CardStatus>("pending");
+
+  // Sync internal status when the edit is applied externally (e.g. from the modal).
+  useEffect(() => {
+    if (edit.path && appliedPaths?.has(edit.path) && status === "pending") {
+      setStatus("applied");
+    }
+  }, [appliedPaths, edit.path, status]);
 
   const modeBadge = edit.kind === "create" ? "new" : edit.kind === "error" ? "error" : "modified";
 
@@ -120,8 +128,9 @@ export function AIEditCard({ edit, isProjectOpen, readFile, onApply, onReview }:
   const canAccept = useMemo(() => {
     if (!isProjectOpen) return false;
     if (status !== "pending") return false;
+    if (edit.path && appliedPaths?.has(edit.path)) return false;
     return resolved.state === "ready";
-  }, [isProjectOpen, status, resolved]);
+  }, [isProjectOpen, status, resolved, appliedPaths, edit.path]);
 
   const handleAccept = async () => {
     if (resolved.state !== "ready") return;
