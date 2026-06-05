@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-05
+
 ### Changed
 - Renamed the AI assistant to **"Agent"** throughout the UI (panel title, View
   menu, setup dialog, and the editor right-click actions).
@@ -18,9 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PROC PRINT` output now displays the active SAS `title` statement above the
   result table.
 
-### Added
-
 ### Fixed
+- The engine no longer aborts a run (or wedges the session) when a statement
+  triggers an internal panic. Such failures — e.g. out-of-range date
+  arithmetic in `intnx`/`intck` — are caught per statement, reported as an
+  `ERROR:` in the log, and the run still finishes cleanly. Shared engine state
+  is acquired with poison recovery, so one bad statement can no longer brick
+  subsequent submissions, and the UI always receives a terminal completion
+  event instead of spinning forever.
 - DATA step `merge` now accepts per-dataset `in=` options (for example
   `merge emps(in=e) depts(in=d);`) and populates the resulting 0/1 flags so
   post-merge filtering like `if e;` and unmatched-row handling like
@@ -80,5 +87,6 @@ First tagged release.
 - Tag-based release workflow producing Linux (`.AppImage`, `.deb`), Windows
   (`.msi`, `.exe`), and unsigned macOS (`.dmg`) bundles with SHA-256 checksums.
 
-[Unreleased]: https://github.com/GuiAlmeidaPC/pas/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/GuiAlmeidaPC/pas/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/GuiAlmeidaPC/pas/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/GuiAlmeidaPC/pas/releases/tag/v0.1.0

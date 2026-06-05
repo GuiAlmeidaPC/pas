@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "pas-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -2895,7 +2895,7 @@ dependencies = [
 
 [[package]]
 name = "pas-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "chrono",
