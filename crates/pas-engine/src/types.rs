@@ -34,6 +34,8 @@ pub struct SourceSpan {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResultBlock {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub columns: Vec<Column>,
     pub rows: Vec<Vec<Value>>,
     pub truncated: bool,
@@ -45,7 +47,7 @@ pub struct Column {
     pub ty: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum Value {
     Null,

@@ -93,6 +93,40 @@ mod tests {
     }
 
     #[test]
+    fn dataset_page_applies_data_step_formats_for_display() {
+        let s = Session::new_in_memory().unwrap();
+        let evs = s.submit(
+            r#"
+            data pay;
+                format hire_date date9. base_salary dollar12.2;
+                input hire_date :date9. base_salary;
+                datalines;
+            15JAN2021 62000
+            ;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+
+        let page = s.dataset_page("work", "pay", 0, 100, None).unwrap();
+        assert_eq!(page.rows[0][0], Value::Text("15JAN2021".into()));
+        assert_eq!(page.rows[0][1], Value::Text("$62,000.00".into()));
+
+        let evs = s.submit("proc sql; select hire_date, base_salary from pay; quit;");
+        let output = evs.iter().find_map(|e| match e {
+            Event::Output { block } => Some(block),
+            _ => None,
+        });
+        let block = output.expect("expected PROC SQL output");
+        assert_eq!(block.rows[0][0], Value::Float(22295.0));
+        assert_eq!(block.rows[0][1], Value::Float(62000.0));
+    }
+
+    #[test]
     fn doubled_quote_inside_string_does_not_break_libref_rewrite() {
         // Regression: the libref rewriter used to terminate strings at
         // the first matching quote, treating SAS-style '' escapes as
@@ -437,6 +471,94 @@ mod tests {
     }
 
     #[test]
+    fn data_step_unterminated_datalines_reports_error() {
+        let s = Session::new_in_memory().unwrap();
+        let evs = s.submit(
+            "data employees;\n  input emp_id :$6. name $15. dept $10. hire_date date9. base_salary;\n  format hire_date yymmdd10.;\n  datalines;\nE001   Jane Doe        Sales      01JAN2020 4500\nrun;\n",
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e, Event::Error { text, .. } if text.contains("unterminated datalines block"))),
+            "{:?}",
+            evs
+        );
+        assert!(
+            !evs.iter()
+                .any(|e| matches!(e, Event::Note { text } if text == "No statements found.")),
+            "{:?}",
+            evs
+        );
+    }
+
+    #[test]
+    fn consecutive_data_steps_before_final_run_are_split() {
+        let s = Session::new_in_memory().unwrap();
+        let evs = s.submit(
+            r#"
+            data customers;
+                input cust_id name $ city $;
+                datalines;
+            1 Alice Seattle
+            2 Bob Portland
+            ;
+
+            data products;
+                input prod_id product_name $ 1-12 price;
+                datalines;
+            101 Widget       10.00
+            102 Gadget       15.00
+            ;
+
+            data orders;
+                input order_id cust_id prod_id quantity;
+                datalines;
+            1001 1 101 2
+            1002 1 102 1
+            ;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let datasets = s.list_datasets("work").unwrap();
+        assert!(
+            datasets.iter().any(|d| d.name == "customers"),
+            "{:?}",
+            datasets
+        );
+        assert!(
+            datasets.iter().any(|d| d.name == "products"),
+            "{:?}",
+            datasets
+        );
+        assert!(
+            datasets.iter().any(|d| d.name == "orders"),
+            "{:?}",
+            datasets
+        );
+        assert_eq!(
+            s.dataset_page("work", "customers", 0, 10, None)
+                .unwrap()
+                .total_rows,
+            2
+        );
+        assert_eq!(
+            s.dataset_page("work", "products", 0, 10, None)
+                .unwrap()
+                .total_rows,
+            2
+        );
+        assert_eq!(
+            s.dataset_page("work", "orders", 0, 10, None)
+                .unwrap()
+                .total_rows,
+            2
+        );
+    }
+
+    #[test]
     fn data_step_merge_streams_through_cursors() {
         // 200K left + 200K right with overlapping by-keys. Old impl held
         // both fully materialized in Rust HashMaps. New impl snapshots
@@ -734,6 +856,32 @@ mod tests {
             assert_eq!(block.rows.len(), 2);
             assert_eq!(block.columns[0].name, "x");
         }
+    }
+
+    #[test]
+    fn proc_print_uses_active_title_for_output_block() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table dept_salary_summary as select 'IT' as dept, 8500 as salary;");
+        let evs = s.submit(
+            r#"
+            title "Department Salary Summary";
+            proc print data=dept_salary_summary;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let block = evs
+            .iter()
+            .find_map(|e| match e {
+                Event::Output { block } => Some(block),
+                _ => None,
+            })
+            .expect("expected PROC PRINT output");
+        assert_eq!(block.title.as_deref(), Some("Department Salary Summary"));
     }
 
     #[test]
@@ -1075,6 +1223,42 @@ mod tests {
         let page = s.dataset_page("work", "o", 0, 100, None).unwrap();
         // id=1 → 2 rows (name=a broadcast), id=2 → 1 row, id=3 → 1 row (score null) = 4 total
         assert_eq!(page.total_rows, 4);
+    }
+
+    #[test]
+    fn data_step_merge_supports_in_dataset_option() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit(
+            "create table emps_sorted as select * from (values (1,10,'Ada'),(2,20,'Bob'),(3,30,'Cid')) as t(emp_id, dept_id, emp_name);",
+        );
+        s.submit(
+            "create table depts_sorted as select * from (values (10,'IT'),(20,'HR')) as t(dept_id, dept_name);",
+        );
+        let evs = s.submit(
+            r#"
+            data merge_demo;
+                merge emps_sorted(in=e) depts_sorted(in=d);
+                by dept_id;
+                if e;
+                if e and not d then dept_name = 'Unknown';
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "merge_demo", 0, 10, None).unwrap();
+        assert_eq!(page.total_rows, 3);
+        let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
+        let txt = |row: usize, n: &str| match &page.rows[row][by(n)] {
+            crate::Value::Text(s) => s.clone(),
+            other => panic!("{} row {}: expected text, got {:?}", n, row, other),
+        };
+        assert_eq!(txt(0, "dept_name"), "IT");
+        assert_eq!(txt(1, "dept_name"), "HR");
+        assert_eq!(txt(2, "dept_name"), "Unknown");
     }
 
     #[test]

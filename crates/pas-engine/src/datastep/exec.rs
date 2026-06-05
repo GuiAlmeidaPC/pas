@@ -93,9 +93,15 @@ impl WriteTarget {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ResolvedSource {
+    pub from: String,
+    pub in_var: Option<String>,
+}
+
 pub enum ResolvedInput {
-    Set(Vec<String>),
-    Merge(Vec<String>),
+    Set(Vec<ResolvedSource>),
+    Merge(Vec<ResolvedSource>),
 }
 
 pub struct ResolvedDataStep<'a> {
@@ -432,6 +438,14 @@ pub fn run_data_step(
         let i = pdv.ensure(&iv.name, iv.is_char);
         pdv.from_source[i] = true;
     }
+    if let Some(sources) = input_sources(&plan.input) {
+        for source in sources {
+            if let Some(name) = &source.in_var {
+                let i = pdv.ensure(name, false);
+                pdv.from_source[i] = true;
+            }
+        }
+    }
 
     // 2. Discover source schemas via DESCRIBE (cheap, no row scan).
     let source_schemas = discover_source_schemas(conn, &plan.input)?;
@@ -608,18 +622,23 @@ fn create_table_with_schema(
 
 // ── Input streaming ───────────────────────────────────────────────────────
 
+fn input_sources(input: &Option<ResolvedInput>) -> Option<&[ResolvedSource]> {
+    match input {
+        Some(ResolvedInput::Set(s)) | Some(ResolvedInput::Merge(s)) => Some(s.as_slice()),
+        None => None,
+    }
+}
+
 fn discover_source_schemas(
     conn: &Connection,
     input: &Option<ResolvedInput>,
 ) -> Result<Vec<Vec<(String, bool)>>, DataStepError> {
-    let sources: Vec<&String> = match input {
-        Some(ResolvedInput::Set(s)) => s.iter().collect(),
-        Some(ResolvedInput::Merge(s)) => s.iter().collect(),
-        None => return Ok(Vec::new()),
+    let Some(sources) = input_sources(input) else {
+        return Ok(Vec::new());
     };
     let mut out = Vec::with_capacity(sources.len());
-    for from in sources {
-        out.push(describe_query(conn, from)?);
+    for source in sources {
+        out.push(describe_query(conn, &source.from)?);
     }
     Ok(out)
 }
@@ -669,8 +688,16 @@ where
             }
         }
         Some(ResolvedInput::Set(sources)) => {
-            for (src_idx, from) in sources.iter().enumerate() {
-                stream_set_source(conn, from, &ds.by, &source_schemas[src_idx], &mut visit)?;
+            let in_vars: Vec<String> = sources.iter().filter_map(|s| s.in_var.clone()).collect();
+            for (src_idx, source) in sources.iter().enumerate() {
+                stream_set_source(
+                    conn,
+                    source,
+                    &in_vars,
+                    &ds.by,
+                    &source_schemas[src_idx],
+                    &mut visit,
+                )?;
             }
         }
         Some(ResolvedInput::Merge(sources)) => {
@@ -697,7 +724,8 @@ where
 
 fn stream_set_source<F>(
     conn: &Connection,
-    from: &str,
+    source: &ResolvedSource,
+    all_in_vars: &[String],
     by: &[String],
     schema: &[(String, bool)],
     visit: &mut F,
@@ -711,12 +739,18 @@ where
         let cols: Vec<String> = by.iter().map(|v| crate::quote_ident(v)).collect();
         format!(" ORDER BY {}", cols.join(", "))
     };
-    let sql = format!("SELECT * FROM {}{}", from, order_sql);
+    let sql = format!("SELECT * FROM {}{}", source.from, order_sql);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
     let col_count = rows.as_ref().map(|s| s.column_count()).unwrap_or(0);
     while let Some(row) = rows.next()? {
-        let mut src_row = SourceRow::with_capacity(col_count);
+        let mut src_row = SourceRow::with_capacity(col_count + all_in_vars.len());
+        for name in all_in_vars {
+            src_row.insert(name.to_ascii_lowercase(), RtValue::Num(0.0));
+        }
+        if let Some(name) = &source.in_var {
+            src_row.insert(name.to_ascii_lowercase(), RtValue::Num(1.0));
+        }
         for i in 0..col_count {
             let v: DV = row.get(i)?;
             let name = schema
@@ -1135,7 +1169,7 @@ impl MergeCursor {
 
 fn stream_merge<F>(
     conn: &Connection,
-    sources: &[String],
+    sources: &[ResolvedSource],
     by: &[String],
     source_schemas: &[Vec<(String, bool)>],
     visit: &mut F,
@@ -1152,11 +1186,11 @@ where
     // 1. Snapshot each source into a TEMP table sorted by the by-vars.
     let mut cursors: Vec<MergeCursor> = Vec::with_capacity(sources.len());
     let mut temp_names: Vec<String> = Vec::with_capacity(sources.len());
-    for (i, from) in sources.iter().enumerate() {
+    for (i, source) in sources.iter().enumerate() {
         let temp = format!("pas_merge_tmp_{}", uuid::Uuid::new_v4().simple());
         let create = format!(
             "CREATE OR REPLACE TEMP TABLE \"{}\" AS SELECT * FROM {} ORDER BY {}",
-            temp, from, order_clause
+            temp, source.from, order_clause
         );
         conn.execute(&create, [])?;
         let schema = source_schemas.get(i).cloned().unwrap_or_default();
@@ -1214,7 +1248,13 @@ where
             let group_size = group_per_src.iter().map(|g| g.len()).max().unwrap_or(0);
             for r in 0..group_size {
                 let mut merged = SourceRow::new();
-                for group in &group_per_src {
+                for (src_idx, group) in group_per_src.iter().enumerate() {
+                    if let Some(name) = &sources[src_idx].in_var {
+                        merged.insert(
+                            name.to_ascii_lowercase(),
+                            RtValue::Num(if group.is_empty() { 0.0 } else { 1.0 }),
+                        );
+                    }
                     if group.is_empty() {
                         continue;
                     }

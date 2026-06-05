@@ -114,6 +114,7 @@ impl<'a> Parser<'a> {
             lengths: Vec::new(),
             retain: Vec::new(),
             arrays: Vec::new(),
+            formats: Vec::new(),
             input_vars: Vec::new(),
             datalines: Vec::new(),
             infile: None,
@@ -146,23 +147,60 @@ impl<'a> Parser<'a> {
             Tok::Ident(s) => s,
             other => return Err(self.err(format!("expected dataset name, got {:?}", other))),
         };
-        if self.eat(&Tok::Dot) {
+        let (libref, name) = if self.eat(&Tok::Dot) {
             let name = match self.bump() {
                 Tok::Ident(s) => s,
                 other => {
                     return Err(self.err(format!("expected table name after dot, got {:?}", other)))
                 }
             };
-            Ok(TableRef {
-                libref: Some(first),
-                name,
-            })
+            (Some(first), name)
         } else {
-            Ok(TableRef {
-                libref: None,
-                name: first,
-            })
+            (None, first)
+        };
+        let mut in_var = None;
+        if self.eat(&Tok::LParen) {
+            loop {
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+                let option = match self.bump() {
+                    Tok::Ident(s) => s,
+                    other => {
+                        return Err(
+                            self.err(format!("expected dataset option name, got {:?}", other))
+                        )
+                    }
+                };
+                self.expect(&Tok::Eq, "dataset option")?;
+                match option.as_str() {
+                    "in" => {
+                        let flag = match self.bump() {
+                            Tok::Ident(s) => s,
+                            other => {
+                                return Err(self.err(format!(
+                                    "expected variable name for in=, got {:?}",
+                                    other
+                                )))
+                            }
+                        };
+                        if in_var.replace(flag).is_some() {
+                            return Err(self.err("duplicate in= dataset option".into()));
+                        }
+                    }
+                    other => {
+                        return Err(
+                            self.err(format!("dataset option '{}' is not supported yet", other))
+                        )
+                    }
+                }
+            }
         }
+        Ok(TableRef {
+            libref,
+            name,
+            in_var,
+        })
     }
 
     fn parse_top_stmt(&mut self, ds: &mut DataStep) -> Result<(), ParseError> {
@@ -264,13 +302,18 @@ impl<'a> Parser<'a> {
             self.expect(&Tok::Semi, "datalines")?;
             return Ok(());
         }
-        // `format` / `informat` / `label` are accepted and recorded as no-ops.
-        // (Display formatting is not applied yet — see DIVERGENCE.md §1.6.)
-        if self.eat_keyword("format") || self.eat_keyword("informat") || self.eat_keyword("label") {
+        if self.eat_keyword("format") {
+            let formats = self.parse_format_decls()?;
+            self.expect(&Tok::Semi, "format")?;
+            ds.formats.extend(formats);
+            return Ok(());
+        }
+        // `informat` / `label` are accepted as no-ops for compatibility.
+        if self.eat_keyword("informat") || self.eat_keyword("label") {
             while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
                 self.bump();
             }
-            self.expect(&Tok::Semi, "format/informat/label")?;
+            self.expect(&Tok::Semi, "informat/label")?;
             return Ok(());
         }
 
@@ -343,6 +386,58 @@ impl<'a> Parser<'a> {
                 _ => None,
             };
             out.push(RetainDecl { name, initial });
+        }
+        Ok(out)
+    }
+
+    fn parse_format_decls(&mut self) -> Result<Vec<FormatDecl>, ParseError> {
+        let mut out = Vec::new();
+        let mut names = Vec::new();
+        while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+            match self.peek() {
+                Tok::Ident(_) => {
+                    let run = self.raw_run_at_current();
+                    if run.contains('.') {
+                        if names.is_empty() {
+                            return Err(self.err("format requires at least one variable".into()));
+                        }
+                        let format = run.to_string();
+                        self.advance_past(run);
+                        for name in names.drain(..) {
+                            out.push(FormatDecl {
+                                name,
+                                format: format.clone(),
+                            });
+                        }
+                    } else if let Tok::Ident(name) = self.bump() {
+                        names.push(name);
+                    }
+                }
+                Tok::Dollar | Tok::Number(_) => {
+                    let run = self.raw_run_at_current();
+                    if run.is_empty() || !run.contains('.') {
+                        return Err(self.err(format!("expected format, got {:?}", self.peek())));
+                    }
+                    if names.is_empty() {
+                        return Err(self.err("format requires at least one variable".into()));
+                    }
+                    let format = run.to_string();
+                    self.advance_past(run);
+                    for name in names.drain(..) {
+                        out.push(FormatDecl {
+                            name,
+                            format: format.clone(),
+                        });
+                    }
+                }
+                Tok::Comma => {
+                    self.bump();
+                }
+                other => return Err(self.err(format!("unexpected token in format: {:?}", other))),
+            }
+        }
+        if !names.is_empty() {
+            return Err(self.err("format statement missing format specifier".into()));
         }
         Ok(out)
     }
@@ -1161,7 +1256,19 @@ mod tests {
     #[test]
     fn format_statement_is_accepted() {
         let ds = parse_data_step("data t; set s; format d date9. amt dollar12.2; run;").unwrap();
-        // Parsed without error; format is a no-op so the body stays empty.
+        assert_eq!(
+            ds.formats,
+            vec![
+                FormatDecl {
+                    name: "d".into(),
+                    format: "date9.".into()
+                },
+                FormatDecl {
+                    name: "amt".into(),
+                    format: "dollar12.2".into()
+                }
+            ]
+        );
         assert!(ds.body.is_empty());
     }
 

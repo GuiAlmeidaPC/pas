@@ -83,7 +83,25 @@ impl Session {
         let mut md = base_schema.metadata().clone();
         md.insert("total_rows".to_string(), total.to_string());
         md.insert("offset".to_string(), offset.to_string());
-        let schema = Arc::new(Schema::new_with_metadata(base_schema.fields().clone(), md));
+        let formats = match lib.kind {
+            LibraryKind::Memory => self.formats_for_dataset("main", name),
+            LibraryKind::Duckdb => self.formats_for_dataset(&lib.name, name),
+            LibraryKind::Dir => HashMap::new(),
+        };
+        let fields: Vec<_> = base_schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let mut field = field.as_ref().clone();
+                if let Some(format) = formats.get(&field.name().to_ascii_lowercase()) {
+                    let mut field_md = field.metadata().clone();
+                    field_md.insert("pas_format".to_string(), format.clone());
+                    field.set_metadata(field_md);
+                }
+                field
+            })
+            .collect();
+        let schema = Arc::new(Schema::new_with_metadata(fields, md));
 
         let mut buf: Vec<u8> = Vec::new();
         {
@@ -135,11 +153,13 @@ impl Session {
         let block = match run_query_params(&conn, &sql, limit as usize, &where_params)? {
             crate::query::StmtResult::Rows(b) => b,
             _ => ResultBlock {
+                title: None,
                 columns: vec![],
                 rows: vec![],
                 truncated: false,
             },
         };
+        let block = self.apply_dataset_formats(&lib, name, block);
         Ok(DatasetPage {
             columns: block.columns,
             rows: block.rows,
@@ -284,6 +304,7 @@ where
         .collect();
 
     Ok(StmtResult::Rows(ResultBlock {
+        title: None,
         columns,
         rows,
         truncated,
@@ -437,4 +458,47 @@ fn value_from_duckdb(v: duckdb::types::Value) -> Value {
         DV::Blob(b) => Value::Text(format!("<blob {} bytes>", b.len())),
         other => Value::Text(format!("{:?}", other)),
     }
+}
+
+impl Session {
+    pub(crate) fn apply_dataset_formats(
+        &self,
+        lib: &Library,
+        name: &str,
+        mut block: ResultBlock,
+    ) -> ResultBlock {
+        let schema = match lib.kind {
+            LibraryKind::Memory => "main",
+            LibraryKind::Duckdb => &lib.name,
+            LibraryKind::Dir => return block,
+        };
+        let formats = self.formats_for_dataset(schema, name);
+        if formats.is_empty() {
+            return block;
+        }
+        for (col_idx, col) in block.columns.iter().enumerate() {
+            let Some(format) = formats.get(&col.name.to_ascii_lowercase()) else {
+                continue;
+            };
+            for row in &mut block.rows {
+                if let Some(value) = row.get_mut(col_idx) {
+                    if let Ok(display) = format_value(value, format) {
+                        *value = Value::Text(display);
+                    }
+                }
+            }
+        }
+        block
+    }
+}
+
+fn format_value(value: &Value, format: &str) -> Result<String, String> {
+    let rt = match value {
+        Value::Null => crate::datastep::exec::RtValue::missing(),
+        Value::Bool(b) => crate::datastep::exec::RtValue::Num(if *b { 1.0 } else { 0.0 }),
+        Value::Int(i) => crate::datastep::exec::RtValue::Num(*i as f64),
+        Value::Float(f) => crate::datastep::exec::RtValue::Num(*f),
+        Value::Text(s) => crate::datastep::exec::RtValue::Str(s.clone()),
+    };
+    crate::datastep::funcs::put_value(&rt, format)
 }

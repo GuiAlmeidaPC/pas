@@ -544,7 +544,7 @@ fn parse_format_spec(spec: &str) -> Result<FormatSpec, String> {
     })
 }
 
-fn put_value(v: &RtValue, spec: &str) -> Result<String, String> {
+pub(crate) fn put_value(v: &RtValue, spec: &str) -> Result<String, String> {
     let fmt = parse_format_spec(spec)?;
     if fmt.is_char {
         let s = v.as_str();
@@ -565,8 +565,15 @@ fn put_value(v: &RtValue, spec: &str) -> Result<String, String> {
             Some(n) => format_number_plain(n, fmt.width, fmt.decimals),
             None => format_missing(fmt.width),
         },
-        "comma" => match n {
-            Some(n) => format_number_commas(n, fmt.width, fmt.decimals),
+        "comma" | "dollar" => match n {
+            Some(n) => {
+                let body = format_number_commas(n, fmt.width, fmt.decimals);
+                if fmt.name == "dollar" {
+                    format!("${}", body.trim_start())
+                } else {
+                    body
+                }
+            }
             None => format_missing(fmt.width),
         },
         "date" => match n.and_then(sas_date_to_naive) {

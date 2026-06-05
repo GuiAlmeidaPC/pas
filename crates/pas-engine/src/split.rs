@@ -30,6 +30,26 @@ pub enum Block {
     Statement { text: String, src_offset: usize },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SplitError {
+    UnterminatedDatalines { start_offset: usize },
+}
+
+impl std::fmt::Display for SplitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SplitError::UnterminatedDatalines { .. } => {
+                write!(
+                    f,
+                    "unterminated datalines block: missing line containing only ';'"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SplitError {}
+
 /// Remove `/* ... */` and `* ... ;` comments while preserving byte
 /// offsets — every removed byte becomes a single ASCII space.
 pub fn strip_comments(src: &str) -> String {
@@ -63,7 +83,32 @@ pub fn strip_comments(src: &str) -> String {
 /// (replaced with whitespace) and attached to the DATA step they came
 /// from.
 pub fn split_blocks(src: &str) -> Vec<Block> {
-    let (program, mut datalines_queue) = extract_datalines(src);
+    split_blocks_checked(src).unwrap_or_default()
+}
+
+fn push_data_block(
+    src: &str,
+    out: &mut Vec<Block>,
+    datalines_queue: &mut std::collections::VecDeque<Vec<String>>,
+    body_start: Option<usize>,
+    body_end: usize,
+    has_datalines: bool,
+) {
+    let start = body_start.unwrap_or(body_end);
+    let body = src.get(start..body_end).unwrap_or("").to_string();
+    let datalines = if has_datalines {
+        datalines_queue.pop_front().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    out.push(Block::DataStep {
+        body,
+        datalines,
+        body_src_offset: start,
+    });
+}
+pub fn split_blocks_checked(src: &str) -> Result<Vec<Block>, SplitError> {
+    let (program, mut datalines_queue) = extract_datalines_checked(src)?;
     let stmts = split_on_semicolons(&program);
     let mut out = Vec::new();
 
@@ -88,6 +133,7 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
             src_offset: usize,
         },
     }
+
     let mut state = State::Normal;
 
     for raw in stmts {
@@ -95,6 +141,7 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
         if trimmed.is_empty() {
             continue;
         }
+        let stmt_start = raw.start + raw.text.find(trimmed).unwrap_or(0);
         let lower = trimmed.to_ascii_lowercase();
 
         if matches!(state, State::Normal) && lower.starts_with('*') {
@@ -122,16 +169,13 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                     state = State::ProcOther {
                         name,
                         body,
-                        src_offset: raw.start,
+                        src_offset: stmt_start,
                     };
                     continue;
                 }
                 if lower == "data" || lower.starts_with("data ") {
-                    // body includes the `data …;` header so the data-step
-                    // parser sees the keyword. Offset starts at the
-                    // header's first byte.
                     state = State::Data {
-                        body_start: Some(raw.start),
+                        body_start: Some(stmt_start),
                         body_end: raw.end,
                         has_datalines: false,
                     };
@@ -140,13 +184,13 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                 if lower.starts_with("%macro") {
                     state = State::MacroDef {
                         body: trimmed.to_string() + ";",
-                        src_offset: raw.start,
+                        src_offset: stmt_start,
                     };
                     continue;
                 }
                 out.push(Block::Statement {
                     text: trimmed.to_string(),
-                    src_offset: raw.start,
+                    src_offset: stmt_start,
                 });
             }
             State::ProcSql => {
@@ -156,7 +200,7 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                 }
                 out.push(Block::ProcSqlStmt {
                     text: trimmed.to_string(),
-                    src_offset: raw.start,
+                    src_offset: stmt_start,
                 });
             }
             State::ProcOther {
@@ -181,27 +225,71 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
                 body_end,
                 has_datalines,
             } => {
-                if lower == "run" {
-                    let start = body_start.unwrap_or(*body_end);
-                    let body = src.get(start..*body_end).unwrap_or("").to_string();
-                    let datalines = if *has_datalines {
-                        datalines_queue.pop_front().unwrap_or_default()
-                    } else {
-                        Vec::new()
-                    };
-                    out.push(Block::DataStep {
-                        body,
-                        datalines,
-                        body_src_offset: start,
-                    });
-                    state = State::Normal;
-                    continue;
+                let starts_new_step = (lower == "data" || lower.starts_with("data "))
+                    || lower == "proc sql"
+                    || lower.starts_with("proc sql ")
+                    || lower.starts_with("proc ")
+                    || lower.starts_with("%macro");
+                if lower == "run" || starts_new_step {
+                    let current_body_start = *body_start;
+                    let current_body_end = *body_end;
+                    let current_has_datalines = *has_datalines;
+                    push_data_block(
+                        src,
+                        &mut out,
+                        &mut datalines_queue,
+                        current_body_start,
+                        current_body_end,
+                        current_has_datalines,
+                    );
+                    if lower == "run" {
+                        state = State::Normal;
+                        continue;
+                    }
+                    if lower == "proc sql" || lower.starts_with("proc sql ") {
+                        state = State::ProcSql;
+                        continue;
+                    }
+                    if lower.starts_with("proc ") {
+                        let after = trimmed[5..].trim_start();
+                        let name_end = after
+                            .find(|c: char| c.is_whitespace())
+                            .unwrap_or(after.len());
+                        let name = after[..name_end].to_ascii_lowercase();
+                        let rest_after_name = after[name_end..].trim();
+                        let mut body = String::new();
+                        if !rest_after_name.is_empty() {
+                            body.push_str(rest_after_name);
+                            body.push(';');
+                        }
+                        state = State::ProcOther {
+                            name,
+                            body,
+                            src_offset: stmt_start,
+                        };
+                        continue;
+                    }
+                    if lower == "data" || lower.starts_with("data ") {
+                        state = State::Data {
+                            body_start: Some(stmt_start),
+                            body_end: raw.end,
+                            has_datalines: false,
+                        };
+                        continue;
+                    }
+                    if lower.starts_with("%macro") {
+                        state = State::MacroDef {
+                            body: trimmed.to_string() + ";",
+                            src_offset: stmt_start,
+                        };
+                        continue;
+                    }
                 }
                 if matches!(lower.as_str(), "datalines" | "cards" | "lines") {
                     *has_datalines = true;
                 }
                 if body_start.is_none() {
-                    *body_start = Some(raw.start);
+                    *body_start = Some(stmt_start);
                 }
                 *body_end = raw.end;
             }
@@ -219,7 +307,6 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
         }
     }
 
-    // Flush unclosed blocks at EOF.
     match state {
         State::ProcOther {
             name,
@@ -241,19 +328,21 @@ pub fn split_blocks(src: &str) -> Vec<Block> {
         _ => {}
     }
 
-    out
+    Ok(out)
 }
 
 /// Pre-process the source: find each `datalines;` (or `cards;` / `lines;`)
-/// terminator on a line, then collect every following line until a line
-/// whose only non-whitespace content is `;`. Removed lines are replaced
-/// with whitespace of equal byte length to keep offsets stable.
-pub fn extract_datalines(src: &str) -> (String, std::collections::VecDeque<Vec<String>>) {
+pub fn extract_datalines_checked(
+    src: &str,
+) -> Result<(String, std::collections::VecDeque<Vec<String>>), SplitError> {
     let mut out = String::with_capacity(src.len());
     let mut blocks: std::collections::VecDeque<Vec<String>> = std::collections::VecDeque::new();
     let mut lines = src.split_inclusive('\n').peekable();
+    let mut offset = 0usize;
 
     while let Some(line) = lines.next() {
+        let line_start = offset;
+        offset += line.len();
         let trimmed = line.trim_end_matches(['\n', '\r']);
         let lower = trimmed.trim().to_ascii_lowercase();
         let is_datalines = matches!(
@@ -264,13 +353,16 @@ pub fn extract_datalines(src: &str) -> (String, std::collections::VecDeque<Vec<S
         out.push_str(line);
         if is_datalines {
             let mut data: Vec<String> = Vec::new();
+            let mut terminated = false;
             for d in lines.by_ref() {
+                offset += d.len();
                 let dt = d.trim_end_matches(['\n', '\r']);
                 if dt.trim() == ";" {
                     // Replace the terminator line with whitespace.
                     for byte in d.bytes() {
                         out.push(if byte == b'\n' { '\n' } else { ' ' });
                     }
+                    terminated = true;
                     break;
                 }
                 data.push(dt.to_string());
@@ -279,10 +371,15 @@ pub fn extract_datalines(src: &str) -> (String, std::collections::VecDeque<Vec<S
                     out.push(if byte == b'\n' { '\n' } else { ' ' });
                 }
             }
+            if !terminated {
+                return Err(SplitError::UnterminatedDatalines {
+                    start_offset: line_start,
+                });
+            }
             blocks.push_back(data);
         }
     }
-    (out, blocks)
+    Ok((out, blocks))
 }
 
 /// Backward-compatible helper used by older tests/UI to flatten proc sql
@@ -459,7 +556,7 @@ mod tests {
     #[test]
     fn extract_datalines_preserves_byte_offsets() {
         let src = "data x;\ndatalines;\nalice 30\n;\nrun;\n";
-        let (out, _) = extract_datalines(src);
+        let (out, _) = extract_datalines_checked(src).unwrap();
         assert_eq!(out.len(), src.len());
         // The "run;" line must still be at the same offset.
         assert!(out.contains("run;"));

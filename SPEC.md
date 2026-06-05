@@ -198,7 +198,7 @@ run;
 | Statement | Notes |
 |---|---|
 | `set ds1 [ds2 ...] [(keep= drop= rename= where= in= obs= firstobs=)]` | Sequential, concatenating |
-| `merge ds1 ds2 ...; by <vars>;` | Match-merge; requires sorted input or implicit sort |
+| `merge ds1 [(in=flag)] ds2 ...; by <vars>;` | Match-merge; requires sorted input or implicit sort. `in=` creates per-source 0/1 membership flags for the current BY group. |
 | `by <vars>;` | Creates `first.var` / `last.var` automatic variables |
 | `where <expr>;` | Pre-load filter (pushed to source) |
 | `if <expr>;` / `if <expr> then <stmt>; [else ...]` | Subsetting if vs conditional |

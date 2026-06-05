@@ -4,6 +4,8 @@
 pub struct TableRef {
     pub libref: Option<String>,
     pub name: String,
+    /// `in=flag` dataset option on SET/MERGE inputs.
+    pub in_var: Option<String>,
 }
 
 impl TableRef {
@@ -27,6 +29,8 @@ pub struct DataStep {
     pub lengths: Vec<LengthDecl>,
     pub retain: Vec<RetainDecl>,
     pub arrays: Vec<ArrayDecl>,
+    /// `format var-list format.;` display formats retained for UI/output.
+    pub formats: Vec<FormatDecl>,
     /// Free-form `input <name> [$] ...;` definitions.
     pub input_vars: Vec<InputVar>,
     /// Inline data attached to a `datalines;` block. Filled in by the
@@ -130,6 +134,12 @@ pub struct ArrayDecl {
     pub is_char: bool,
     /// Explicit element names — if empty, defaults to `name1`..`nameN`.
     pub elements: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatDecl {
+    pub name: String,
+    pub format: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

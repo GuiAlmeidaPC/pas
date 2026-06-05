@@ -1,7 +1,7 @@
 use crate::library::{DirFormat, Library, LibraryKind};
 use crate::query::{duckdb_error_span, materialize_select_into, run_one, run_query, StmtResult};
 use crate::rewrite::dir_reader_expr;
-use crate::split::{split_blocks, strip_comments, Block};
+use crate::split::{split_blocks_checked, strip_comments, Block, SplitError};
 use crate::types::{Event, SourceSpan, Value};
 use crate::{datastep, libname, procs, sas_sql, split, EngineError, MAX_PREVIEW_ROWS};
 use duckdb::{Connection, InterruptHandle};
@@ -12,6 +12,38 @@ use std::sync::{
     Arc, Mutex,
 };
 
+fn parse_title_value(raw: &str) -> String {
+    let s = raw.trim();
+    if s.len() >= 2 {
+        let bytes = s.as_bytes();
+        let quote = bytes[0];
+        if (quote == b'\'' || quote == b'"') && bytes[s.len() - 1] == quote {
+            let inner = &s[1..s.len() - 1];
+            let doubled = if quote == b'\'' { "''" } else { "\"\"" };
+            let single = if quote == b'\'' { "'" } else { "\"" };
+            return inner.replace(doubled, single);
+        }
+    }
+    s.to_string()
+}
+
+fn split_error_event(program: &str, err: SplitError) -> Event {
+    match err {
+        SplitError::UnterminatedDatalines { start_offset } => {
+            let (line, col) = split::byte_to_line_col(program, start_offset);
+            Event::Error {
+                text: err.to_string(),
+                source_span: Some(SourceSpan {
+                    start_line: line,
+                    start_col: col,
+                    end_line: line,
+                    end_col: col + 1,
+                }),
+            }
+        }
+    }
+}
+
 pub struct Session {
     pub(crate) conn: Mutex<Connection>,
     pub(crate) read_conn: Mutex<Connection>,
@@ -20,6 +52,8 @@ pub struct Session {
     pub(crate) libraries: Mutex<HashMap<String, Library>>,
     pub(crate) macro_vars: Mutex<HashMap<String, String>>,
     pub(crate) macro_defs: Mutex<HashMap<String, crate::macros::MacroDef>>,
+    pub(crate) dataset_formats: Mutex<HashMap<String, HashMap<String, String>>>,
+    pub(crate) title: Mutex<Option<String>>,
 }
 
 impl Session {
@@ -46,6 +80,8 @@ impl Session {
             libraries: Mutex::new(libs),
             macro_vars: Mutex::new(HashMap::new()),
             macro_defs: Mutex::new(HashMap::new()),
+            dataset_formats: Mutex::new(HashMap::new()),
+            title: Mutex::new(None),
         })
     }
 
@@ -67,10 +103,17 @@ impl Session {
     pub fn submit(&self, program: &str) -> Vec<Event> {
         self.cancel.store(false, Ordering::SeqCst);
         let cleaned = strip_comments(program);
-
-        let blocks = split_blocks(&cleaned);
-        tracing::debug!(block_count = blocks.len(), "program split into blocks");
         let mut events = Vec::new();
+
+        let blocks = match split_blocks_checked(&cleaned) {
+            Ok(blocks) => blocks,
+            Err(err) => {
+                events.push(split_error_event(program, err));
+                events.push(Event::Done);
+                return events;
+            }
+        };
+        tracing::debug!(block_count = blocks.len(), "program split into blocks");
 
         if blocks.is_empty() {
             events.push(Event::Note {
@@ -144,7 +187,13 @@ impl Session {
                     self.dispatch_block(&conn, synthetic, program, &mut events);
                 }
                 Block::Statement { .. } => {
-                    let sub_blocks = split_blocks(&macro_result.expanded);
+                    let sub_blocks = match split_blocks_checked(&macro_result.expanded) {
+                        Ok(blocks) => blocks,
+                        Err(err) => {
+                            events.push(split_error_event(&macro_result.expanded, err));
+                            continue;
+                        }
+                    };
                     tracing::debug!(sub_blocks = ?sub_blocks, "expanded statement split");
                     for sub_block in sub_blocks {
                         if self.cancel.load(Ordering::SeqCst) {
@@ -159,7 +208,13 @@ impl Session {
                 Block::Proc { .. } => {
                     // Historical quirk: a PROC whose macro expansion yields
                     // non-PROC sibling blocks silently drops them.
-                    let sub_blocks = split_blocks(&macro_result.expanded);
+                    let sub_blocks = match split_blocks_checked(&macro_result.expanded) {
+                        Ok(blocks) => blocks,
+                        Err(err) => {
+                            events.push(split_error_event(&macro_result.expanded, err));
+                            continue;
+                        }
+                    };
                     for sub_block in sub_blocks {
                         if self.cancel.load(Ordering::SeqCst) {
                             events.push(Event::Warning {
@@ -198,6 +253,10 @@ impl Session {
             Block::Statement { text, src_offset } => {
                 events.push(Event::Source { text: text.clone() });
                 if let Some(handled) = self.try_libname(conn, &text) {
+                    events.extend(handled);
+                    return;
+                }
+                if let Some(handled) = self.try_title(&text) {
                     events.extend(handled);
                     return;
                 }
@@ -248,6 +307,31 @@ impl Session {
         }
     }
 
+    fn try_title(&self, stmt: &str) -> Option<Vec<Event>> {
+        let trimmed = stmt.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower != "title" && !lower.starts_with("title ") {
+            return None;
+        }
+
+        let value = trimmed
+            .get(5..)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(parse_title_value);
+        *self.title.lock().unwrap() = value.clone();
+
+        let text = match value {
+            Some(title) => format!("Title set to \"{}\".", title),
+            None => "Title cleared.".to_string(),
+        };
+        Some(vec![Event::Note { text }])
+    }
+
+    fn active_title(&self) -> Option<String> {
+        self.title.lock().unwrap().clone()
+    }
+
     fn run_sql_with_rewrites(
         &self,
         conn: &Connection,
@@ -260,7 +344,7 @@ impl Session {
         let rewritten = self.rewrite_librefs(&after_create);
         let (clean_query, targets) = sas_sql::extract_into_clause(&rewritten);
         match run_one(conn, &clean_query, 1000) {
-            Ok(StmtResult::Rows(block)) => {
+            Ok(StmtResult::Rows(mut block)) => {
                 if !targets.is_empty() {
                     if let Some(first_row) = block.rows.first() {
                         let mut vars = self.macro_vars.lock().unwrap();
@@ -284,6 +368,7 @@ impl Session {
                         text: "Statement executed, macro variables assigned.".into(),
                     });
                 } else {
+                    block.title = self.active_title();
                     let suffix = if block.truncated {
                         format!(" (showing first {})", block.rows.len())
                     } else {
@@ -349,15 +434,23 @@ impl Session {
 
     fn proc_print(&self, conn: &Connection, body: &str) -> Result<Vec<Event>, EngineError> {
         let spec = procs::print::parse(body).map_err(EngineError::Other)?;
+        let lib = match &spec.data.libref {
+            None => self.lookup_library("work")?,
+            Some(l) => self.lookup_library(l)?,
+        };
         let from = self.resolve_read(&spec.data)?;
         let sql = procs::print::build_select_sql(&from, &spec);
         match run_query(conn, &sql, MAX_PREVIEW_ROWS)? {
-            StmtResult::Rows(block) => Ok(vec![
-                Event::Note {
-                    text: format!("PROC PRINT showing {} row(s).", block.rows.len()),
-                },
-                Event::Output { block },
-            ]),
+            StmtResult::Rows(block) => {
+                let mut block = self.apply_dataset_formats(&lib, &spec.data.name, block);
+                block.title = self.active_title();
+                Ok(vec![
+                    Event::Note {
+                        text: format!("PROC PRINT showing {} row(s).", block.rows.len()),
+                    },
+                    Event::Output { block },
+                ])
+            }
             _ => Ok(vec![]),
         }
     }
@@ -411,8 +504,13 @@ impl Session {
             Some(datastep::ast::DataInput::Set(tables)) => {
                 match tables
                     .iter()
-                    .map(|t| self.resolve_read(t))
-                    .collect::<Result<Vec<_>, _>>()
+                    .map(|t| {
+                        Ok(datastep::exec::ResolvedSource {
+                            from: self.resolve_read(t)?,
+                            in_var: t.in_var.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, EngineError>>()
                 {
                     Ok(v) => Some(datastep::exec::ResolvedInput::Set(v)),
                     Err(e) => {
@@ -427,8 +525,13 @@ impl Session {
             Some(datastep::ast::DataInput::Merge(tables)) => {
                 match tables
                     .iter()
-                    .map(|t| self.resolve_read(t))
-                    .collect::<Result<Vec<_>, _>>()
+                    .map(|t| {
+                        Ok(datastep::exec::ResolvedSource {
+                            from: self.resolve_read(t)?,
+                            in_var: t.in_var.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, EngineError>>()
                 {
                     Ok(v) => Some(datastep::exec::ResolvedInput::Merge(v)),
                     Err(e) => {
@@ -465,6 +568,7 @@ impl Session {
 
         match datastep::run_data_step(conn, &plan, &self.cancel, &self.macro_vars) {
             Ok(res) => {
+                self.register_data_step_formats(&ds, &res.outputs);
                 for (_, target, rows) in &res.outputs {
                     events.push(Event::Note {
                         text: format!(
@@ -570,6 +674,38 @@ impl Session {
             .ok_or_else(|| EngineError::Other(format!("library '{}' not assigned", libref)))
     }
 
+    fn register_data_step_formats(
+        &self,
+        ds: &datastep::ast::DataStep,
+        outputs: &[(datastep::ast::TableRef, datastep::exec::WriteTarget, u64)],
+    ) {
+        let formats: HashMap<String, String> = ds
+            .formats
+            .iter()
+            .map(|f| (f.name.to_ascii_lowercase(), f.format.clone()))
+            .collect();
+        let mut registry = self.dataset_formats.lock().unwrap();
+        for (_, target, _) in outputs {
+            if let datastep::exec::WriteTarget::DuckDb { schema, name } = target {
+                let key = dataset_format_key(schema, name);
+                if formats.is_empty() {
+                    registry.remove(&key);
+                } else {
+                    registry.insert(key, formats.clone());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn formats_for_dataset(&self, schema: &str, name: &str) -> HashMap<String, String> {
+        self.dataset_formats
+            .lock()
+            .unwrap()
+            .get(&dataset_format_key(schema, name))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub(crate) fn apply_libname(
         &self,
         conn: &Connection,
@@ -616,4 +752,12 @@ impl Session {
             }
         ))
     }
+}
+
+pub(crate) fn dataset_format_key(schema: &str, name: &str) -> String {
+    format!(
+        "{}.{}",
+        schema.to_ascii_lowercase(),
+        name.to_ascii_lowercase()
+    )
 }
