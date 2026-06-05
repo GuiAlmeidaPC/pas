@@ -686,6 +686,18 @@ impl<'a> Parser<'a> {
             self.bump();
         }
 
+        // Skip _temporary_ keyword (arrays don't create output variables).
+        self.eat_keyword("_temporary_");
+
+        // Skip optional parenthesized initial-value list.
+        // SAS allows (value1, value2, ...) for initializing array elements.
+        if self.eat(&Tok::LParen) {
+            while !matches!(self.peek(), Tok::RParen | Tok::Semi | Tok::Eof) {
+                self.bump(); // skip any token inside the parens
+            }
+            self.eat(&Tok::RParen); // consume the closing paren if present
+        }
+
         let mut elements = Vec::new();
         while let Tok::Ident(s) = self.peek().clone() {
             self.bump();
@@ -1329,6 +1341,18 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn parses_array_with_temporary_and_initial_values() {
+        let ds = parse_data_step(
+            "data o; array first_names[10] $10 _temporary_ ('Emily','Michael','Sarah','David','Jessica','James','Olivia','Robert','Isabella','William'); run;"
+        ).unwrap();
+        assert_eq!(ds.arrays.len(), 1);
+        assert_eq!(ds.arrays[0].name, "first_names");
+        assert_eq!(ds.arrays[0].size, 10);
+        assert!(ds.arrays[0].is_char);
+        assert!(ds.arrays[0].elements.is_empty());
     }
 
     #[test]

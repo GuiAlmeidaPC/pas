@@ -1375,4 +1375,36 @@ mod tests {
             "#,
         );
     }
+
+    #[test]
+    fn data_step_with_temporary_arrays_generates_rows() {
+        let s = Session::new_in_memory().unwrap();
+        let evs = s.submit(
+            r#"
+            data raw_employees;
+                name = 'Jane Doe'; dept = 'Sales'; salary = 4500; output;
+                name = 'John Smith'; dept = 'IT'; salary = 6200; output;
+                array first_names[10] $10 _temporary_ ('Emily','Michael','Sarah','David','Jessica','James','Olivia','Robert','Isabella','William');
+                array last_names[10] $12 _temporary_ ('Johnson','Williams','Brown','Jones','Garcia','Miller','Davis','Rodriguez','Martinez','Hernandez');
+                array depts[4] $10 _temporary_ ('Sales','IT','HR','Finance');
+                do i = 1 to 4;
+                    name = catx(' ', first_names[i], last_names[i]);
+                    dept = depts[i];
+                    salary = 4000 + i * 100;
+                    output;
+                end;
+                drop i;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s
+            .dataset_page("work", "raw_employees", 0, 100, None)
+            .unwrap();
+        assert_eq!(page.total_rows, 6);
+    }
 }
