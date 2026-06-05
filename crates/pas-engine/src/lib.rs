@@ -54,6 +54,42 @@ mod tests {
     }
 
     #[test]
+    fn engine_panic_in_block_is_isolated_and_session_recovers() {
+        // `intnx` with an out-of-range serial date triggers an internal
+        // panic in the engine's date arithmetic. A panic while executing a
+        // user program must never escape `submit`: it has to be surfaced as
+        // an Error event, the run must still terminate with Done, and the
+        // session's mutexes must not be left poisoned (otherwise every
+        // subsequent submission would fail until the app is restarted).
+        let s = Session::new_in_memory().unwrap();
+
+        let evs = s.submit("data a; x = intnx('day', 1e18, 1); run;");
+        assert!(
+            matches!(evs.last(), Some(Event::Done)),
+            "submit must always end with Done, got: {:?}",
+            evs
+        );
+        assert!(
+            evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "the panic must be surfaced as an Error event, got: {:?}",
+            evs
+        );
+
+        // The session must remain fully usable after a panic.
+        let again = s.submit("proc sql; create table t as select 1 as n; quit;");
+        assert!(
+            matches!(again.last(), Some(Event::Done)),
+            "session must still run after a panic, got: {:?}",
+            again
+        );
+        assert!(
+            !again.iter().any(|e| matches!(e, Event::Error { .. })),
+            "valid program after a panic must not error, got: {:?}",
+            again
+        );
+    }
+
+    #[test]
     fn runs_proc_sql_block() {
         let s = Session::new_in_memory().unwrap();
         let evs = s.submit(

@@ -143,9 +143,11 @@ async fn submit(
 ) -> Result<String, String> {
     let session = state.session.clone();
     let id = submission_id.clone();
+    let app_for_panic = app.clone();
+    let id_for_panic = submission_id.clone();
 
     // Run synchronously off the UI thread. DuckDB calls are blocking.
-    tokio::task::spawn_blocking(move || {
+    let handle = tokio::task::spawn_blocking(move || {
         let events = session.submit(&program);
         for event in events {
             let _ = app.emit(
@@ -153,6 +155,34 @@ async fn submit(
                 SubmitEventPayload {
                     submission_id: id.clone(),
                     event,
+                },
+            );
+        }
+    });
+
+    // Safety net: the engine already converts per-statement panics into Error
+    // events, but if execution ever unwinds anyway the blocking task aborts
+    // without emitting a terminal `Done`, leaving the UI spinning forever.
+    // Watch the task and synthesize an error + `Done` so a run can always end.
+    tokio::spawn(async move {
+        if handle.await.is_err() {
+            let _ = app_for_panic.emit(
+                "pas://event",
+                SubmitEventPayload {
+                    submission_id: id_for_panic.clone(),
+                    event: Event::Error {
+                        text: "internal engine error: the engine panicked while running \
+                               this program; results may be incomplete"
+                            .to_string(),
+                        source_span: None,
+                    },
+                },
+            );
+            let _ = app_for_panic.emit(
+                "pas://event",
+                SubmitEventPayload {
+                    submission_id: id_for_panic,
+                    event: Event::Done,
                 },
             );
         }

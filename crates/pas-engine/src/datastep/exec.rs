@@ -1522,7 +1522,7 @@ fn exec_stmt<'conn>(
                 } else {
                     val_val.as_str()
                 };
-                let mut vars = macro_vars.lock().unwrap();
+                let mut vars = macro_vars.lock().unwrap_or_else(|e| e.into_inner());
                 vars.insert(var_name, var_value);
             } else {
                 return Err(DataStepError::runtime(format!(

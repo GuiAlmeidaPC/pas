@@ -44,6 +44,18 @@ fn split_error_event(program: &str, err: SplitError) -> Event {
     }
 }
 
+/// Extract a human-readable message from a caught panic payload. Rust panics
+/// carry either a `&str` (string-literal `panic!`) or a `String` (formatted).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 pub struct Session {
     pub(crate) conn: Mutex<Connection>,
     pub(crate) read_conn: Mutex<Connection>,
@@ -94,7 +106,13 @@ impl Session {
     }
 
     pub fn list_libraries(&self) -> Vec<Library> {
-        let mut v: Vec<Library> = self.libraries.lock().unwrap().values().cloned().collect();
+        let mut v: Vec<Library> = self
+            .libraries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }
@@ -123,7 +141,7 @@ impl Session {
             return events;
         }
 
-        let conn = self.conn.lock().expect("engine mutex poisoned");
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         for block in blocks {
             if self.cancel.load(Ordering::SeqCst) {
                 events.push(Event::Warning {
@@ -142,8 +160,8 @@ impl Session {
                 Block::Proc { name, body, .. } => format!("proc {}; {} run;", name, body),
             };
             let macro_result = {
-                let mut vars = self.macro_vars.lock().unwrap();
-                let mut defs = self.macro_defs.lock().unwrap();
+                let mut vars = self.macro_vars.lock().unwrap_or_else(|e| e.into_inner());
+                let mut defs = self.macro_defs.lock().unwrap_or_else(|e| e.into_inner());
                 crate::macros::preprocess(&raw, &mut vars, &mut defs)
             };
             tracing::debug!(
@@ -177,14 +195,14 @@ impl Session {
                         datalines,
                         body_src_offset,
                     };
-                    self.dispatch_block(&conn, synthetic, program, &mut events);
+                    self.dispatch_block_guarded(&conn, synthetic, program, &mut events);
                 }
                 Block::ProcSqlStmt { src_offset, .. } => {
                     let synthetic = Block::ProcSqlStmt {
                         text: macro_result.expanded.trim().to_string(),
                         src_offset,
                     };
-                    self.dispatch_block(&conn, synthetic, program, &mut events);
+                    self.dispatch_block_guarded(&conn, synthetic, program, &mut events);
                 }
                 Block::Statement { .. } => {
                     let sub_blocks = match split_blocks_checked(&macro_result.expanded) {
@@ -202,7 +220,12 @@ impl Session {
                             });
                             break;
                         }
-                        self.dispatch_block(&conn, sub_block, &macro_result.expanded, &mut events);
+                        self.dispatch_block_guarded(
+                            &conn,
+                            sub_block,
+                            &macro_result.expanded,
+                            &mut events,
+                        );
                     }
                 }
                 Block::Proc { .. } => {
@@ -223,7 +246,7 @@ impl Session {
                             break;
                         }
                         if matches!(sub_block, Block::Proc { .. }) {
-                            self.dispatch_block(
+                            self.dispatch_block_guarded(
                                 &conn,
                                 sub_block,
                                 &macro_result.expanded,
@@ -237,6 +260,34 @@ impl Session {
 
         events.push(Event::Done);
         events
+    }
+
+    /// Execute one block, converting any internal panic into an Error event.
+    ///
+    /// The engine runs arbitrary user-authored programs, and a bug in any
+    /// statement runner (bad date arithmetic, an out-of-range index, etc.)
+    /// must never abort the whole submission or leave the engine unusable.
+    /// `catch_unwind` keeps the panic from unwinding past `submit` (so the
+    /// run still ends with `Event::Done`), and because every shared mutex is
+    /// acquired with poison recovery, a panic that fires while a lock is held
+    /// does not brick subsequent submissions. See the
+    /// `engine_panic_in_block_is_isolated_and_session_recovers` test.
+    fn dispatch_block_guarded(
+        &self,
+        conn: &Connection,
+        block: Block,
+        program_for_spans: &str,
+        events: &mut Vec<Event>,
+    ) {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.dispatch_block(conn, block, program_for_spans, events);
+        }));
+        if let Err(payload) = outcome {
+            events.push(Event::Error {
+                text: format!("internal engine error: {}", panic_message(&payload)),
+                source_span: None,
+            });
+        }
     }
 
     /// Execute one concrete block. The caller has already performed any
@@ -319,7 +370,7 @@ impl Session {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(parse_title_value);
-        *self.title.lock().unwrap() = value.clone();
+        *self.title.lock().unwrap_or_else(|e| e.into_inner()) = value.clone();
 
         let text = match value {
             Some(title) => format!("Title set to \"{}\".", title),
@@ -329,7 +380,7 @@ impl Session {
     }
 
     fn active_title(&self) -> Option<String> {
-        self.title.lock().unwrap().clone()
+        self.title.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn run_sql_with_rewrites(
@@ -347,7 +398,7 @@ impl Session {
             Ok(StmtResult::Rows(mut block)) => {
                 if !targets.is_empty() {
                     if let Some(first_row) = block.rows.first() {
-                        let mut vars = self.macro_vars.lock().unwrap();
+                        let mut vars = self.macro_vars.lock().unwrap_or_else(|e| e.into_inner());
                         for (idx, target) in targets.iter().enumerate() {
                             if let Some(val) = first_row.get(idx) {
                                 let mut val_str = match val {
@@ -668,7 +719,7 @@ impl Session {
     pub(crate) fn lookup_library(&self, libref: &str) -> Result<Library, EngineError> {
         self.libraries
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&libref.to_ascii_lowercase())
             .cloned()
             .ok_or_else(|| EngineError::Other(format!("library '{}' not assigned", libref)))
@@ -684,7 +735,10 @@ impl Session {
             .iter()
             .map(|f| (f.name.to_ascii_lowercase(), f.format.clone()))
             .collect();
-        let mut registry = self.dataset_formats.lock().unwrap();
+        let mut registry = self
+            .dataset_formats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for (_, target, _) in outputs {
             if let datastep::exec::WriteTarget::DuckDb { schema, name } = target {
                 let key = dataset_format_key(schema, name);
@@ -700,7 +754,7 @@ impl Session {
     pub(crate) fn formats_for_dataset(&self, schema: &str, name: &str) -> HashMap<String, String> {
         self.dataset_formats
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&dataset_format_key(schema, name))
             .cloned()
             .unwrap_or_default()
@@ -740,7 +794,10 @@ impl Session {
             path: def.path.clone(),
             format: def.format,
         };
-        self.libraries.lock().unwrap().insert(def.name.clone(), lib);
+        self.libraries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(def.name.clone(), lib);
         Ok(format!(
             "Library {} assigned as {:?}{}.",
             def.name.to_uppercase(),

@@ -71,7 +71,7 @@ impl Session {
         };
 
         let lib = {
-            let libs = self.libraries.lock().unwrap();
+            let libs = self.libraries.lock().unwrap_or_else(|e| e.into_inner());
             match libs.get(&libref.to_ascii_lowercase()) {
                 Some(l) if l.kind == LibraryKind::Dir => l.clone(),
                 _ => return sql.to_string(),
@@ -98,7 +98,7 @@ impl Session {
     /// for DIR libraries. DUCKDB libraries already resolve via attached
     /// schemas; MEMORY refs use the default schema.
     pub(crate) fn rewrite_librefs(&self, sql: &str) -> String {
-        let libs = self.libraries.lock().unwrap();
+        let libs = self.libraries.lock().unwrap_or_else(|e| e.into_inner());
         let all_libs: Vec<Library> = libs.values().cloned().collect();
         drop(libs);
         if all_libs.is_empty() {

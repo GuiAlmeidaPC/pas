@@ -9,7 +9,7 @@ use std::collections::HashMap;
 impl Session {
     pub fn list_datasets(&self, libref: &str) -> Result<Vec<DatasetInfo>, EngineError> {
         let lib = self.lookup_library(libref)?;
-        let conn = self.read_conn.lock().unwrap();
+        let conn = self.read_conn.lock().unwrap_or_else(|e| e.into_inner());
         match lib.kind {
             LibraryKind::Memory => list_schema_tables(&conn, "main", &lib.name),
             LibraryKind::Duckdb => list_schema_tables(&conn, &lib.name, &lib.name),
@@ -20,7 +20,7 @@ impl Session {
     pub fn dataset_schema(&self, libref: &str, name: &str) -> Result<Vec<ColumnInfo>, EngineError> {
         let lib = self.lookup_library(libref)?;
         let from_clause = dataset_from_clause(&lib, name)?;
-        let conn = self.read_conn.lock().unwrap();
+        let conn = self.read_conn.lock().unwrap_or_else(|e| e.into_inner());
         let sql = format!("SELECT * FROM {} LIMIT 0", from_clause);
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query([])?;
@@ -61,7 +61,7 @@ impl Session {
         let lib = self.lookup_library(libref)?;
         let from_clause = dataset_from_clause(&lib, name)?;
         let (where_sql, where_params) = build_where_clause(filters);
-        let conn = self.read_conn.lock().unwrap();
+        let conn = self.read_conn.lock().unwrap_or_else(|e| e.into_inner());
 
         let total: u64 = {
             let count_sql = format!("SELECT count(*) FROM {}{}", from_clause, where_sql);
@@ -134,7 +134,7 @@ impl Session {
         let lib = self.lookup_library(libref)?;
         let from_clause = dataset_from_clause(&lib, name)?;
         let (where_sql, where_params) = build_where_clause(filters);
-        let conn = self.read_conn.lock().unwrap();
+        let conn = self.read_conn.lock().unwrap_or_else(|e| e.into_inner());
 
         let total: u64 = {
             let count_sql = format!("SELECT count(*) FROM {}{}", from_clause, where_sql);
