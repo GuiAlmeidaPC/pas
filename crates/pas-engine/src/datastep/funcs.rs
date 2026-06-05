@@ -45,6 +45,11 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
                 Ok(RtValue::Num(nums.iter().sum::<f64>() / nums.len() as f64))
             }
         }
+        "ranuni" => {
+            // seed argument is accepted for SAS compatibility but ignored;
+            // we use the system's RNG directly.
+            Ok(RtValue::Num(rand::random::<f64>()))
+        }
         "sign" => {
             let x = arg_num(args, 0)?;
             Ok(RtValue::Num(if x > 0.0 {
