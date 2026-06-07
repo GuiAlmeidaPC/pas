@@ -39,3 +39,30 @@ export function classifyAssets(assets) {
   }
   return groups;
 }
+
+const LINUX_FORMAT_ORDER = [
+  { format: 'AppImage', ext: '.appimage', hint: 'Portable — runs anywhere, no install' },
+  { format: 'deb', ext: '.deb', hint: 'Debian / Ubuntu and derivatives' },
+  { format: 'rpm', ext: '.rpm', hint: 'Fedora / RHEL / openSUSE' },
+];
+
+/**
+ * From the Linux asset list, produce an ordered [{ format, hint, url }] of the
+ * formats actually present in the release.
+ */
+export function linuxFormats(linuxAssets) {
+  const out = [];
+  for (const { format, ext, hint } of LINUX_FORMAT_ORDER) {
+    const match = (linuxAssets || []).find(
+      (a) => String(a?.name || '').toLowerCase().endsWith(ext));
+    if (match) out.push({ format, hint, url: match.browser_download_url });
+  }
+  return out;
+}
+
+/** Return the browser_download_url of the SHA256SUMS asset, or null. */
+export function findChecksums(assets) {
+  const match = (assets || []).find(
+    (a) => String(a?.name || '').toLowerCase().includes('sha256sums'));
+  return match ? match.browser_download_url : null;
+}

@@ -58,3 +58,33 @@ test('classifyAssets handles empty/missing input', () => {
   assert.deepEqual(classifyAssets([]), { windows: [], macos: [], linux: [] });
   assert.deepEqual(classifyAssets(undefined), { windows: [], macos: [], linux: [] });
 });
+
+import { linuxFormats, findChecksums } from './download.js';
+
+test('linuxFormats returns present formats in order with hints', () => {
+  const linux = [
+    { name: 'PAS-0.2.0.x86_64.rpm', browser_download_url: 'u-rpm' },
+    { name: 'PAS_0.2.0_amd64.AppImage', browser_download_url: 'u-appimage' },
+    { name: 'PAS_0.2.0_amd64.deb', browser_download_url: 'u-deb' },
+  ];
+  const out = linuxFormats(linux);
+  assert.deepEqual(out.map(f => f.format), ['AppImage', 'deb', 'rpm']);
+  assert.equal(out[0].url, 'u-appimage');
+  assert.equal(out[1].url, 'u-deb');
+  assert.equal(out[2].url, 'u-rpm');
+  assert.ok(out[0].hint.length > 0);
+});
+
+test('linuxFormats omits formats not present in the release', () => {
+  const linux = [{ name: 'PAS_0.2.0_amd64.AppImage', browser_download_url: 'u' }];
+  const out = linuxFormats(linux);
+  assert.deepEqual(out.map(f => f.format), ['AppImage']);
+});
+
+test('findChecksums returns the SHA256SUMS url or null', () => {
+  assert.equal(
+    findChecksums([{ name: 'SHA256SUMS.txt', browser_download_url: 'u-sum' }]),
+    'u-sum');
+  assert.equal(findChecksums([{ name: 'app.deb', browser_download_url: 'u' }]), null);
+  assert.equal(findChecksums([]), null);
+});
