@@ -150,9 +150,15 @@ async function init() {
   });
 
   if (versionEl) {
-    versionEl.innerHTML = checksums
-      ? `${version} · latest release · <a href="${checksums}">verify with SHA256SUMS.txt</a>`
-      : `${version} · latest release`;
+    // Build via textContent/createElement so a crafted tag_name can't inject markup.
+    versionEl.textContent = `${version} · latest release`;
+    if (checksums) {
+      versionEl.append(' · ');
+      const link = document.createElement('a');
+      link.href = checksums;
+      link.textContent = 'verify with SHA256SUMS.txt';
+      versionEl.append(link);
+    }
   }
 
   // Modal close wiring.
