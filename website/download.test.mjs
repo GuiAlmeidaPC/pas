@@ -21,3 +21,40 @@ test('detectOS treats Android as linux', () => {
 test('detectOS falls back to linux when unknown', () => {
   assert.equal(detectOS('something weird', ''), 'linux');
 });
+
+import { classifyAssets } from './download.js';
+
+const SAMPLE_ASSETS = [
+  { name: 'PAS_0.2.0_amd64.AppImage', browser_download_url: 'https://x/app.AppImage' },
+  { name: 'PAS_0.2.0_amd64.deb', browser_download_url: 'https://x/app.deb' },
+  { name: 'PAS-0.2.0-1.x86_64.rpm', browser_download_url: 'https://x/app.rpm' },
+  { name: 'PAS_0.2.0_x64_en-US.msi', browser_download_url: 'https://x/app.msi' },
+  { name: 'PAS_0.2.0_x64-setup.exe', browser_download_url: 'https://x/app.exe' },
+  { name: 'PAS_0.2.0_universal.dmg', browser_download_url: 'https://x/app.dmg' },
+  { name: 'SHA256SUMS.txt', browser_download_url: 'https://x/SHA256SUMS.txt' },
+];
+
+test('classifyAssets groups assets by OS via extension', () => {
+  const g = classifyAssets(SAMPLE_ASSETS);
+  assert.deepEqual(g.windows.map(a => a.name).sort(),
+    ['PAS_0.2.0_x64-setup.exe', 'PAS_0.2.0_x64_en-US.msi']);
+  assert.deepEqual(g.macos.map(a => a.name), ['PAS_0.2.0_universal.dmg']);
+  assert.deepEqual(g.linux.map(a => a.name).sort(),
+    ['PAS-0.2.0-1.x86_64.rpm', 'PAS_0.2.0_amd64.AppImage', 'PAS_0.2.0_amd64.deb']);
+});
+
+test('classifyAssets ignores non-installer assets like checksums', () => {
+  const g = classifyAssets(SAMPLE_ASSETS);
+  const all = [...g.windows, ...g.macos, ...g.linux].map(a => a.name);
+  assert.equal(all.includes('SHA256SUMS.txt'), false);
+});
+
+test('classifyAssets is case-insensitive on extensions', () => {
+  const g = classifyAssets([{ name: 'PAS.APPIMAGE', browser_download_url: 'u' }]);
+  assert.equal(g.linux.length, 1);
+});
+
+test('classifyAssets handles empty/missing input', () => {
+  assert.deepEqual(classifyAssets([]), { windows: [], macos: [], linux: [] });
+  assert.deepEqual(classifyAssets(undefined), { windows: [], macos: [], linux: [] });
+});

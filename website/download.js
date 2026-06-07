@@ -14,3 +14,28 @@ export function detectOS(userAgent = '', platform = '') {
   if (ua.includes('linux') || ua.includes('android') || ua.includes('x11')) return 'linux';
   return 'linux';
 }
+
+const EXT_TO_OS = {
+  '.msi': 'windows',
+  '.exe': 'windows',
+  '.dmg': 'macos',
+  '.appimage': 'linux',
+  '.deb': 'linux',
+  '.rpm': 'linux',
+};
+
+/**
+ * Group release assets into { windows, macos, linux } by file extension.
+ * Assets with no recognized installer extension (e.g. SHA256SUMS.txt) are dropped.
+ */
+export function classifyAssets(assets) {
+  const groups = { windows: [], macos: [], linux: [] };
+  for (const asset of assets || []) {
+    const name = String(asset?.name || '').toLowerCase();
+    const dot = name.lastIndexOf('.');
+    if (dot === -1) continue;
+    const os = EXT_TO_OS[name.slice(dot)];
+    if (os) groups[os].push(asset);
+  }
+  return groups;
+}
