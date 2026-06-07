@@ -66,3 +66,114 @@ export function findChecksums(assets) {
     (a) => String(a?.name || '').toLowerCase().includes('sha256sums'));
   return match ? match.browser_download_url : null;
 }
+
+export const REPO = 'GuiAlmeidaPC/pas';
+const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
+const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
+
+const OS_META = {
+  windows: { label: 'Windows', icon: '🪟', ext: '.msi installer' },
+  macos: { label: 'macOS', icon: '🍎', ext: '.dmg (universal)' },
+  linux: { label: 'Linux', icon: '🐧', ext: 'AppImage · .deb · .rpm' },
+};
+
+async function fetchLatestRelease() {
+  const res = await fetch(LATEST_API, { headers: { Accept: 'application/vnd.github+json' } });
+  if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+  return res.json();
+}
+
+// Render a fallback where every button points at the releases page.
+function renderFallback() {
+  const primary = document.querySelector('[data-dl-primary]');
+  const secondary = document.querySelector('[data-dl-secondary]');
+  const version = document.querySelector('[data-dl-version]');
+  if (primary) {
+    primary.href = RELEASES_PAGE;
+    primary.querySelector('[data-dl-label]').textContent = 'Download PAS';
+    primary.querySelector('[data-dl-ext]').textContent = 'choose your platform on GitHub';
+  }
+  if (secondary) secondary.innerHTML = '';
+  if (version) version.textContent = 'latest release · verify with SHA256SUMS.txt';
+}
+
+async function init() {
+  let primary = document.querySelector('[data-dl-primary]');
+  const secondary = document.querySelector('[data-dl-secondary]');
+  const versionEl = document.querySelector('[data-dl-version]');
+  const modal = document.querySelector('[data-linux-modal]');
+  const modalList = document.querySelector('[data-linux-list]');
+  if (!primary || !secondary) return;
+
+  const detected = detectOS(navigator.userAgent, navigator.platform);
+
+  let release;
+  try {
+    release = await fetchLatestRelease();
+  } catch {
+    renderFallback();
+    return;
+  }
+
+  const groups = classifyAssets(release.assets);
+  const linux = linuxFormats(groups.linux);
+  const checksums = findChecksums(release.assets);
+  const version = release.tag_name || 'latest';
+
+  // Primary = detected OS; secondaries = the other two.
+  const order = [detected, ...['windows', 'macos', 'linux'].filter((o) => o !== detected)];
+  secondary.innerHTML = '';
+
+  order.forEach((os, idx) => {
+    const meta = OS_META[os];
+    const isPrimary = idx === 0;
+    const firstAsset = groups[os][0];
+    const isLinux = os === 'linux';
+
+    const el = document.createElement('a');
+    el.className = isPrimary ? 'dlbtn primary' : 'dlbtn';
+    el.innerHTML =
+      `<span class="dl-os">${meta.icon}</span>` +
+      `<span class="dl-text"><span class="dl-label" data-dl-label>` +
+      `${isPrimary ? 'Download for ' + meta.label : meta.label}</span>` +
+      `<span class="dl-ext" data-dl-ext>${meta.ext}</span></span>`;
+
+    if (isLinux && linux.length) {
+      el.href = '#';
+      el.addEventListener('click', (e) => { e.preventDefault(); openLinuxModal(modal, modalList, linux); });
+    } else {
+      el.href = firstAsset ? firstAsset.browser_download_url : RELEASES_PAGE;
+    }
+
+    if (isPrimary) { primary.replaceWith(el); primary = el; }
+    else secondary.appendChild(el);
+  });
+
+  if (versionEl) {
+    versionEl.innerHTML = checksums
+      ? `${version} · latest release · <a href="${checksums}">verify with SHA256SUMS.txt</a>`
+      : `${version} · latest release`;
+  }
+
+  // Modal close wiring.
+  if (modal) {
+    modal.querySelectorAll('[data-modal-close]').forEach((b) =>
+      b.addEventListener('click', () => modal.classList.remove('open')));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+  }
+}
+
+function openLinuxModal(modal, list, formats) {
+  if (!modal || !list) return;
+  list.innerHTML = formats
+    .map((f) => `<a class="linux-row" href="${f.url}"><span class="linux-fmt">${f.format}</span>` +
+      `<span class="linux-hint">${f.hint}</span></a>`)
+    .join('');
+  modal.classList.add('open');
+}
+
+// Only run in a browser; importing under Node (tests) must not touch the DOM.
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+}
