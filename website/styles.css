@@ -83,7 +83,8 @@ h3 { color: #fff; }
 /* Features */
 .fgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .fcard { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
-.fcard .ic { font-size: 22px; }
+.fcard .ic { color: var(--accent); height: 28px; }
+.fcard .ic svg { width: 26px; height: 26px; }
 .fcard h3 { margin: 10px 0 6px; font-size: 15px; }
 .fcard p { margin: 0; font-size: 13px; color: var(--soft); }
 .features { background: var(--bg); }
