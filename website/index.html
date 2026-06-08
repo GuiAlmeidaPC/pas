@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PAS — Practical Analytics Studio</title>
+  <meta name="description" content="The data-wrangling power of SAS, open and offline. Run the DATA step and PROC SQL natively on your desktop — no server, no license." />
+  <link rel="icon" href="assets/favicon.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="wordmark"><img src="assets/logo.png" alt="" class="logo" /> <span class="cy">PAS</span>
+      <span class="tagline">Practical Analytics Studio</span></div>
+    <a class="nav-dl" href="#download">Download</a>
+  </header>
+
+  <main>
+    <!-- HERO -->
+    <section class="hero" id="download">
+      <div class="hero-copy">
+        <h1>The data-wrangling power of <span class="cy">SAS</span>,<br>open &amp; offline.</h1>
+        <p class="lede">DATA step + PROC SQL that run unmodified on your desktop — backed by
+          DuckDB &amp; Apache Arrow. No server, no license.</p>
+        <div class="downloads">
+          <a class="dlbtn primary" data-dl-primary href="https://github.com/GuiAlmeidaPC/pas/releases/latest">
+            <span class="dl-os">⬇</span>
+            <span class="dl-text"><span class="dl-label" data-dl-label>Download PAS</span>
+              <span class="dl-ext" data-dl-ext>detecting your platform…</span></span>
+          </a>
+          <div class="downloads-secondary" data-dl-secondary></div>
+        </div>
+        <p class="dl-meta" data-dl-version>latest release · verify with SHA256SUMS.txt</p>
+      </div>
+      <div class="hero-shot">
+        <figure class="window">
+          <figcaption class="titlebar"><span class="dot red"></span><span class="dot amber"></span><span class="dot green"></span> PAS — sales.sas</figcaption>
+          <img src="assets/screenshots/hero.svg" alt="PAS editor running a PROC SQL query with results" />
+        </figure>
+      </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section class="features">
+      <p class="eyebrow">Why PAS</p>
+      <h2>Everything you need to wrangle data</h2>
+      <div class="fgrid">
+        <article class="fcard"><div class="ic">⚙️</div><h3>DATA step &amp; PROC SQL</h3>
+          <p>SAS semantics close enough that common scripts run unmodified.</p></article>
+        <article class="fcard"><div class="ic">⚡</div><h3>DuckDB-powered</h3>
+          <p>SQL executes on a highly optimized engine with zero-copy Arrow transfer.</p></article>
+        <article class="fcard"><div class="ic">📊</div><h3>Million-row viewer</h3>
+          <p>Paginated virtual scrolling handles huge tables smoothly.</p></article>
+        <article class="fcard"><div class="ic">🔌</div><h3>Offline &amp; native</h3>
+          <p>A single redistributable binary. No server, no license, no cloud.</p></article>
+        <article class="fcard"><div class="ic">🧩</div><h3>Macro language</h3>
+          <p><code>%macro</code>, <code>%if</code>/<code>%do</code>, macro functions and <code>&amp;</code>/<code>%</code> substitution.</p></article>
+        <article class="fcard"><div class="ic">🖥️</div><h3>Cross-platform</h3>
+          <p>Windows, macOS and Linux from one codebase.</p></article>
+      </div>
+    </section>
+
+    <!-- HOW IT WORKS -->
+    <section class="how">
+      <p class="eyebrow">How it works</p>
+      <h2>A familiar Enterprise Guide–style IDE</h2>
+      <figure class="window wide">
+        <figcaption class="titlebar"><span class="dot red"></span><span class="dot amber"></span><span class="dot green"></span> PAS</figcaption>
+        <img src="assets/screenshots/ide-full.svg" alt="The PAS IDE: library and project browsers, code editor, log pane, and output viewer" />
+      </figure>
+      <p class="how-caption">Editor with SAS syntax highlighting, a real-time log pane, a paginated
+        output viewer, and library/project browsers — all streaming rows through the DATA step
+        without holding everything in memory.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>PAS — MIT licensed</span>
+    <nav>
+      <a href="https://github.com/GuiAlmeidaPC/pas/releases">Releases</a>
+      <a href="https://github.com/GuiAlmeidaPC/pas/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/GuiAlmeidaPC/pas/releases/latest">SHA256SUMS</a>
+    </nav>
+  </footer>
+
+  <!-- LINUX FORMAT MODAL -->
+  <div class="modal" data-linux-modal>
+    <div class="modal-box">
+      <div class="modal-head"><h3>Choose a Linux package</h3>
+        <button class="modal-x" data-modal-close aria-label="Close">×</button></div>
+      <div class="linux-list" data-linux-list></div>
+    </div>
+  </div>
+
+  <script type="module" src="download.js"></script>
+</body>
+</html>
