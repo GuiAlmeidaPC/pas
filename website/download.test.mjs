@@ -88,3 +88,28 @@ test('findChecksums returns the SHA256SUMS url or null', () => {
   assert.equal(findChecksums([{ name: 'app.deb', browser_download_url: 'u' }]), null);
   assert.equal(findChecksums([]), null);
 });
+
+import { primaryAsset } from './download.js';
+
+test('primaryAsset prefers the .exe installer on Windows', () => {
+  const win = [
+    { name: 'PAS_0.2.0_x64_en-US.msi', browser_download_url: 'u-msi' },
+    { name: 'PAS_0.2.0_x64-setup.exe', browser_download_url: 'u-exe' },
+  ];
+  assert.equal(primaryAsset('windows', win).browser_download_url, 'u-exe');
+});
+
+test('primaryAsset falls back to first Windows asset when no .exe exists', () => {
+  const win = [{ name: 'PAS_0.2.0_x64_en-US.msi', browser_download_url: 'u-msi' }];
+  assert.equal(primaryAsset('windows', win).browser_download_url, 'u-msi');
+});
+
+test('primaryAsset returns the first asset for non-Windows OSes', () => {
+  const mac = [{ name: 'PAS.dmg', browser_download_url: 'u-dmg' }];
+  assert.equal(primaryAsset('macos', mac).browser_download_url, 'u-dmg');
+});
+
+test('primaryAsset returns null for an empty/missing list', () => {
+  assert.equal(primaryAsset('windows', []), null);
+  assert.equal(primaryAsset('linux', undefined), null);
+});

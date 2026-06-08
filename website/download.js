@@ -67,12 +67,26 @@ export function findChecksums(assets) {
   return match ? match.browser_download_url : null;
 }
 
+/**
+ * Choose which asset a one-click button should download for an OS.
+ * Windows prefers the .exe (NSIS) installer over the .msi; other OSes
+ * just take the first asset. Returns null when the list is empty.
+ */
+export function primaryAsset(os, assets) {
+  const list = assets || [];
+  if (os === 'windows') {
+    const exe = list.find((a) => String(a?.name || '').toLowerCase().endsWith('.exe'));
+    if (exe) return exe;
+  }
+  return list[0] || null;
+}
+
 export const REPO = 'GuiAlmeidaPC/pas';
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
 
 const OS_META = {
-  windows: { label: 'Windows', icon: '🪟', ext: '.msi installer' },
+  windows: { label: 'Windows', icon: '🪟', ext: '.exe installer' },
   macos: { label: 'macOS', icon: '🍎', ext: '.dmg (universal)' },
   linux: { label: 'Linux', icon: '🐧', ext: 'AppImage · .deb · .rpm' },
 };
@@ -127,7 +141,7 @@ async function init() {
   order.forEach((os, idx) => {
     const meta = OS_META[os];
     const isPrimary = idx === 0;
-    const firstAsset = groups[os][0];
+    const firstAsset = primaryAsset(os, groups[os]);
     const isLinux = os === 'linux';
 
     const el = document.createElement('a');
