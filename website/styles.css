@@ -63,7 +63,8 @@ h3 { color: #fff; }
 .dlbtn:hover { border-color: var(--accent); }
 .dlbtn.primary { background: var(--primary); border-color: var(--primary-hover); }
 .dlbtn.primary:hover { background: var(--primary-hover); }
-.dl-os { font-size: 20px; }
+.dl-os { font-size: 20px; display: flex; align-items: center; }
+.os-logo { width: 22px; height: 22px; display: block; }
 .dl-text { display: flex; flex-direction: column; }
 .dl-label { font-weight: 600; color: #fff; font-size: 14px; }
 .dl-ext { font-size: 11px; color: var(--muted); }

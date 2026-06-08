@@ -86,9 +86,9 @@ const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
 
 const OS_META = {
-  windows: { label: 'Windows', icon: '🪟', ext: '.exe installer' },
-  macos: { label: 'macOS', icon: '🍎', ext: '.dmg (universal)' },
-  linux: { label: 'Linux', icon: '🐧', ext: 'AppImage · .deb · .rpm' },
+  windows: { label: 'Windows', icon: '<img class="os-logo" src="assets/os/windows.svg" alt="" />', ext: '.exe installer' },
+  macos: { label: 'macOS', icon: '<img class="os-logo" src="assets/os/apple.svg" alt="" />', ext: '.dmg (universal)' },
+  linux: { label: 'Linux', icon: '<img class="os-logo" src="assets/os/linux.svg" alt="" />', ext: 'AppImage · .deb · .rpm' },
 };
 
 async function fetchLatestRelease() {
