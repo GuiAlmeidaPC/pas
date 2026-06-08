@@ -35,7 +35,7 @@ code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; b
   backdrop-filter: blur(6px); border-bottom: 1px solid var(--border);
 }
 .wordmark { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #fff; font-size: 16px; }
-.wordmark .logo { width: 22px; height: 22px; border-radius: 5px; }
+.wordmark .logo { width: 40px; height: 40px; border-radius: 9px; }
 .wordmark .tagline { color: var(--muted); font-weight: 400; font-size: 12px; }
 .nav-dl { background: var(--primary); color: var(--primary-text); padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; }
 .nav-dl:hover { background: var(--primary-hover); }
@@ -50,6 +50,8 @@ h3 { color: #fff; }
 
 /* Hero */
 .hero { display: grid; grid-template-columns: 1fr 1.1fr; gap: 36px; align-items: center; }
+.hero-kicker { font-size: 18px; font-weight: 600; color: var(--soft); margin: 0 0 10px; }
+.hero-kicker .cy { color: var(--accent); }
 .lede { color: var(--soft); font-size: 16px; max-width: 44ch; margin: 0 0 24px; }
 .downloads { display: flex; flex-direction: column; gap: 10px; max-width: 360px; }
 .downloads-secondary { display: flex; gap: 10px; }
