@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" font-family="'JetBrains Mono', ui-monospace, monospace">
+  <!-- background -->
+  <rect width="1200" height="720" fill="#1e1e1e"/>
+  <!-- divider between editor and results -->
+  <line x1="620" y1="0" x2="620" y2="720" stroke="#3c3c3c" stroke-width="1"/>
+
+  <!-- ===== editor (left) ===== -->
+  <!-- gutter -->
+  <rect x="0" y="0" width="56" height="720" fill="#252526"/>
+  <g fill="#5a5a5a" font-size="22" text-anchor="end">
+    <text x="40" y="74">1</text><text x="40" y="116">2</text><text x="40" y="158">3</text>
+    <text x="40" y="200">4</text><text x="40" y="242">5</text><text x="40" y="284">6</text>
+    <text x="40" y="326">7</text><text x="40" y="368">8</text>
+  </g>
+  <!-- code -->
+  <g font-size="23">
+    <text x="80" y="74"><tspan fill="#4fc1ff">proc sql</tspan><tspan fill="#d4d4d4">;</tspan></text>
+    <text x="80" y="116"><tspan fill="#22d3ee">  create table</tspan><tspan fill="#9cdcfe"> work.top</tspan><tspan fill="#22d3ee"> as</tspan></text>
+    <text x="80" y="158"><tspan fill="#22d3ee">    select</tspan><tspan fill="#d4d4d4"> region,</tspan></text>
+    <text x="80" y="200"><tspan fill="#d4d4d4">      sum(sales)</tspan><tspan fill="#22d3ee"> as</tspan><tspan fill="#d4d4d4"> total</tspan></text>
+    <text x="80" y="242"><tspan fill="#22d3ee">    from</tspan><tspan fill="#9cdcfe"> raw.orders</tspan></text>
+    <text x="80" y="284"><tspan fill="#22d3ee">    group by</tspan><tspan fill="#d4d4d4"> region</tspan></text>
+    <text x="80" y="326"><tspan fill="#22d3ee">    order by</tspan><tspan fill="#d4d4d4"> total</tspan><tspan fill="#4fc1ff"> desc</tspan><tspan fill="#d4d4d4">;</tspan></text>
+    <text x="80" y="368"><tspan fill="#4fc1ff">quit</tspan><tspan fill="#d4d4d4">;</tspan></text>
+  </g>
+
+  <!-- ===== results (right) ===== -->
+  <rect x="620" y="0" width="580" height="48" fill="#2d2d30"/>
+  <text x="650" y="32" font-size="20" fill="#888" font-family="-apple-system, system-ui, sans-serif">RESULTS · work.top</text>
+
+  <!-- table header -->
+  <rect x="620" y="48" width="580" height="46" fill="#252526"/>
+  <g font-size="22" fill="#9cdcfe">
+    <text x="660" y="79">region</text>
+    <text x="980" y="79">total</text>
+  </g>
+  <line x1="620" y1="94" x2="1200" y2="94" stroke="#3c3c3c"/>
+
+  <!-- rows -->
+  <g font-size="22" fill="#d4d4d4">
+    <text x="660" y="140">East</text>  <text x="980" y="140">12,400</text>
+    <text x="660" y="186">West</text>  <text x="980" y="186">9,800</text>
+    <text x="660" y="232">North</text> <text x="980" y="232">7,150</text>
+    <text x="660" y="278">South</text> <text x="980" y="278">5,920</text>
+  </g>
+  <line x1="620" y1="156" x2="1200" y2="156" stroke="#2a2a2a"/>
+  <line x1="620" y1="202" x2="1200" y2="202" stroke="#2a2a2a"/>
+  <line x1="620" y1="248" x2="1200" y2="248" stroke="#2a2a2a"/>
+
+  <!-- status bar -->
+  <rect x="620" y="664" width="580" height="56" fill="#1a1a1a"/>
+  <text x="650" y="699" font-size="20" fill="#4ade80" font-family="-apple-system, system-ui, sans-serif">▸ 4 rows · 0.04s</text>
+</svg>

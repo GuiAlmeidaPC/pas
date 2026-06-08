@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 680" font-family="'JetBrains Mono', ui-monospace, monospace">
+  <!-- background -->
+  <rect width="1200" height="680" fill="#1e1e1e"/>
+
+  <!-- ===== left sidebar: libraries / project ===== -->
+  <rect x="0" y="0" width="240" height="680" fill="#252526"/>
+  <line x1="240" y1="0" x2="240" y2="680" stroke="#3c3c3c"/>
+  <g font-size="19" font-family="-apple-system, system-ui, sans-serif">
+    <text x="20" y="40" fill="#888">LIBRARIES</text>
+    <text x="34" y="74" fill="#9cdcfe">▸ work</text>
+    <text x="34" y="104" fill="#9cdcfe">▸ raw</text>
+    <text x="34" y="134" fill="#9cdcfe">▸ sashelp</text>
+    <text x="20" y="184" fill="#888">PROJECT</text>
+    <text x="34" y="218" fill="#22d3ee">sales.sas</text>
+    <text x="34" y="248" fill="#d4d4d4">joins.sas</text>
+    <text x="34" y="278" fill="#d4d4d4">macro_demo.sas</text>
+  </g>
+
+  <!-- ===== center: editor ===== -->
+  <!-- editor tab -->
+  <rect x="240" y="0" width="640" height="40" fill="#2d2d30"/>
+  <rect x="240" y="0" width="200" height="40" fill="#1e1e1e"/>
+  <text x="262" y="27" font-size="18" fill="#d4d4d4" font-family="-apple-system, system-ui, sans-serif">sales.sas</text>
+  <!-- code -->
+  <g font-size="21">
+    <text x="262" y="84"><tspan fill="#4fc1ff">data</tspan><tspan fill="#9cdcfe"> work.sales</tspan><tspan fill="#d4d4d4">;</tspan></text>
+    <text x="262" y="118"><tspan fill="#4fc1ff">  set</tspan><tspan fill="#9cdcfe"> raw.orders</tspan><tspan fill="#d4d4d4">;</tspan></text>
+    <text x="262" y="152"><tspan fill="#d4d4d4">  total = qty * </tspan><tspan fill="#22d3ee">price</tspan><tspan fill="#d4d4d4">;</tspan></text>
+    <text x="262" y="186"><tspan fill="#4fc1ff">  if</tspan><tspan fill="#d4d4d4"> total &gt; </tspan><tspan fill="#b5cea8">100</tspan><tspan fill="#4fc1ff"> then</tspan><tspan fill="#d4d4d4"> tier = </tspan><tspan fill="#ce9178">"A"</tspan><tspan fill="#d4d4d4">;</tspan></text>
+    <text x="262" y="220"><tspan fill="#4fc1ff">run</tspan><tspan fill="#d4d4d4">;</tspan></text>
+  </g>
+
+  <!-- log pane (bottom of center) -->
+  <line x1="240" y1="470" x2="880" y2="470" stroke="#3c3c3c"/>
+  <rect x="240" y="470" width="640" height="34" fill="#2d2d30"/>
+  <text x="262" y="493" font-size="17" fill="#888" font-family="-apple-system, system-ui, sans-serif">LOG</text>
+  <g font-size="18" font-family="-apple-system, system-ui, sans-serif">
+    <text x="262" y="538" fill="#888">NOTE: 1,000,000 observations read from RAW.ORDERS</text>
+    <text x="262" y="568" fill="#888">NOTE: WORK.SALES created with 1,000,000 rows</text>
+    <text x="262" y="600" fill="#4ade80">NOTE: DATA step complete · real time 0.40s</text>
+  </g>
+
+  <!-- ===== right: output / dataset viewer ===== -->
+  <line x1="880" y1="0" x2="880" y2="680" stroke="#3c3c3c"/>
+  <rect x="880" y="0" width="320" height="40" fill="#2d2d30"/>
+  <text x="902" y="27" font-size="18" fill="#888" font-family="-apple-system, system-ui, sans-serif">OUTPUT · work.sales</text>
+  <!-- table header -->
+  <rect x="880" y="40" width="320" height="40" fill="#252526"/>
+  <g font-size="18" fill="#9cdcfe">
+    <text x="902" y="66">id</text><text x="980" y="66">qty</text><text x="1080" y="66">total</text>
+  </g>
+  <line x1="880" y1="80" x2="1200" y2="80" stroke="#3c3c3c"/>
+  <g font-size="18" fill="#d4d4d4">
+    <text x="902" y="116">1</text><text x="980" y="116">3</text><text x="1080" y="116">29.70</text>
+    <text x="902" y="152">2</text><text x="980" y="152">1</text><text x="1080" y="152">9.90</text>
+    <text x="902" y="188">3</text><text x="980" y="188">5</text><text x="1080" y="188">55.00</text>
+    <text x="902" y="224">4</text><text x="980" y="224">2</text><text x="1080" y="224">18.40</text>
+    <text x="902" y="260">5</text><text x="980" y="260">7</text><text x="1080" y="260">71.05</text>
+    <text x="902" y="296">6</text><text x="980" y="296">1</text><text x="1080" y="296">12.00</text>
+  </g>
+  <line x1="880" y1="128" x2="1200" y2="128" stroke="#2a2a2a"/>
+  <line x1="880" y1="164" x2="1200" y2="164" stroke="#2a2a2a"/>
+  <line x1="880" y1="200" x2="1200" y2="200" stroke="#2a2a2a"/>
+  <line x1="880" y1="236" x2="1200" y2="236" stroke="#2a2a2a"/>
+  <line x1="880" y1="272" x2="1200" y2="272" stroke="#2a2a2a"/>
+  <rect x="880" y="640" width="320" height="40" fill="#1a1a1a"/>
+  <text x="902" y="667" font-size="17" fill="#888" font-family="-apple-system, system-ui, sans-serif">1 – 6 of 1,000,000</text>
+</svg>

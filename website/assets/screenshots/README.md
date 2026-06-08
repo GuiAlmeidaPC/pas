@@ -1,13 +1,14 @@
 # Screenshots
 
-These are **placeholders** until real captures replace them at the same paths.
+`hero.svg` and `ide-full.svg` are **designed mockups** of the PAS IDE, drawn in the
+app's dark theme. They stand in for real screenshots and are what the live site ships.
 
-Capture from the running PAS app (`example_project/` has scripts + data to load):
+If you later want genuine screenshots, capture them from the running app
+(`example_project/` has scripts + data to load):
 
-- `hero.png` — the code editor with a PROC SQL query and its results visible.
-  Roughly 16:10, window ~1200px wide, dark theme.
-- `ide-full.png` — the full IDE: library/project browser (left), editor (center),
+- **hero** — the code editor with a PROC SQL query and its results visible.
+- **ide-full** — the full IDE: library/project browser (left), editor (center),
   log pane (bottom), output/dataset viewer (right).
 
-Keep them PNG, dark theme, and reasonably high-DPI. Replace the placeholder files
-in place — `index.html` references these exact filenames.
+To swap one in, drop a PNG/SVG here and update the matching `<img src="…">` in
+`../../index.html`.
