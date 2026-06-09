@@ -1,6 +1,6 @@
 # PAS — Specification
 
-**PAS** (Practical Analytics Studio) is a cross-platform desktop application that clones the data-wrangling subset of SAS. It provides a SAS Enterprise Guide–style IDE for authoring and running a SAS-compatible language (PROC SQL + DATA step), with a log pane, a paginated dataset viewer, and a library/project browser.
+**PAS** (Practical Analytics Studio) is a cross-platform desktop application that provides a full-featured analytics IDE for authoring and running a PAS language (PROC SQL + DATA step), with a log pane, a paginated dataset viewer, and a library/project browser.
 
 Statistical procedures (`PROC MEANS`, `PROC FREQ`, `PROC REG`, etc.) are explicitly **out of scope**. Only data manipulation is supported.
 
@@ -9,8 +9,8 @@ Statistical procedures (`PROC MEANS`, `PROC FREQ`, `PROC REG`, etc.) are explici
 ## 1. Goals & Non-Goals
 
 ### 1.1 Goals
-- Faithful enough emulation of SAS DATA step and PROC SQL semantics that common data-wrangling programs run unmodified.
-- Familiar SAS EG–style UI: code editor, log, output, library tree, project tree.
+- Faithful enough emulation of PAS DATA step and PROC SQL semantics that common data-wrangling programs run unmodified.
+- Familiar traditional analytics UI: code editor, log, output, library tree, project tree.
 - Submit selected code with **F3** (no selection → submit whole program).
 - Output and dataset browsing must work on tables that don't fit in RAM (streamed pagination).
 - Single redistributable binary per OS (Windows, macOS, Linux x86_64 + arm64).
@@ -18,13 +18,13 @@ Statistical procedures (`PROC MEANS`, `PROC FREQ`, `PROC REG`, etc.) are explici
 
 ### 1.2 Non-Goals
 - Statistical procedures, graphing procs, ODS, IML, macro-heavy production workloads.
-- SAS catalog (`.sas7bcat`) compatibility.
-- Wire compatibility with SAS server protocols.
+- proprietary catalog (`proprietary catalog format`) compatibility.
+- Wire compatibility with external analytics server protocols.
 - Multi-user / collaborative editing.
 - Mobile or web deployment.
 
 ### 1.3 v1 Scope Boundary
-v1 ships with: PROC SQL, DATA step core (see §5), libraries against DuckDB and CSV/Parquet, a usable EG-like UI, and a near-complete macro processor (`%macro`/`%mend`, `%if`, `%do` loops, macro functions, and `&`/`%` substitution — see §5.5). `PROC IMPORT`/`PROC EXPORT` are v2. **`.sas7bdat` interop is explicitly out of scope** (the proprietary binary format is a deliberate non-goal).
+v1 ships with: PROC SQL, DATA step core (see §5), libraries against DuckDB and CSV/Parquet, a usable familiar UI, and a near-complete macro processor (`%macro`/`%mend`, `%if`, `%do` loops, macro functions, and `&`/`%` substitution — see §5.5). `PROC IMPORT`/`PROC EXPORT` are v2. **proprietary binary dataset interop is explicitly out of scope** (the proprietary binary format is a deliberate non-goal).
 
 ---
 
@@ -39,7 +39,7 @@ v1 ships with: PROC SQL, DATA step core (see §5), libraries against DuckDB and 
 | Engine | **Rust** (workspace crate `pas-engine`) | Same process as Tauri backend, no IPC overhead |
 | Storage / SQL | **DuckDB** (via `duckdb` crate) | Columnar, embedded, ANSI SQL ≈ PROC SQL |
 | In-memory format | **Apache Arrow** (`arrow-rs`) | Zero-copy batches between engine, DuckDB, and UI |
-| Parser | Hand-written recursive-descent + Pratt for expressions | SAS grammar is too irregular for generators |
+| Parser | Hand-written recursive-descent + Pratt for expressions | PAS grammar is too irregular for generators |
 | Build | Cargo workspace + pnpm | Standard |
 | Tests | `cargo test`, `insta` for snapshot, Playwright for UI smoke | — |
 
@@ -58,7 +58,7 @@ pas/
 ├─ ui/                         # React app (Vite)
 │  ├─ src/
 │  └─ package.json
-├─ examples/                   # sample .sas programs
+├─ examples/                   # sample .pas programs
 ├─ tests/                      # integration tests, golden programs
 └─ SPEC.md
 ```
@@ -80,7 +80,7 @@ A **Project** is a directory containing:
 ```
 my-project/
 ├─ project.pas.json            # layout, libname assignments, open tabs
-├─ programs/*.sas              # user code
+├─ programs/*.pas              # user code
 └─ work/                       # DuckDB file for persistent project tables (optional)
 ```
 `project.pas.json` is human-readable and diffable.
@@ -91,8 +91,8 @@ A `LIBNAME` maps a name to a backing store:
 - `DIR` — a filesystem directory; each `.parquet`/`.csv` file appears as a dataset
 - `MEMORY` — equivalent to `WORK`
 
-Engine syntax mirrors SAS:
-```sas
+Engine syntax uses the PAS language:
+```pas
 libname sales duckdb "C:/data/sales.duckdb";
 libname raw   dir    "/data/landing" format=parquet;
 ```
@@ -102,7 +102,7 @@ libname raw   dir    "/data/landing" format=parquet;
 ## 4. UI Specification
 
 ### 4.1 Layout
-Three-column resizable layout, matching SAS EG defaults:
+Three-column resizable layout, matching traditional analytics defaults:
 
 ```
 ┌──────────────┬──────────────────────────────┬──────────────┐
@@ -117,7 +117,7 @@ Three-column resizable layout, matching SAS EG defaults:
 Layout is persisted per-project in `project.pas.json`.
 
 ### 4.2 Editor
-- Monaco with a custom `sas` language registration.
+- Monaco with a custom `pas` language registration.
 - Tokenizer recognizes: keywords, datalines block, macro tokens (`&x`, `%x`), string literals (single + double + `"..."x` hex), numeric literals, dates (`'01JAN2024'd`), comments (`*...;`, `/* */`).
 - **Keybindings**:
   - `F3` — Submit. If a non-empty selection exists, submit only the selection; else submit the whole buffer.
@@ -143,7 +143,7 @@ Grid behaviour (§7) is identical for both.
 
 ### 4.5 Library / Project Trees
 - **Libraries**: top-level nodes are libnames; expand to list datasets; expand a dataset to list columns with type + format. Right-click → Open, Properties, Drop.
-- **Project**: file tree rooted at project dir; double-click `.sas` opens a tab.
+- **Project**: file tree rooted at project dir; double-click `.pas` opens a tab.
 
 ### 4.6 Status Bar
 - Engine state: Idle / Running / Cancelling.
@@ -170,7 +170,7 @@ Events use Tauri's event system; payloads are JSON for log/control, binary (Arro
 
 ## 5. Language Specification
 
-PAS implements a subset of the SAS language called **PAS/SAS**. Where behaviour differs from SAS, this document is authoritative.
+PAS implements a subset of the PAS language called **PAS**. Where behavior differs from documented compatibility semantics, this document is authoritative.
 
 ### 5.1 Lexical
 - Statements terminated by `;`. Whitespace-insensitive except inside strings and datalines.
@@ -188,7 +188,7 @@ Global statements in v1: `libname`, `filename`, `options`, `title`, `footnote`, 
 ### 5.3 DATA Step
 
 #### 5.3.1 Form
-```sas
+```pas
 data <out-ds-list> [/ options];
     <statements>
 run;
@@ -224,7 +224,7 @@ run;
 `_n_` (iteration counter, 1-based), `_error_` (0/1), `first.var`, `last.var` (with `by`).
 
 #### 5.3.4 Variable typing
-Two types only: **numeric** (f64, 8 bytes) and **character** (UTF-8, fixed declared length, space-padded on storage, trimmed on most ops). SAS missing numeric = NaN with a payload bit (we use Arrow null mask + a "special missing" side-table for `.a`–`.z`, `._`).
+Two types only: **numeric** (f64, 8 bytes) and **character** (UTF-8, fixed declared length, space-padded on storage, trimmed on most ops). PAS missing numeric = NaN with a payload bit (we use Arrow null mask + a "special missing" side-table for `.a`–`.z`, `._`).
 
 #### 5.3.5 Expressions & operators
 Arithmetic `+ - * / **`, comparison `= ne lt le gt ge` and symbolic equivalents, logical `and or not`, `||` concat, `in (...)`, `between ... and ...` (PROC SQL only), `:` colon-modifier on comparisons (truncated char compare).
@@ -249,7 +249,7 @@ Each output is written as a new DuckDB table (or Arrow IPC file for `MEMORY`) un
 
 ### 5.4 PROC SQL
 
-```sas
+```pas
 proc sql [noprint outobs=n inobs=n];
     <sql-statements>
 quit;
@@ -257,10 +257,10 @@ quit;
 
 Supported:
 - `select`, `create table ... as`, `insert into`, `update`, `delete`, `drop table`, `create view` (materialized — no lazy in v1).
-- SAS-specific: `calculated <col>`, `outer union [corr]`, `monotonic()` → `row_number() over ()`, `eqt`/`gtt` truncated comparisons (rewritten), automatic remerging of summary stats (NOTE emitted).
+- PAS-specific: `calculated <col>`, `outer union [corr]`, `monotonic()` → `row_number() over ()`, `eqt`/`gtt` truncated comparisons (rewritten), automatic remerging of summary stats (NOTE emitted).
 - Three-part names: `libref.table` → `schema.table` in DuckDB.
 
-Implementation: parse the SAS-flavoured SQL into our own AST, rewrite to DuckDB SQL, execute. Result sets without `create table` become **output blocks** displayed in the Output tab.
+Implementation: parse the PAS-flavored SQL into our own AST, rewrite to DuckDB SQL, execute. Result sets without `create table` become **output blocks** displayed in the Output tab.
 
 ### 5.5 Macro Language
 PAS ships a near-complete macro processor that runs as a text-substitution
@@ -294,7 +294,7 @@ Automatic macro variables: `&sysdate`, `&sysday`, `&systime`, `&sysuserid`,
 DATA-step → macro binding is available via `call symput`/`call symputx`
 (see §5.3.2).
 
-Known gaps vs SAS are tracked in `DIVERGENCE.md` (notably: no `%sysfunc`, and
+Known gaps Language Divergences are tracked in `DIVERGENCE.md` (notably: no `%sysfunc`, and
 `%put` output is emitted ahead of program output — see DIVERGENCE §5.3).
 
 ### 5.6 Reserved Options (v1)
@@ -335,7 +335,7 @@ results: log events, output blocks, dataset writes
 `StepCtx` holds an `Arc<AtomicBool>`. The interpreter checks every 4096 rows and between steps. SQL execution uses DuckDB's interrupt API.
 
 ### 6.5 Concurrency
-- One submission at a time per session (matches SAS).
+- One submission at a time per session (matches documented compatibility behavior).
 - The engine runs on a dedicated Tokio task; Tauri commands enqueue work.
 - DuckDB connection is `!Send` safe via a `Mutex`-guarded handle owned by the engine task.
 - UI paging requests (§7) run concurrently on a **separate read-only DuckDB connection** so they don't block submissions.
@@ -418,8 +418,8 @@ projects_dir = "~/pas-projects"
     {"name": "RAW", "kind": "DIR", "path": "./data", "format": "parquet"},
     {"name": "OUT", "kind": "DUCKDB", "path": "./work/out.duckdb"}
   ],
-  "open_tabs": ["programs/load.sas", "programs/transform.sas"],
-  "active_tab": "programs/transform.sas",
+  "open_tabs": ["programs/load.pas", "programs/transform.pas"],
+  "active_tab": "programs/transform.pas",
   "layout": {"left": 240, "right": 280, "bottom": 320}
 }
 ```
@@ -479,11 +479,11 @@ With `options pasdebug=1;`, the engine additionally logs IR, planner decisions, 
 ## 12. Testing Strategy
 
 ### 12.1 Unit
-- `pas-lex`, `pas-parse`: snapshot tests via `insta` over a corpus of SAS programs.
-- `pas-engine`: per-function tests (one per SAS function in §5.3.6).
+- `pas-lex`, `pas-parse`: snapshot tests via `insta` over a corpus of source programs.
+- `pas-engine`: per-function tests (one per PAS function in §5.3.6).
 
 ### 12.2 Golden Programs
-`tests/golden/` contains `.sas` programs paired with expected `.log` and expected output `.parquet`. CI runs each program and diffs results. The corpus must cover:
+`tests/golden/` contains `.pas` programs paired with expected `.log` and expected output `.parquet`. CI runs each program and diffs results. The corpus must cover:
 - Every supported DATA step statement.
 - `by` group processing with first./last.
 - `merge` (1:1, 1:n, n:m with warnings).
@@ -500,7 +500,7 @@ With `options pasdebug=1;`, the engine additionally logs IR, planner decisions, 
 - Visual regression on the grid for fixed datasets.
 
 ### 12.5 Conformance
-A "SAS divergence" doc tracks every known deviation from SAS behaviour, with rationale. Tests assert the divergence to prevent silent regressions.
+A "language divergence" doc tracks every known deviation from documented compatibility behavior, with rationale. Tests assert the divergence to prevent silent regressions.
 
 ---
 
@@ -558,14 +558,14 @@ A "SAS divergence" doc tracks every known deviation from SAS behaviour, with rat
 - Macro language (`%let`, `%put`, `&var`, plus `%macro`/`%mend`, `%if`,
   `%do` loops, and macro functions — see §5.5).
 - Auto-update.  *Deferred: requires a real distribution server with signed manifests. Tracked separately.*
-- SAS divergence document published. See `DIVERGENCE.md`.
+- language divergence document published. See `DIVERGENCE.md`.
 
 ### v2 (post-1.0)
 - Macro language polish (`%sysfunc`, additional autocall built-ins, ordering
   parity for `%put`).
 - `PROC IMPORT`/`PROC EXPORT`.
 - ODS-lite for HTML output.
-- Optional: scripting hooks (run a `.sas` from CLI without UI).
+- Optional: scripting hooks (run a `.pas` from CLI without UI).
 
 *Note: `PROC SORT`, `PROC PRINT`, and `PROC TRANSPOSE` shipped in v1.1.*
 
@@ -575,7 +575,7 @@ A "SAS divergence" doc tracks every known deviation from SAS behaviour, with rat
 
 1. **Special missing values** (`.a`–`.z`, `._`): store as side-table or encode in NaN payload bits? Decision affects every numeric op.
 2. **Sort stability for `by`**: rely on DuckDB sort (not stable by default) or implement a stable external merge?
-3. **Macro pre-pass vs integrated lex**: a true SAS macro processor interleaves with tokenization. v1 runs macros as a per-block text pre-pass instead; this is why `%put` output is ordered ahead of program output (DIVERGENCE §5.3) and why `%sysfunc` (which calls DATA-step functions) is not yet supported. Revisit interleaving if these gaps matter.
+3. **Macro pre-pass vs integrated lex**: a true PAS macro processor interleaves with tokenization. v1 runs macros as a per-block text pre-pass instead; this is why `%put` output is ordered ahead of program output (DIVERGENCE §5.3) and why `%sysfunc` (which calls DATA-step functions) is not yet supported. Revisit interleaving if these gaps matter.
 4. **DuckDB versioning**: pin DuckDB and embed the storage version, or expose `ATTACH` for cross-version files?
 5. **Plug-in surface**: should v2 expose a Rust trait for custom procs / functions? If yes, design now to avoid breaking changes.
 

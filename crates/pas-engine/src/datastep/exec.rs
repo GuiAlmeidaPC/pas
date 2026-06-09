@@ -878,7 +878,7 @@ fn apply_informat(inf: &Informat, field: Option<&str>) -> RtValue {
             if t.is_empty() {
                 RtValue::missing()
             } else {
-                super::lex::parse_sas_date(t)
+                super::lex::parse_pas_date(t)
                     .map(RtValue::Num)
                     .unwrap_or_else(|_| RtValue::missing())
             }
@@ -982,7 +982,7 @@ fn input_vars_to_row(input_vars: &[InputVar], toks: &[String]) -> SourceRow {
 /// that isn't already declared by `length`, `array`, `retain`, `input`,
 /// or the source schema. Type is inferred from the right-hand side.
 /// Insertion order is preserved so the output table's columns appear in
-/// source order, matching SAS PDV semantics.
+/// source order, matching PAS PDV semantics.
 fn analyze_body_assignments(body: &[Stmt]) -> Vec<(String, bool)> {
     let mut order: Vec<(String, bool)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1767,7 +1767,7 @@ mod input_tests {
         let r = row("7 Grace 22JUL2019 95000", &vars);
         assert_eq!(r["id"].as_num(), Some(7.0));
         assert_eq!(r["name"].as_str(), "Grace");
-        // 22JUL2019 → SAS date serial.
+        // 22JUL2019 → PAS date serial.
         assert_eq!(r["d"].as_num(), Some(21752.0));
         assert_eq!(r["amt"].as_num(), Some(95000.0));
     }

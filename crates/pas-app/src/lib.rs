@@ -471,8 +471,8 @@ fn ensure_under_project_root(path: &Path, state: &AppState) -> Result<(), String
 #[tauri::command]
 fn read_file(path: String, state: State<'_, AppState>) -> Result<String, String> {
     let path = resolve_project_path(normalize_path(&path)?, &state)?;
-    if !extension_is(&path, &["sas"]) {
-        return Err("only .sas program files can be read with read_file".to_string());
+    if !extension_is(&path, &["pas"]) {
+        return Err("only .pas program files can be read with read_file".to_string());
     }
     ensure_under_project_root(&path, &state)?;
     let canonical = canonicalize_path(&path)?;
@@ -482,8 +482,8 @@ fn read_file(path: String, state: State<'_, AppState>) -> Result<String, String>
 #[tauri::command]
 fn write_file(path: String, content: String, state: State<'_, AppState>) -> Result<(), String> {
     let path = resolve_project_path(normalize_path(&path)?, &state)?;
-    if !extension_is(&path, &["sas"]) {
-        return Err("only .sas program files can be written with write_file".to_string());
+    if !extension_is(&path, &["pas"]) {
+        return Err("only .pas program files can be written with write_file".to_string());
     }
     ensure_under_project_root(&path, &state)?;
     let canonical = canonicalize_path(&path)?;
@@ -652,7 +652,7 @@ fn apply_project_libnames(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
-    // Synthesize SAS libname statements and run them through submit().
+    // Synthesize PAS libname statements and run them through submit().
     let mut prog = String::new();
     for l in &libnames {
         let path = l.path.replace('\'', "''");
@@ -1265,7 +1265,7 @@ fn build_ai_request(
                 }),
                 json!({
                     "role": "model",
-                    "parts": [{ "text": "Understood. I will act as a SAS/PAS programming assistant." }],
+                    "parts": [{ "text": "Understood. I will act as a PAS programming assistant." }],
                 }),
             ];
             contents.extend(history.iter().map(|m| {
@@ -1550,7 +1550,7 @@ async fn pick_project_file(
     let file_path = app
         .dialog()
         .file()
-        .add_filter("PAS Project", &["pas.json", "json"])
+        .add_filter("PAS Project", &["pas.json"])
         .blocking_pick_file();
     if let Some(fp) = file_path {
         let path = fp.into_path().map_err(|e| e.to_string())?;
@@ -1567,7 +1567,7 @@ async fn pick_project_file(
 }
 
 #[tauri::command]
-async fn pick_sas_file(
+async fn pick_pas_file(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
@@ -1575,8 +1575,7 @@ async fn pick_sas_file(
     let file_path = app
         .dialog()
         .file()
-        .add_filter("SAS", &["sas"])
-        .add_filter("All files", &["*"])
+        .add_filter("PAS", &["pas"])
         .blocking_pick_file();
     if let Some(fp) = file_path {
         let path = fp.into_path().map_err(|e| e.to_string())?;
@@ -1593,13 +1592,13 @@ async fn pick_sas_file(
 }
 
 #[tauri::command]
-async fn pick_save_sas_file(
+async fn pick_save_pas_file(
     app: AppHandle,
     state: State<'_, AppState>,
     default_path: Option<String>,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let mut builder = app.dialog().file().add_filter("SAS", &["sas"]);
+    let mut builder = app.dialog().file().add_filter("PAS", &["pas"]);
     if let Some(dp) = default_path {
         builder = builder.set_file_name(dp);
     }
@@ -1625,10 +1624,7 @@ async fn pick_save_project_file(
     default_path: Option<String>,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let mut builder = app
-        .dialog()
-        .file()
-        .add_filter("PAS Project", &["pas.json", "json"]);
+    let mut builder = app.dialog().file().add_filter("PAS Project", &["pas.json"]);
     if let Some(dp) = default_path {
         builder = builder.set_file_name(dp);
     }
@@ -1711,8 +1707,8 @@ pub fn run() {
             openai_oauth_status,
             openai_oauth_logout,
             pick_project_file,
-            pick_sas_file,
-            pick_save_sas_file,
+            pick_pas_file,
+            pick_save_pas_file,
             pick_save_project_file
         ])
         .run(tauri::generate_context!())
@@ -1806,16 +1802,16 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("pas_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
 
-        let file_path = temp_dir.join("test.sas");
+        let file_path = temp_dir.join("test.pas");
 
         // Non-existent file but existing parent
         let res = canonicalize_path(&file_path);
         assert!(res.is_ok());
         let canonical = res.unwrap();
-        assert_eq!(canonical.file_name().unwrap(), "test.sas");
+        assert_eq!(canonical.file_name().unwrap(), "test.pas");
 
         // Non-existent parent directory traversal should fail
-        let bad_path = Path::new("/nonexistent_dir_123_xyz/../test.sas");
+        let bad_path = Path::new("/nonexistent_dir_123_xyz/../test.pas");
         let res_bad = canonicalize_path(bad_path);
         assert!(res_bad.is_err());
 
@@ -1839,14 +1835,14 @@ mod tests {
         };
 
         // Case 1: Path inside project root is allowed
-        let test_file = canonical_root.join("program.sas");
+        let test_file = canonical_root.join("program.pas");
         let res = ensure_under_project_root(&test_file, &state);
         assert!(res.is_ok(), "Should allow files inside active project root");
 
         // Case 2: Path outside project root is blocked
         let outside_dir = temp_dir.join("other_folder");
         fs::create_dir_all(&outside_dir).unwrap();
-        let outside_file = outside_dir.canonicalize().unwrap().join("stolen.sas");
+        let outside_file = outside_dir.canonicalize().unwrap().join("stolen.pas");
         let res = ensure_under_project_root(&outside_file, &state);
         assert!(
             res.is_err(),

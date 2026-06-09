@@ -9,10 +9,10 @@ mod datastep;
 mod libname;
 mod library;
 mod macros;
+mod pas_sql;
 mod procs;
 mod query;
 mod rewrite;
-mod sas_sql;
 mod scan;
 mod session;
 mod split;
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn doubled_quote_inside_string_does_not_break_libref_rewrite() {
         // Regression: the libref rewriter used to terminate strings at
-        // the first matching quote, treating SAS-style '' escapes as
+        // the first matching quote, treating PAS-style '' escapes as
         // close-then-open. A literal 'O''Brien' embedded mid-statement
         // followed by a libref reference must still rewrite correctly.
         let s = Session::new_in_memory().unwrap();
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn tier2_regex_functions() {
-        // End-to-end exercise of `prxmatch` and `prxchange`. SAS-style
+        // End-to-end exercise of `prxmatch` and `prxchange`. PAS-style
         // `\N` capture references are normalized to Rust's `$N` by the
         // engine's `convert_repl`, so users can copy/paste familiar
         // patterns directly.
@@ -642,7 +642,7 @@ mod tests {
                 /* times=1 stops after the first substitution */
                 limited  = prxchange('s/foo/bar/', 1, 'foo foo baz');
 
-                /* Capture groups with SAS-style backreferences */
+                /* Capture groups with PAS-style backreferences */
                 captured = prxchange('s/(\w+)@(\w+)/\2 at \1/', 1, 'ada@lovelace');
 
                 /* Case-insensitive global substitution */

@@ -82,6 +82,21 @@ describe("AIChatPanel", () => {
     expect(prompt.tagName).toBe("TEXTAREA");
   });
 
+  it("uses PAS-neutral onboarding copy in the empty state", async () => {
+    vi.mocked(tauriEvent.listen).mockResolvedValue(() => undefined);
+    vi.mocked(tauriCore.invoke).mockImplementation((cmd: string) => {
+      if (cmd === "openai_oauth_status") return Promise.resolve({ signedIn: false });
+      if (cmd === "list_ai_models") return Promise.reject(new Error("offline"));
+      return Promise.resolve(null);
+    });
+
+    renderPanel();
+
+    await screen.findByText("Welcome to the PAS Agent!");
+    expect(screen.getByText(/PAS DATA steps and SQL statements/i)).toBeInTheDocument();
+    expect(screen.queryByText(/reference implementation/i)).not.toBeInTheDocument();
+  });
+
   it("keeps the prompt open on Shift+Enter and inserts a newline", async () => {
     const user = userEvent.setup();
     vi.mocked(tauriEvent.listen).mockResolvedValue(() => undefined);

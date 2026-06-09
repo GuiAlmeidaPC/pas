@@ -1,6 +1,6 @@
 //! Golden-program test runner.
 //!
-//! For each `tests/golden/NN_<name>.sas`, the matching
+//! For each `tests/golden/NN_<name>.pas`, the matching
 //! `NN_<name>.expected.json` describes what to assert about the run:
 //!   - `no_errors`: no Event::Error in the output
 //!   - `datasets`: a map of `LIBREF.NAME` → { rows, columns }
@@ -51,7 +51,7 @@ fn all_goldens_pass() {
         .expect("read_dir golden")
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "sas"))
+        .filter(|p| p.extension().is_some_and(|e| e == "pas"))
         .collect();
     programs.sort();
     assert!(
@@ -61,11 +61,11 @@ fn all_goldens_pass() {
     );
 
     let mut failures = Vec::new();
-    for sas in programs {
-        if let Err(e) = run_one(&sas) {
+    for pas in programs {
+        if let Err(e) = run_one(&pas) {
             failures.push(format!(
                 "{}: {}",
-                sas.file_name().unwrap().to_string_lossy(),
+                pas.file_name().unwrap().to_string_lossy(),
                 e
             ));
         }
@@ -79,13 +79,13 @@ fn all_goldens_pass() {
     }
 }
 
-fn run_one(sas_path: &Path) -> Result<(), String> {
-    let expected_path = sas_path.with_extension("expected.json");
+fn run_one(pas_path: &Path) -> Result<(), String> {
+    let expected_path = pas_path.with_extension("expected.json");
     let expected_text = std::fs::read_to_string(&expected_path)
         .map_err(|e| format!("read expected: {}: {}", expected_path.display(), e))?;
     let expected: Expected =
         serde_json::from_str(&expected_text).map_err(|e| format!("parse expected: {}", e))?;
-    let program = std::fs::read_to_string(sas_path).map_err(|e| e.to_string())?;
+    let program = std::fs::read_to_string(pas_path).map_err(|e| e.to_string())?;
 
     let session = Session::new_in_memory().map_err(|e| e.to_string())?;
     let events = session.submit(&program);

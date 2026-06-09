@@ -26,8 +26,8 @@ type Resolved =
 
 type CardStatus = "pending" | "applying" | "applied" | "rejected";
 
-function isSasPath(path: string): boolean {
-  return /\.sas$/i.test(path);
+function isPasPath(path: string): boolean {
+  return /\.pas$/i.test(path);
 }
 
 function isNotFoundError(e: unknown): boolean {
@@ -52,8 +52,8 @@ export function AIEditCard({ edit, isProjectOpen, readFile, onApply, onReview, a
     let cancelled = false;
     async function resolve() {
       if (edit.kind === "error") return;
-      if (!isSasPath(edit.path)) {
-        setResolved({ state: "error", reason: "only .sas files can be edited" });
+      if (!isPasPath(edit.path)) {
+        setResolved({ state: "error", reason: "only .pas files can be edited" });
         return;
       }
       const loadFile = async (path: string): Promise<EditFileSnapshot> => {

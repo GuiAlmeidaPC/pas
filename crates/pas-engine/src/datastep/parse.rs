@@ -690,7 +690,7 @@ impl<'a> Parser<'a> {
         self.eat_keyword("_temporary_");
 
         // Skip optional parenthesized initial-value list.
-        // SAS allows (value1, value2, ...) for initializing array elements.
+        // PAS allows (value1, value2, ...) for initializing array elements.
         if self.eat(&Tok::LParen) {
             while !matches!(self.peek(), Tok::RParen | Tok::Semi | Tok::Eof) {
                 self.bump(); // skip any token inside the parens

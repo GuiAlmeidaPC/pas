@@ -348,8 +348,8 @@ export function AIChatPanel({
     const separatorMarker = "=======";
     const replaceMarker = ">>>>>>> REPLACE";
 
-    const systemPrompt = `You are an expert SAS and PAS (Practical Analytics Studio) database programmer.
-Your goal is to help the user write, debug, and explain SAS DATA step programs and PROC SQL scripts.
+    const systemPrompt = `You are an expert PAS (Practical Analytics Studio) database programmer.
+Your goal is to help the user write, debug, and explain PAS DATA step programs and PROC SQL scripts.
 
 System Metadata:
 - Platform: ${osPlatform}
@@ -357,13 +357,13 @@ System Metadata:
 - Backed by: DuckDB (for PROC SQL queries)
 
 Programming Constraints & Instructions:
-1. Always generate clean, syntactically correct SAS/PAS code.
+1. Always generate clean, syntactically correct PAS code.
 2. PAS supports DATA steps (with set, merge, by, first., last., retain, array, do loops) and PROC SQL (backed by DuckDB), PROC SORT, PROC PRINT, and PROC TRANSPOSE.
-3. If assigning PROC SQL query results into macro variables, utilize the SAS trimmed syntax:
-   \`\`\`sas
+3. If assigning PROC SQL query results into macro variables, use the trimmed macro-variable syntax:
+   \`\`\`pas
    select count(*) into :variable trimmed from table;
    \`\`\`
-4. Wrap all code blocks in triple-backticks with the explicit language tag (e.g. \`\`\`sas or \`\`\`sql) to ensure the editor's UI snippet card actions can parse and apply them. Never omit the language tag.
+4. Wrap all code blocks in triple-backticks with the explicit language tag (e.g. \`\`\`pas or \`\`\`sql) to ensure the editor's UI snippet card actions can parse and apply them. Never omit the language tag.
 5. Avoid excessive conversational filler or introductory greetings (e.g., "Sure, I'd be happy to help!"). Jump straight to the core explanation or code solution.
 6. If requested to explain or refactor, briefly detail your logic in 1-2 concise bullet points before showing the code.
 
@@ -374,7 +374,7 @@ code blocks. The UI will render them as red/green diff cards with Accept/Reject/
 Three modes (always include both \`path\` and \`mode\` as quoted attributes):
 
 1. Surgical edit (preferred):
-\`\`\`pas-edit path="programs/foo.sas" mode="patch"
+\`\`\`pas-edit path="programs/foo.pas" mode="patch"
 ${searchMarker}
 exact existing text, byte-for-byte
 ${separatorMarker}
@@ -384,20 +384,20 @@ ${replaceMarker}
 You may include multiple SEARCH/REPLACE hunks in one block; they apply atomically.
 
 2. New file:
-\`\`\`pas-edit path="programs/new.sas" mode="create"
+\`\`\`pas-edit path="programs/new.pas" mode="create"
 <full file contents>
 \`\`\`
 
 3. Full overwrite (only when a patch would be larger than the file):
-\`\`\`pas-edit path="programs/big.sas" mode="replace"
+\`\`\`pas-edit path="programs/big.pas" mode="replace"
 <full file contents>
 \`\`\`
 
 Rules:
 - The SEARCH text must match the current file contents exactly (whitespace included).
 - Use file paths from the <active_project> listing in the workspace context.
-- Only .sas files can be edited.
-- For explanation-only snippets the user will copy by hand, continue to use plain \`\`\`sas blocks — do not use pas-edit for non-applicable code samples.
+- Only .pas files can be edited.
+- For explanation-only snippets the user will copy by hand, continue to use plain \`\`\`pas blocks — do not use pas-edit for non-applicable code samples.
 
 Context Information:
 The user's active workspace state is provided below inside structured XML tags. Analyze this context to answer questions accurately and tailor code references to the active project's libraries and datasets.
@@ -566,8 +566,8 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         }
         return;
       }
-      // Existing sas/sql snippet rendering for plain text segments.
-      const codeBlockRegex = /```(?:sas|sql)?([\s\S]*?)```/g;
+      // Existing pas/sql snippet rendering for plain text segments.
+      const codeBlockRegex = /```(?:pas|sql)?([\s\S]*?)```/g;
       let lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = codeBlockRegex.exec(seg.text)) !== null) {
@@ -635,20 +635,20 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         {messages.length === 0 && (
           <div className="empty-state">
             <h4>Welcome to the PAS Agent!</h4>
-            <p>Type a prompt to write, edit, or refactor SAS DATA steps and SQL statements.</p>
+            <p>Type a prompt to write, edit, or refactor PAS DATA steps and SQL statements.</p>
             
             <div className="suggestion-cards">
               <button onClick={() => insertSuggestedContext("Create a mock dataset called sales representing 10 records with region, item, and qty.")}>
                 📝 Create a Sales Mock dataset
               </button>
               <button 
-                onClick={() => insertSuggestedContext("Rewrite this SAS DATA step code to compute total compensation and filter out values below 6000.")}
+                onClick={() => insertSuggestedContext("Rewrite this PAS DATA step code to compute total compensation and filter out values below 6000.")}
                 disabled={!activeContent}
               >
                 ⚙️ Refactor open tab code
               </button>
-              <button onClick={() => insertSuggestedContext("Write a SAS macro to loop through a given count and append table outputs.")}>
-                📦 Generate a SAS Macro loop
+              <button onClick={() => insertSuggestedContext("Write a PAS macro to loop through a given count and append table outputs.")}>
+                📦 Generate a PAS macro loop
               </button>
             </div>
             

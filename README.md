@@ -1,13 +1,13 @@
 # PAS (Practical Analytics Studio)
 
-**PAS** is a cross-platform desktop application that clones the data-wrangling subset of SAS. It provides a SAS Enterprise Guide–style IDE for authoring and running a SAS-compatible language, specifically focusing on the **DATA step** and **PROC SQL**.
+**PAS** is a cross-platform desktop application that provides a full-featured analytics IDE for authoring and running a PAS language, specifically focusing on the **DATA step** and **PROC SQL**.
 
-This project provides an offline, native experience for executing common data manipulation tasks without requiring a full SAS server.
+This project provides an offline, native experience for executing common data manipulation tasks without requiring an external analytics server.
 
 ## Features
 
 - **Familiar IDE**: Includes a code editor, log pane, paginated output viewer, and library/project browsers.
-- **DATA Step & PROC SQL**: Emulates SAS semantics closely enough that common data-wrangling scripts run unmodified.
+- **DATA Step & PROC SQL**: Emulates PAS semantics closely enough that common data-wrangling scripts run unmodified.
 - **High Performance**: 
   - Streams rows through the DATA step without holding everything in memory.
   - Backed by **DuckDB** for highly optimized SQL execution.
@@ -15,15 +15,15 @@ This project provides an offline, native experience for executing common data ma
 - **Large Dataset Support**: The dataset viewer supports paginated scrolling for million-row tables using TanStack Virtual.
 - **Cross-Platform**: Builds as a single native redistributable binary (Windows, macOS, Linux).
 
-*Note: Statistical procedures (like `PROC MEANS`, `PROC FREQ`, `PROC REG`) and the proprietary `.sas7bdat` format are explicitly out of scope for the current version. The SAS macro language (`%macro`, `%if`, `%do`, macro functions, `&`/`%` substitution) **is** supported — see [`SPEC.md`](SPEC.md) §5.5 and [`DIVERGENCE.md`](DIVERGENCE.md) §1.1 for the exact subset.*
+*Note: Statistical procedures (like `PROC MEANS`, `PROC FREQ`, `PROC REG`) and the proprietary binary dataset format are explicitly out of scope for the current version. The PAS macro language (`%macro`, `%if`, `%do`, macro functions, `&`/`%` substitution) **is** supported — see [`SPEC.md`](SPEC.md) §5.5 and [`DIVERGENCE.md`](DIVERGENCE.md) §1.1 for the exact subset.*
 
 ## Architecture
 
 PAS is split into a robust Rust backend and a modern React frontend, connected via Tauri:
 
-- **`pas-engine` (Rust)**: The core parser and executor. It tokenizes, parses, and interprets the SAS-compatible language. Data operations are delegated to DuckDB or handled natively by the DATA step streaming engine.
+- **`pas-engine` (Rust)**: The core parser and executor. It tokenizes, parses, and interprets the PAS language. Data operations are delegated to DuckDB or handled natively by the DATA step streaming engine.
 - **`pas-app` (Rust/Tauri)**: The desktop application shell. It manages windowing, native menus, IPC, and filesystem access.
-- **`ui` (React/TypeScript)**: The frontend. Built with React 18, Vite, and the Monaco Editor (customized with a SAS syntax highlighter).
+- **`ui` (React/TypeScript)**: The frontend. Built with React 18, Vite, and the Monaco Editor (customized with a PAS syntax highlighter).
 
 ## Installation
 
@@ -108,8 +108,7 @@ change must pass, and commit/PR conventions. AI coding agents should also read
 [`AGENTS.md`](AGENTS.md).
 
 Before writing code, review [`SPEC.md`](SPEC.md) and [`DIVERGENCE.md`](DIVERGENCE.md)
-for the supported language subset and known divergences from standard SAS
-behavior. User-visible changes should be noted in [`CHANGELOG.md`](CHANGELOG.md).
+for the supported language subset and known divergences from documented compatibility behavior. User-visible changes should be noted in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Releases
 

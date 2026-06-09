@@ -1,12 +1,12 @@
 import type * as Monaco from "monaco-editor";
 
-// Minimal SAS tokenizer for v0.1. Real grammar lands later.
-export function registerSasLanguage(monaco: typeof Monaco) {
-  if (monaco.languages.getLanguages().some((l) => l.id === "sas")) return;
+// Minimal PAS tokenizer for v0.1. Real grammar lands later.
+export function registerPasLanguage(monaco: typeof Monaco) {
+  if (monaco.languages.getLanguages().some((l) => l.id === "pas")) return;
 
-  monaco.languages.register({ id: "sas" });
+  monaco.languages.register({ id: "pas" });
 
-  monaco.languages.setMonarchTokensProvider("sas", {
+  monaco.languages.setMonarchTokensProvider("pas", {
     ignoreCase: true,
     keywords: [
       "data", "run", "proc", "quit", "set", "merge", "by", "where",
@@ -44,7 +44,7 @@ export function registerSasLanguage(monaco: typeof Monaco) {
     },
   });
 
-  monaco.languages.setLanguageConfiguration("sas", {
+  monaco.languages.setLanguageConfiguration("pas", {
     comments: { lineComment: "*", blockComment: ["/*", "*/"] },
     brackets: [
       ["(", ")"],

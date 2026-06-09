@@ -90,7 +90,7 @@ export function ProjectTree({
               e.stopPropagation();
               onAddProgram();
             }}
-            title="Add an existing .sas file to the project"
+            title="Add an existing .pas file to the project"
           >
             +
           </button>

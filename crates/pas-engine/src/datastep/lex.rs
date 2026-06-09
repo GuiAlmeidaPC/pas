@@ -291,9 +291,9 @@ impl<'a> Lexer<'a> {
         }
 
         // Date/time/datetime suffixes:
-        //   'DDMMMYYYY'd        → SAS date (days since 1960-01-01)
-        //   'HH:MM[:SS]'t       → SAS time (seconds since midnight)
-        //   'DDMMMYYYY:HH:MM:SS'dt → SAS datetime (seconds since 1960-01-01)
+        //   'DDMMMYYYY'd        → PAS date (days since 1960-01-01)
+        //   'HH:MM[:SS]'t       → PAS time (seconds since midnight)
+        //   'DDMMMYYYY:HH:MM:SS'dt → PAS datetime (seconds since 1960-01-01)
         if self.pos < self.src.len() {
             let p = self.src[self.pos];
             if p == b'd' || p == b'D' {
@@ -301,18 +301,18 @@ impl<'a> Lexer<'a> {
                     && (self.src[self.pos + 1] == b't' || self.src[self.pos + 1] == b'T');
                 if is_dt {
                     self.pos += 2;
-                    let n = parse_sas_datetime(&out)
+                    let n = parse_pas_datetime(&out)
                         .map_err(|e| format!("bad datetime literal {:?}: {}", out, e))?;
                     return Ok(Tok::Number(n));
                 }
                 self.pos += 1;
-                let n = parse_sas_date(&out)
+                let n = parse_pas_date(&out)
                     .map_err(|e| format!("bad date literal {:?}: {}", out, e))?;
                 return Ok(Tok::Number(n));
             }
             if p == b't' || p == b'T' {
                 self.pos += 1;
-                let n = parse_sas_time(&out)
+                let n = parse_pas_time(&out)
                     .map_err(|e| format!("bad time literal {:?}: {}", out, e))?;
                 return Ok(Tok::Number(n));
             }
@@ -342,8 +342,8 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// SAS date string `DDMMMYYYY` → days since 1960-01-01.
-pub(crate) fn parse_sas_date(s: &str) -> Result<f64, String> {
+/// PAS date string `DDMMMYYYY` → days since 1960-01-01.
+pub(crate) fn parse_pas_date(s: &str) -> Result<f64, String> {
     use chrono::NaiveDate;
     let s = s.trim();
     if s.len() < 9 {
@@ -357,8 +357,8 @@ pub(crate) fn parse_sas_date(s: &str) -> Result<f64, String> {
     Ok((d - base).num_days() as f64)
 }
 
-/// SAS time string `HH:MM[:SS[.fff]]` → seconds since midnight.
-pub(crate) fn parse_sas_time(s: &str) -> Result<f64, String> {
+/// PAS time string `HH:MM[:SS[.fff]]` → seconds since midnight.
+pub(crate) fn parse_pas_time(s: &str) -> Result<f64, String> {
     let s = s.trim();
     let mut parts = s.split(':');
     let h: u32 = parts
@@ -378,14 +378,14 @@ pub(crate) fn parse_sas_time(s: &str) -> Result<f64, String> {
     Ok(h as f64 * 3600.0 + m as f64 * 60.0 + sec)
 }
 
-pub(crate) fn parse_sas_datetime(s: &str) -> Result<f64, String> {
+pub(crate) fn parse_pas_datetime(s: &str) -> Result<f64, String> {
     let s = s.trim();
     if s.len() < 9 {
         return Err(format!("expected DDMMMYYYY:HH..., got {:?}", s));
     }
     let (a, b) = s.split_at(9);
-    let date = parse_sas_date(a)?;
-    let time = parse_sas_time(b.trim_start_matches(':'))?;
+    let date = parse_pas_date(a)?;
+    let time = parse_pas_time(b.trim_start_matches(':'))?;
     Ok(date * 86400.0 + time)
 }
 

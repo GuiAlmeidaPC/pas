@@ -1,4 +1,4 @@
-//! Complete SAS macro preprocessor (v2.0).
+//! Complete PAS macro preprocessor (v2.0).
 //!
 //! Fully supported:
 //! - `%let name = value;`

@@ -2,7 +2,7 @@
 //!
 //! Syntax supported:
 //!
-//! ```sas
+//! ```pas
 //! proc transpose data=in out=out [prefix=p];
 //!     by  group_var [group_var2 ...];
 //!     id  column_source_var;

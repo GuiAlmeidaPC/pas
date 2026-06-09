@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Replaced remaining brand-specific copy and legacy script references with
+  PAS-neutral wording and `.pas` program files across the app, docs, examples,
+  tests, and website assets.
+
 ## [0.2.0] - 2026-06-05
 
 ### Changed
@@ -17,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saved as a project later.
 - Output tables now stay constrained to the output pane and scroll horizontally
   instead of widening into the Agent panel.
-- `PROC PRINT` output now displays the active SAS `title` statement above the
+- `PROC PRINT` output now displays the active PAS `title` statement above the
   result table.
 
 ### Fixed
@@ -41,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DATA step **informat / column input**: modified-list input (`var :informat.`),
   fixed-width formatted input (`var informat.`), and **column-range input**
   (`var [$] start-end`), all driven by a column pointer. Informats: `$charW.`,
-  `$w.`, `w.d`, `dateW.` (→ SAS date serial), and `commaW.d` / `dollarW.d`. The
+  `$w.`, `w.d`, `dateW.` (→ PAS date serial), and `commaW.d` / `dollarW.d`. The
   `format` statement is applied for supported display formats in dataset pages
   and PROC PRINT; `informat` / `label` statements are accepted but not applied.
   See `DIVERGENCE.md` §1.6.
@@ -69,13 +74,13 @@ First tagged release.
 
 ### Added
 - Initial PAS (Practical Analytics Studio) implementation: a cross-platform
-  Tauri desktop app cloning the data-wrangling subset of SAS.
+  Tauri desktop app for native, offline data wrangling.
 - `pas-engine` Rust crate: tokenizer, parser, and interpreter for a
-  SAS-compatible language focused on the DATA step and PROC SQL, backed by
+  PAS language focused on the DATA step and PROC SQL, backed by
   DuckDB and Apache Arrow. Includes `PROC PRINT`, `PROC SORT`, and
   `PROC TRANSPOSE`.
 - `pas-app` Tauri shell: windowing, native menus, IPC, and filesystem access.
-- React/TypeScript frontend with a Monaco editor (SAS syntax highlighting),
+- React/TypeScript frontend with a Monaco editor (PAS syntax highlighting),
   log pane, paginated dataset viewer (TanStack Virtual), and library/project
   browsers.
 - AI chat assistant that proposes file edits via `pas-edit` blocks, with a

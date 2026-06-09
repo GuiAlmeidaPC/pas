@@ -24,7 +24,7 @@ export function DiffReviewModal({ edit, before, after, canAccept, onAccept, onCl
         </div>
         <div className="diff-review-body">
           <DiffEditor
-            language="sas"
+            language="pas"
             theme="vs-dark"
             original={before}
             modified={after}

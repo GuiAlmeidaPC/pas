@@ -1,4 +1,4 @@
-//! SAS DATA step compiler + interpreter.
+//! PAS DATA step compiler + interpreter.
 //!
 //! v0.3 scope (first pass): one input via `set`, assignment, if/then/else,
 //! subsetting if, where, keep/drop, length declaration, output/delete, plus

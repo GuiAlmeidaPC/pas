@@ -7,7 +7,7 @@
     %let clean_filter = %upcase(&filter_val);
     %put NOTE: Filter value upper-cased to: &clean_filter;
 
-    /* Generate a standard SAS DATA step */
+    /* Generate a standard PAS DATA step */
     data &lib..&dataset;
         length name $15 status $15 category $15;
         

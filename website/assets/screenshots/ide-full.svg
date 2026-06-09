@@ -9,18 +9,18 @@
     <text x="20" y="40" fill="#888">LIBRARIES</text>
     <text x="34" y="74" fill="#9cdcfe">▸ work</text>
     <text x="34" y="104" fill="#9cdcfe">▸ raw</text>
-    <text x="34" y="134" fill="#9cdcfe">▸ sashelp</text>
+    <text x="34" y="134" fill="#9cdcfe">▸ samples</text>
     <text x="20" y="184" fill="#888">PROJECT</text>
-    <text x="34" y="218" fill="#22d3ee">sales.sas</text>
-    <text x="34" y="248" fill="#d4d4d4">joins.sas</text>
-    <text x="34" y="278" fill="#d4d4d4">macro_demo.sas</text>
+    <text x="34" y="218" fill="#22d3ee">sales.pas</text>
+    <text x="34" y="248" fill="#d4d4d4">joins.pas</text>
+    <text x="34" y="278" fill="#d4d4d4">macro_demo.pas</text>
   </g>
 
   <!-- ===== center: editor ===== -->
   <!-- editor tab -->
   <rect x="240" y="0" width="640" height="40" fill="#2d2d30"/>
   <rect x="240" y="0" width="200" height="40" fill="#1e1e1e"/>
-  <text x="262" y="27" font-size="18" fill="#d4d4d4" font-family="-apple-system, system-ui, sans-serif">sales.sas</text>
+  <text x="262" y="27" font-size="18" fill="#d4d4d4" font-family="-apple-system, system-ui, sans-serif">sales.pas</text>
   <!-- code -->
   <g font-size="21">
     <text x="262" y="84"><tspan fill="#4fc1ff">data</tspan><tspan fill="#9cdcfe"> work.sales</tspan><tspan fill="#d4d4d4">;</tspan></text>

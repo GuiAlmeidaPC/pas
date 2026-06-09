@@ -109,7 +109,7 @@ impl Session {
         let mut i = 0;
         while i < bytes.len() {
             let c = bytes[i];
-            // Skip string literals (honoring SAS-style doubled-quote
+            // Skip string literals (honoring PAS-style doubled-quote
             // escapes — '' inside a '...' literal is one apostrophe, not
             // a close-then-open).
             if c == b'\'' || c == b'"' {

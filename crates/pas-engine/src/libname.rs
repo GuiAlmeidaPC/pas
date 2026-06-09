@@ -1,7 +1,7 @@
-//! Parse SAS-flavored `libname` statements.
+//! Parse PAS-flavored `libname` statements.
 //!
 //! Supported forms (v0.2):
-//! ```sas
+//! ```pas
 //! libname work;                     -- ignored; built-in
 //! libname raw   "/data/landing" format=parquet;   -- defaults to DIR
 //! libname raw   dir "/data/landing" format=csv;

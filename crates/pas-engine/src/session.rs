@@ -3,7 +3,7 @@ use crate::query::{duckdb_error_span, materialize_select_into, run_one, run_quer
 use crate::rewrite::dir_reader_expr;
 use crate::split::{split_blocks_checked, strip_comments, Block, SplitError};
 use crate::types::{Event, SourceSpan, Value};
-use crate::{datastep, libname, procs, sas_sql, split, EngineError, MAX_PREVIEW_ROWS};
+use crate::{datastep, libname, pas_sql, procs, split, EngineError, MAX_PREVIEW_ROWS};
 use duckdb::{Connection, InterruptHandle};
 use std::collections::HashMap;
 use std::path::Path;
@@ -393,7 +393,7 @@ impl Session {
     ) {
         let after_create = self.rewrite_create_for_dir(stmt);
         let rewritten = self.rewrite_librefs(&after_create);
-        let (clean_query, targets) = sas_sql::extract_into_clause(&rewritten);
+        let (clean_query, targets) = pas_sql::extract_into_clause(&rewritten);
         match run_one(conn, &clean_query, 1000) {
             Ok(StmtResult::Rows(mut block)) => {
                 if !targets.is_empty() {

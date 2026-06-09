@@ -17,13 +17,13 @@ describe("AIEditCard", () => {
     const onApply = vi.fn().mockResolvedValue(undefined);
     render(
       <AIEditCard
-        edit={{ kind: "create", path: "programs/new.sas", contents: "data x;\nrun;" }}
+        edit={{ kind: "create", path: "programs/new.pas", contents: "data x;\nrun;" }}
         isProjectOpen
         onApply={onApply}
         onReview={vi.fn()}
       />
     );
-    expect(screen.getByText("programs/new.sas")).toBeInTheDocument();
+    expect(screen.getByText("programs/new.pas")).toBeInTheDocument();
     expect(screen.getByText("new")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: /accept/i })).not.toBeDisabled());
     await userEvent.click(screen.getByRole("button", { name: /accept/i }));
@@ -35,7 +35,7 @@ describe("AIEditCard", () => {
     (tauriCore.invoke as ReturnType<typeof vi.fn>).mockResolvedValue("existing content\n");
     render(
       <AIEditCard
-        edit={{ kind: "create", path: "programs/existing.sas", contents: "data x;\nrun;" }}
+        edit={{ kind: "create", path: "programs/existing.pas", contents: "data x;\nrun;" }}
         isProjectOpen
         onApply={vi.fn()}
         onReview={vi.fn()}
@@ -45,7 +45,7 @@ describe("AIEditCard", () => {
     expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
   });
 
-  it("rejects non-sas edit paths before contacting the backend", async () => {
+  it("rejects non-pas edit paths before contacting the backend", async () => {
     render(
       <AIEditCard
         edit={{ kind: "create", path: "programs/new.txt", contents: "x" }}
@@ -54,7 +54,7 @@ describe("AIEditCard", () => {
         onReview={vi.fn()}
       />
     );
-    await waitFor(() => expect(screen.getByText(/only \.sas files/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/only \.pas files/i)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
     expect(tauriCore.invoke).not.toHaveBeenCalled();
   });
@@ -63,7 +63,7 @@ describe("AIEditCard", () => {
     (tauriCore.invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Access denied"));
     render(
       <AIEditCard
-        edit={{ kind: "create", path: "programs/new.sas", contents: "x" }}
+        edit={{ kind: "create", path: "programs/new.pas", contents: "x" }}
         isProjectOpen
         onApply={vi.fn()}
         onReview={vi.fn()}
@@ -77,7 +77,7 @@ describe("AIEditCard", () => {
     (tauriCore.invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("not found"));
     render(
       <AIEditCard
-        edit={{ kind: "create", path: "x.sas", contents: "x" }}
+        edit={{ kind: "create", path: "x.pas", contents: "x" }}
         isProjectOpen={false}
         onApply={vi.fn()}
         onReview={vi.fn()}
@@ -94,7 +94,7 @@ describe("AIEditCard", () => {
       <AIEditCard
         edit={{
           kind: "patch",
-          path: "programs/foo.sas",
+          path: "programs/foo.pas",
           hunks: [{ search: "data want; set have; run;", replace: "data want; set have; where x>0; run;" }],
         }}
         isProjectOpen
@@ -114,7 +114,7 @@ describe("AIEditCard", () => {
       <AIEditCard
         edit={{
           kind: "patch",
-          path: "programs/foo.sas",
+          path: "programs/foo.pas",
           hunks: [{ search: "data want;", replace: "data x;" }],
         }}
         isProjectOpen
@@ -131,7 +131,7 @@ describe("AIEditCard", () => {
   it("renders a protocol error edit without contacting the backend", () => {
     render(
       <AIEditCard
-        edit={{ kind: "error", path: "a.sas", reason: "bad mode", raw: "" }}
+        edit={{ kind: "error", path: "a.pas", reason: "bad mode", raw: "" }}
         isProjectOpen
         onApply={vi.fn()}
         onReview={vi.fn()}
@@ -148,7 +148,7 @@ describe("AIEditCard", () => {
       <AIEditCard
         edit={{
           kind: "patch",
-          path: "x.sas",
+          path: "x.pas",
           hunks: [
             { search: "missing", replace: "y" },
             { search: "b", replace: "BB" },
@@ -174,7 +174,7 @@ describe("AIEditCard", () => {
     const readFile = vi.fn().mockResolvedValue({ content: "old", source: "tab" });
     render(
       <AIEditCard
-        edit={{ kind: "patch", path: "programs/open.sas", hunks: [{ search: "old", replace: "new" }] }}
+        edit={{ kind: "patch", path: "programs/open.pas", hunks: [{ search: "old", replace: "new" }] }}
         isProjectOpen
         readFile={readFile}
         onApply={vi.fn()}
@@ -182,7 +182,7 @@ describe("AIEditCard", () => {
       />
     );
     await waitFor(() => expect(screen.getByText("new")).toBeInTheDocument());
-    expect(readFile).toHaveBeenCalledWith("programs/open.sas");
+    expect(readFile).toHaveBeenCalledWith("programs/open.pas");
     expect(tauriCore.invoke).not.toHaveBeenCalled();
   });
 });

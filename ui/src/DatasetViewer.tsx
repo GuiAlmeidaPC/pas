@@ -215,10 +215,10 @@ function typeLabel(typeId: Type): string {
   }
 }
 
-function formatCell(v: unknown, sasFormat?: string): string {
+function formatCell(v: unknown, pasFormat?: string): string {
   if (v === null || v === undefined) return "·";
-  if (sasFormat) {
-    const formatted = formatSasCell(v, sasFormat);
+  if (pasFormat) {
+    const formatted = formatPasCell(v, pasFormat);
     if (formatted !== null) return formatted;
   }
   if (typeof v === "bigint") return v.toString();
@@ -233,15 +233,15 @@ function formatCell(v: unknown, sasFormat?: string): string {
   return String(v);
 }
 
-function formatSasCell(v: unknown, spec: string): string | null {
-  const fmt = parseSasFormat(spec);
+function formatPasCell(v: unknown, spec: string): string | null {
+  const fmt = parsePasFormat(spec);
   if (!fmt) return null;
   const n = typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : Number(v);
   if (!Number.isFinite(n)) return null;
 
   switch (fmt.name) {
     case "date":
-      return formatSasDate(n);
+      return formatPasDate(n);
     case "comma":
       return formatNumber(n, fmt.decimals, false);
     case "dollar":
@@ -254,7 +254,7 @@ function formatSasCell(v: unknown, spec: string): string | null {
   }
 }
 
-function parseSasFormat(spec: string): { name: string; decimals?: number } | null {
+function parsePasFormat(spec: string): { name: string; decimals?: number } | null {
   const trimmed = spec.trim().replace(/\.$/, "").toLowerCase();
   const match = /^([a-z]*)(?:\d+)?(?:\.(\d+))?$/.exec(trimmed);
   if (!match) return null;
@@ -264,7 +264,7 @@ function parseSasFormat(spec: string): { name: string; decimals?: number } | nul
   };
 }
 
-function formatSasDate(serial: number): string {
+function formatPasDate(serial: number): string {
   const base = Date.UTC(1960, 0, 1);
   const d = new Date(base + Math.trunc(serial) * 86_400_000);
   const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];

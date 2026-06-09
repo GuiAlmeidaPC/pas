@@ -90,7 +90,7 @@ pub enum InformatKind {
     CharTrim,
     /// `w.d` / `best.` — plain numeric.
     Numeric,
-    /// `dateW.` — `DDMONYYYY` → SAS date serial (days since 1960-01-01).
+    /// `dateW.` — `DDMONYYYY` → PAS date serial (days since 1960-01-01).
     Date,
     /// `commaW.d` / `dollarW.d` — numeric with `$ , ( )` stripped.
     NumericSymbol,

@@ -1,6 +1,6 @@
-//! Byte-level SAS source scanning primitives.
+//! Byte-level PAS source scanning primitives.
 //!
-//! Four places in the engine need to walk a SAS source byte-by-byte while
+//! Four places in the engine need to walk a PAS source byte-by-byte while
 //! treating string literals and comments as opaque spans: the comment
 //! stripper, the statement splitter, the PROC SQL preprocessor, and the
 //! libref rewriter. Each used to roll its own quote/comment state machine,
@@ -11,7 +11,7 @@
 /// `bytes[start]` must be `'` or `"`. Returns the index one past the
 /// closing quote.
 ///
-/// SAS escapes an embedded quote by doubling it (`''` inside a `'...'`
+/// PAS escapes an embedded quote by doubling it (`''` inside a `'...'`
 /// literal is one literal apostrophe and does NOT terminate the string).
 /// If the literal is unterminated, returns `bytes.len()`.
 pub fn skip_string_literal(bytes: &[u8], start: usize) -> usize {
@@ -33,7 +33,7 @@ pub fn skip_string_literal(bytes: &[u8], start: usize) -> usize {
 }
 
 /// `bytes[start..]` must begin with `/*`. Returns the index one past the
-/// closing `*/`. SAS block comments do not nest. If unterminated, returns
+/// closing `*/`. PAS block comments do not nest. If unterminated, returns
 /// `bytes.len()`.
 pub fn skip_block_comment(bytes: &[u8], start: usize) -> usize {
     debug_assert!(start + 1 < bytes.len() && bytes[start] == b'/' && bytes[start + 1] == b'*');

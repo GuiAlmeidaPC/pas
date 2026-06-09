@@ -11,7 +11,7 @@ import { EditorTabs } from "./Tabs";
 import { StatusBar } from "./StatusBar";
 import { MenuBar, type MenuDef } from "./MenuBar";
 import { Modal } from "./Modal";
-import { registerSasLanguage } from "./sasLang";
+import { registerPasLanguage } from "./pasLang";
 import { AIChatPanel } from "./AIChatPanel";
 import { applyPatch, type EditFileSnapshot, type ProposedEdit, type ResolvedEdit } from "./ai/editProtocol";
 import { DiffReviewModal } from "./ai/DiffReviewModal";
@@ -141,7 +141,7 @@ function makeTab(opts: { id?: string; path?: string | null; title?: string; cont
   return {
     id,
     path: opts.path ?? null,
-    title: opts.title ?? "untitled.sas",
+    title: opts.title ?? "untitled.pas",
     content: opts.content,
     saved_content: opts.content,
   };
@@ -285,7 +285,7 @@ export default function App() {
     if (activeTab && activeTab.path) {
       xmlParts.push(`  <active_file path="${activeTab.path}" />`);
     } else {
-      xmlParts.push('  <active_file path="untitled.sas" />');
+      xmlParts.push('  <active_file path="untitled.pas" />');
     }
 
     // 2. Project structure and file contents
@@ -594,14 +594,14 @@ export default function App() {
   }, []);
 
   const openFile = useCallback(async () => {
-    const path = await invoke<string | null>("pick_sas_file");
+    const path = await invoke<string | null>("pick_pas_file");
     if (!path) return;
     await openFromPath(path);
   }, [openFromPath]);
 
   // ── project program registry ────────────────────────────────────────
   const addProgramToProject = useCallback(async () => {
-    const path = await invoke<string | null>("pick_sas_file");
+    const path = await invoke<string | null>("pick_pas_file");
     if (!path) return;
     setProjectPrograms((prev) =>
       prev.some((p) => p.path === path) ? prev : [...prev, { path }],
@@ -749,10 +749,10 @@ export default function App() {
     if (!isProjectOpen(projectNameRef.current)) return;
 
     // 1. Prompt for program name inside the project
-    const defaultTitle = "ai_program.sas";
+    const defaultTitle = "ai_program.pas";
     const name = window.prompt("Enter a name for this AI program in the project:", defaultTitle);
     if (!name) return; // User cancelled
-    const filename = name.endsWith(".sas") ? name : `${name}.sas`;
+    const filename = name.endsWith(".pas") ? name : `${name}.pas`;
 
     try {
       // 2. Open a new clean tab in the editor
@@ -912,7 +912,7 @@ export default function App() {
       if (!path) {
         const name = window.prompt("Enter a name for this program inside the project:", tab.title);
         if (!name) return; // User cancelled
-        path = name.endsWith(".sas") ? name : `${name}.sas`;
+        path = name.endsWith(".pas") ? name : `${name}.pas`;
       }
 
       const updatedTabs = tabsRef.current.map((t) =>
@@ -932,7 +932,7 @@ export default function App() {
       // Standard local standalone file saving
       let path = tab.path;
       if (!path) {
-        const chosen = await invoke<string | null>("pick_save_sas_file", {
+        const chosen = await invoke<string | null>("pick_save_pas_file", {
           defaultPath: getDefaultSavePath(tab.title, null),
         });
         if (!chosen) return;
@@ -945,7 +945,7 @@ export default function App() {
   const saveActiveTabAs = useCallback(async () => {
     const tab = tabsRef.current.find((t) => t.id === activeIdRef.current);
     if (!tab) return;
-    const chosen = await invoke<string | null>("pick_save_sas_file", {
+    const chosen = await invoke<string | null>("pick_save_pas_file", {
       defaultPath: getDefaultSavePath(tab.title, tab.path),
     });
     if (!chosen) return;
@@ -1031,8 +1031,8 @@ export default function App() {
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
-    registerSasLanguage(monaco);
-    if (editor.getModel()) monaco.editor.setModelLanguage(editor.getModel()!, "sas");
+    registerPasLanguage(monaco);
+    if (editor.getModel()) monaco.editor.setModelLanguage(editor.getModel()!, "pas");
     editor.onDidChangeCursorPosition((e) =>
       setCursor({ line: e.position.lineNumber, col: e.position.column }),
     );
@@ -1068,7 +1068,7 @@ export default function App() {
           const text = model.getValueInRange(selection);
           setShowAIPanel(true);
           setAiTrigger({
-            prompt: `Explain this code:\n\n\`\`\`sas\n${text}\n\`\`\``,
+            prompt: `Explain this code:\n\n\`\`\`pas\n${text}\n\`\`\``,
             timestamp: Date.now(),
           });
         }
@@ -1088,7 +1088,7 @@ export default function App() {
           const text = model.getValueInRange(selection);
           setShowAIPanel(true);
           setAiTrigger({
-            prompt: `Refactor and optimize this code segment:\n\n\`\`\`sas\n${text}\n\`\`\``,
+            prompt: `Refactor and optimize this code segment:\n\n\`\`\`pas\n${text}\n\`\`\``,
             timestamp: Date.now(),
           });
         }
@@ -1096,13 +1096,13 @@ export default function App() {
     });
   };
 
-  // Reapply SAS language on tab switch (each model needs registration).
+  // Reapply PAS language on tab switch (each model needs registration).
   useEffect(() => {
     const monaco = monacoRef.current;
     const editor = editorRef.current;
     if (!monaco || !editor) return;
     const model = editor.getModel();
-    if (model) monaco.editor.setModelLanguage(model, "sas");
+    if (model) monaco.editor.setModelLanguage(model, "pas");
     
     // Read current selection on tab switch
     const selection = editor.getSelection();
@@ -1148,7 +1148,7 @@ export default function App() {
           { label: "Save", shortcut: "Ctrl+S", onClick: saveActiveTab },
           { label: "Save As…", onClick: saveActiveTabAs },
           ...(hasProject
-            ? [{ label: "Save to Standalone SAS File…", onClick: saveActiveTabAs }]
+            ? [{ label: "Save to Standalone PAS File…", onClick: saveActiveTabAs }]
             : []),
           { separator: true },
           {
@@ -1397,14 +1397,13 @@ export default function App() {
       {showAbout && (
         <Modal title="About PAS" onClose={() => setShowAbout(false)}>
           <p>
-            <strong>PAS</strong> — a cross-platform clone of the data-wrangling
-            subset of SAS Enterprise Guide. Editor on top of Monaco; engine in
-            Rust over DuckDB.
+            <strong>PAS</strong> — a cross-platform data-wrangling studio.
+            Editor on top of Monaco; engine in Rust over DuckDB.
           </p>
           <p className="muted">
-            Statistical procedures and <code>.sas7bdat</code> interop are
-            intentionally out of scope; everything else from the SAS DATA
-            step and PROC SQL is on the menu.
+            Statistical procedures and proprietary binary dataset interop are
+            intentionally out of scope; DATA step and PROC SQL workflows are
+            supported.
           </p>
         </Modal>
       )}
@@ -1504,7 +1503,7 @@ export default function App() {
                 <Editor
                   height="100%"
                   path={activeTab.id}
-                  defaultLanguage="sas"
+                  defaultLanguage="pas"
                   theme="vs-dark"
                   value={activeTab.content}
                   onChange={(v) => updateTabContent(activeTab.id, v ?? "")}

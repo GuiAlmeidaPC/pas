@@ -3,12 +3,12 @@ import { parseEditBlocks, applyPatch } from "../ai/editProtocol";
 
 describe("parseEditBlocks", () => {
   it("returns empty array when no pas-edit blocks present", () => {
-    expect(parseEditBlocks("just text\n```sas\ndata x;\n```\n")).toEqual([]);
+    expect(parseEditBlocks("just text\n```pas\ndata x;\n```\n")).toEqual([]);
   });
 
   it("parses a single patch block with one hunk", () => {
     const md = [
-      '```pas-edit path="programs/foo.sas" mode="patch"',
+      '```pas-edit path="programs/foo.pas" mode="patch"',
       "<<<<<<< SEARCH",
       "data want; set have; run;",
       "=======",
@@ -20,7 +20,7 @@ describe("parseEditBlocks", () => {
     expect(edits).toHaveLength(1);
     expect(edits[0]).toMatchObject({
       kind: "patch",
-      path: "programs/foo.sas",
+      path: "programs/foo.pas",
       hunks: [
         {
           search: "data want; set have; run;",
@@ -32,7 +32,7 @@ describe("parseEditBlocks", () => {
 
   it("parses multiple hunks in one patch block", () => {
     const md = [
-      '```pas-edit path="a.sas" mode="patch"',
+      '```pas-edit path="a.pas" mode="patch"',
       "<<<<<<< SEARCH",
       "old1",
       "=======",
@@ -57,27 +57,27 @@ describe("parseEditBlocks", () => {
 
   it("parses create blocks", () => {
     const md = [
-      '```pas-edit path="programs/new.sas" mode="create"',
+      '```pas-edit path="programs/new.pas" mode="create"',
       "data clean; set raw; run;",
       "```",
     ].join("\n");
     expect(parseEditBlocks(md)[0]).toEqual({
       kind: "create",
-      path: "programs/new.sas",
+      path: "programs/new.pas",
       contents: "data clean; set raw; run;",
     });
   });
 
   it("parses replace blocks", () => {
     const md = [
-      '```pas-edit path="big.sas" mode="replace"',
+      '```pas-edit path="big.pas" mode="replace"',
       "line1",
       "line2",
       "```",
     ].join("\n");
     expect(parseEditBlocks(md)[0]).toEqual({
       kind: "replace",
-      path: "big.sas",
+      path: "big.pas",
       contents: "line1\nline2",
     });
   });
@@ -88,13 +88,13 @@ describe("parseEditBlocks", () => {
   });
 
   it("returns an error edit when mode is unknown", () => {
-    const md = '```pas-edit path="a.sas" mode="rewrite"\nx\n```';
+    const md = '```pas-edit path="a.pas" mode="rewrite"\nx\n```';
     expect(parseEditBlocks(md)[0]).toMatchObject({ kind: "error", reason: /mode/ });
   });
 
   it("returns an error edit for malformed patch markers", () => {
     const md = [
-      '```pas-edit path="a.sas" mode="patch"',
+      '```pas-edit path="a.pas" mode="patch"',
       "<<<<<<< SEARCH",
       "no separator or closer here",
       "```",
@@ -104,7 +104,7 @@ describe("parseEditBlocks", () => {
 
   it("handles CRLF line endings in patch bodies", () => {
     const md = [
-      '```pas-edit path="a.sas" mode="patch"',
+      '```pas-edit path="a.pas" mode="patch"',
       "<<<<<<< SEARCH",
       "old",
       "=======",
@@ -115,7 +115,7 @@ describe("parseEditBlocks", () => {
     const edits = parseEditBlocks(md);
     expect(edits[0]).toMatchObject({
       kind: "patch",
-      path: "a.sas",
+      path: "a.pas",
       hunks: [{ search: "old", replace: "new" }],
     });
   });

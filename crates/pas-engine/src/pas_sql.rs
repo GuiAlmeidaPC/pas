@@ -1,4 +1,4 @@
-//! Rewriters that turn SAS PROC-SQL extensions into plain DuckDB SQL.
+//! Rewriters that turn PAS PROC-SQL extensions into plain DuckDB SQL.
 //!
 //! Two passes run in order:
 //!

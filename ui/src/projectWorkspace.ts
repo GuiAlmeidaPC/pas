@@ -1,7 +1,7 @@
 import type { TabConfig } from "./types";
 
 export const DEFAULT_UNSAVED_PROJECT_NAME = "Untitled Project";
-export const DEFAULT_UNSAVED_PROGRAM_PATH = "untitled.sas";
+export const DEFAULT_UNSAVED_PROGRAM_PATH = "untitled.pas";
 
 export interface UnsavedProjectWorkspace {
   projectPath: null;

@@ -46,7 +46,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             }
         }
         "ranuni" => {
-            // seed argument is accepted for SAS compatibility but ignored;
+            // seed argument is accepted for PAS compatibility but ignored;
             // we use the system's RNG directly.
             Ok(RtValue::Num(rand::random::<f64>()))
         }
@@ -62,7 +62,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         }
         "largest" | "smallest" => {
             // largest(k, v1, v2, …) — k-th largest of the values (1-based).
-            // SAS skips missing values when ranking.
+            // PAS skips missing values when ranking.
             let k = arg_num(args, 0)? as usize;
             if k == 0 || args.len() < 2 {
                 return Ok(RtValue::missing());
@@ -93,7 +93,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         "upcase" => Ok(RtValue::Str(arg_str(args, 0)?.to_uppercase())),
         "lowcase" => Ok(RtValue::Str(arg_str(args, 0)?.to_lowercase())),
         "length" => {
-            // SAS length returns the position of the rightmost non-blank.
+            // PAS length returns the position of the rightmost non-blank.
             let s = arg_str(args, 0)?;
             let trimmed = s.trim_end_matches(' ');
             Ok(RtValue::Num(trimmed.chars().count() as f64))
@@ -154,7 +154,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         )),
         "compbl" => {
             // Collapse runs of internal whitespace down to a single space;
-            // leading whitespace stays untouched (matches SAS).
+            // leading whitespace stays untouched (matches documented compatibility behavior).
             let s = arg_str(args, 0)?;
             let mut out = String::with_capacity(s.len());
             let mut last_was_space = false;
@@ -192,7 +192,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         }
         "reverse" => Ok(RtValue::Str(arg_str(args, 0)?.chars().rev().collect())),
         "repeat" => {
-            // SAS repeat(s, n) returns s repeated (n+1) times. So
+            // PAS repeat(s, n) returns s repeated (n+1) times. So
             // repeat('a', 2) → 'aaa'.
             let s = arg_str(args, 0)?;
             let n = arg_num(args, 1)? as i64;
@@ -201,7 +201,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         }
         "scan" => {
             // scan(s, n, [delim]) — 1-based word index. Negative n
-            // counts from the right. Default delim is SAS's wordy set of
+            // counts from the right. Default delim is the reference system's wordy set of
             // separators; we use whitespace + common punctuation.
             let s = arg_str(args, 0)?;
             let n = arg_num(args, 1)? as i64;
@@ -371,9 +371,9 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         }
 
         // ── date / time ────────────────────────────────────────────────
-        "today" | "date" => Ok(RtValue::Num(today_sas() as f64)),
-        "datetime" => Ok(RtValue::Num(now_sas_datetime())),
-        "time" => Ok(RtValue::Num(now_sas_time())),
+        "today" | "date" => Ok(RtValue::Num(today_pas() as f64)),
+        "datetime" => Ok(RtValue::Num(now_pas_datetime())),
+        "time" => Ok(RtValue::Num(now_pas_time())),
         "year" => Ok(date_part(args, |d| {
             use chrono::Datelike;
             d.year() as f64
@@ -388,7 +388,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
         })),
         "weekday" => Ok(date_part(args, |d| {
             use chrono::Datelike;
-            // SAS weekday: Sunday=1 … Saturday=7
+            // PAS weekday: Sunday=1 … Saturday=7
             (d.weekday().num_days_from_sunday() + 1) as f64
         })),
         "qtr" => Ok(date_part(args, |d| {
@@ -442,7 +442,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             Ok(intck(&interval, a, b))
         }
         // ── regex (PRX) ────────────────────────────────────────────────
-        // SAS PRX functions accept a "perl regex" string in the form
+        // PAS PRX functions accept a "perl regex" string in the form
         //   '/<pattern>/<flags>'           (prxmatch / m-form)
         //   's/<pattern>/<replacement>/<flags>'   (prxchange)
         // Backed by the `regex` crate. Lookaround and backreferences
@@ -458,7 +458,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             }))
         }
         "prxchange" => {
-            // SAS: prxchange(pattern, times, source); times = -1 → all.
+            // PAS: prxchange(pattern, times, source); times = -1 → all.
             let pat = arg_str(args, 0)?;
             let times = arg_num(args, 1)? as i64;
             let src = arg_str(args, 2)?;
@@ -474,7 +474,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             Ok(RtValue::Str(result))
         }
         "yrdif" => {
-            // yrdif(d1, d2, basis) — fractional years between two SAS
+            // yrdif(d1, d2, basis) — fractional years between two PAS
             // dates. Supported bases: 'act/act' (default — exact day
             // count divided by the calendar-year length spanning the
             // interval, approximated as 365.25), '30/360', 'act/360',
@@ -490,7 +490,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
 
         // ── formatted I/O ──────────────────────────────────────────────
         // NOTE: PAS requires the format spec as a quoted string (e.g.
-        // `put(x, 'date9.')`). Standard SAS allows the bare `date9.` token.
+        // `put(x, 'date9.')`). Standard PAS allows the bare `date9.` token.
         "put" => {
             let v = args.first().cloned().unwrap_or_else(RtValue::missing);
             let spec = arg_str(args, 1)?;
@@ -581,11 +581,11 @@ pub(crate) fn put_value(v: &RtValue, spec: &str) -> Result<String, String> {
             }
             None => format_missing(fmt.width),
         },
-        "date" => match n.and_then(sas_date_to_naive) {
-            Some(d) => format_sas_date(d),
+        "date" => match n.and_then(pas_date_to_naive) {
+            Some(d) => format_pas_date(d),
             None => ".".to_string(),
         },
-        "mmddyy" => match n.and_then(sas_date_to_naive) {
+        "mmddyy" => match n.and_then(pas_date_to_naive) {
             Some(d) => {
                 use chrono::Datelike;
                 let w = fmt.width.unwrap_or(10);
@@ -597,7 +597,7 @@ pub(crate) fn put_value(v: &RtValue, spec: &str) -> Result<String, String> {
             }
             None => ".".to_string(),
         },
-        "ddmmyy" => match n.and_then(sas_date_to_naive) {
+        "ddmmyy" => match n.and_then(pas_date_to_naive) {
             Some(d) => {
                 use chrono::Datelike;
                 let w = fmt.width.unwrap_or(10);
@@ -609,7 +609,7 @@ pub(crate) fn put_value(v: &RtValue, spec: &str) -> Result<String, String> {
             }
             None => ".".to_string(),
         },
-        "yymmdd" => match n.and_then(sas_date_to_naive) {
+        "yymmdd" => match n.and_then(pas_date_to_naive) {
             Some(d) => {
                 use chrono::Datelike;
                 format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
@@ -617,11 +617,11 @@ pub(crate) fn put_value(v: &RtValue, spec: &str) -> Result<String, String> {
             None => ".".to_string(),
         },
         "time" => match n {
-            Some(secs) => format_sas_time(secs),
+            Some(secs) => format_pas_time(secs),
             None => ".".to_string(),
         },
         "datetime" => match n {
-            Some(dt) => format_sas_datetime(dt),
+            Some(dt) => format_pas_datetime(dt),
             None => ".".to_string(),
         },
         other => return Err(format!("unsupported numeric format: {}", other)),
@@ -645,13 +645,13 @@ fn input_value(s: &str, spec: &str) -> Result<RtValue, String> {
             .parse::<f64>()
             .map(RtValue::Num)
             .unwrap_or_else(|_| RtValue::missing()),
-        "date" => super::lex::parse_sas_date(s)
+        "date" => super::lex::parse_pas_date(s)
             .map(RtValue::Num)
             .unwrap_or_else(|_| RtValue::missing()),
-        "time" => super::lex::parse_sas_time(s)
+        "time" => super::lex::parse_pas_time(s)
             .map(RtValue::Num)
             .unwrap_or_else(|_| RtValue::missing()),
-        "datetime" => super::lex::parse_sas_datetime(s)
+        "datetime" => super::lex::parse_pas_datetime(s)
             .map(RtValue::Num)
             .unwrap_or_else(|_| RtValue::missing()),
         "mmddyy" | "ddmmyy" | "yymmdd" => parse_slashed_date(s, &fmt.name)
@@ -736,7 +736,7 @@ fn format_missing(width: Option<u32>) -> String {
     }
 }
 
-fn format_sas_date(d: chrono::NaiveDate) -> String {
+fn format_pas_date(d: chrono::NaiveDate) -> String {
     use chrono::Datelike;
     let m = [
         "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
@@ -744,7 +744,7 @@ fn format_sas_date(d: chrono::NaiveDate) -> String {
     format!("{:02}{}{:04}", d.day(), m, d.year())
 }
 
-fn format_sas_time(secs: f64) -> String {
+fn format_pas_time(secs: f64) -> String {
     let total = secs.max(0.0) as i64;
     let h = total / 3600;
     let m = (total % 3600) / 60;
@@ -752,23 +752,23 @@ fn format_sas_time(secs: f64) -> String {
     format!("{:02}:{:02}:{:02}", h, m, s)
 }
 
-fn format_sas_datetime(dt: f64) -> String {
+fn format_pas_datetime(dt: f64) -> String {
     let days = (dt / 86400.0).floor();
     let secs = dt - days * 86400.0;
-    match sas_date_to_naive(days) {
-        Some(d) => format!("{}:{}", format_sas_date(d), format_sas_time(secs)),
+    match pas_date_to_naive(days) {
+        Some(d) => format!("{}:{}", format_pas_date(d), format_pas_time(secs)),
         None => ".".to_string(),
     }
 }
 
-fn today_sas() -> i64 {
+fn today_pas() -> i64 {
     use chrono::Local;
     let today = Local::now().date_naive();
     let base = chrono::NaiveDate::from_ymd_opt(1960, 1, 1).unwrap();
     (today - base).num_days()
 }
 
-fn now_sas_datetime() -> f64 {
+fn now_pas_datetime() -> f64 {
     use chrono::Local;
     let now = Local::now().naive_local();
     let base = chrono::NaiveDate::from_ymd_opt(1960, 1, 1)
@@ -778,13 +778,13 @@ fn now_sas_datetime() -> f64 {
     (now - base).num_milliseconds() as f64 / 1000.0
 }
 
-fn now_sas_time() -> f64 {
+fn now_pas_time() -> f64 {
     use chrono::{Local, Timelike};
     let now = Local::now().time();
     now.num_seconds_from_midnight() as f64 + now.nanosecond() as f64 / 1e9
 }
 
-fn sas_date_to_naive(d: f64) -> Option<chrono::NaiveDate> {
+fn pas_date_to_naive(d: f64) -> Option<chrono::NaiveDate> {
     use chrono::NaiveDate;
     let base = NaiveDate::from_ymd_opt(1960, 1, 1).unwrap();
     base.checked_add_signed(chrono::Duration::days(d as i64))
@@ -794,7 +794,7 @@ fn date_part(args: &[RtValue], f: impl Fn(chrono::NaiveDate) -> f64) -> RtValue 
     match args
         .first()
         .and_then(|v| v.as_num())
-        .and_then(sas_date_to_naive)
+        .and_then(pas_date_to_naive)
     {
         Some(d) => RtValue::Num(f(d)),
         None => RtValue::missing(),
@@ -803,7 +803,7 @@ fn date_part(args: &[RtValue], f: impl Fn(chrono::NaiveDate) -> f64) -> RtValue 
 
 fn intnx(interval: &str, start: f64, n: i64) -> RtValue {
     use chrono::{Datelike, Duration, NaiveDate};
-    let Some(d) = sas_date_to_naive(start) else {
+    let Some(d) = pas_date_to_naive(start) else {
         return RtValue::missing();
     };
     let new_date = match interval {
@@ -829,7 +829,7 @@ fn intnx(interval: &str, start: f64, n: i64) -> RtValue {
 
 fn intck(interval: &str, a: f64, b: f64) -> RtValue {
     use chrono::Datelike;
-    let (Some(da), Some(db)) = (sas_date_to_naive(a), sas_date_to_naive(b)) else {
+    let (Some(da), Some(db)) = (pas_date_to_naive(a), pas_date_to_naive(b)) else {
         return RtValue::missing();
     };
     let n = match interval {
@@ -847,7 +847,7 @@ fn intck(interval: &str, a: f64, b: f64) -> RtValue {
 
 fn yrdif(d1: f64, d2: f64, basis: &str) -> RtValue {
     use chrono::Datelike;
-    let (Some(da), Some(db)) = (sas_date_to_naive(d1), sas_date_to_naive(d2)) else {
+    let (Some(da), Some(db)) = (pas_date_to_naive(d1), pas_date_to_naive(d2)) else {
         return RtValue::missing();
     };
     let days = (db - da).num_days() as f64;
@@ -867,7 +867,7 @@ fn yrdif(d1: f64, d2: f64, basis: &str) -> RtValue {
             (360.0 * (d2y - d1y) + 30.0 * (d2m - d1m) + (d2d - d1d)) / 360.0
         }
         // Default 'act/act' — divide by 365.25 (calendar-year approximation,
-        // matches SAS within rounding for typical age calculations).
+        // matches documented compatibility behavior within rounding for typical age calculations).
         _ => days / 365.25,
     };
     RtValue::Num(years)
@@ -951,7 +951,7 @@ fn build_regex(re_pat: &str, flags: &str) -> Result<regex::Regex, String> {
     builder.build().map_err(|e| e.to_string())
 }
 
-/// Convert a SAS / Perl-style replacement string into the syntax Rust's
+/// Convert a PAS / Perl-style replacement string into the syntax Rust's
 /// `regex::Regex::replace*` expects:
 ///
 ///   `\1` … `\9` → `$1` … `$9`        (capture group references)

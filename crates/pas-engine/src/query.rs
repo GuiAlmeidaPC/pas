@@ -227,7 +227,7 @@ pub(crate) fn run_one(
     sql: &str,
     max_preview: usize,
 ) -> Result<StmtResult, EngineError> {
-    let trimmed = crate::sas_sql::rewrite(sql.trim());
+    let trimmed = crate::pas_sql::rewrite(sql.trim());
     let trimmed = trimmed.as_str();
     if trimmed.is_empty() {
         return Ok(StmtResult::Done);
