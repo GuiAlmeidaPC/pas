@@ -94,9 +94,11 @@ h3 { color: #fff; }
 .how-caption { color: var(--soft); font-size: 14px; max-width: 64ch; }
 
 /* Footer */
-.site-footer { max-width: 1080px; margin: 0 auto; padding: 20px 24px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap; gap: 10px; }
+.site-footer { max-width: 1080px; margin: 0 auto; padding: 20px 24px; font-size: 12px; color: var(--muted); }
+.site-footer .footer-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
 .site-footer nav { display: flex; gap: 18px; }
 .site-footer a:hover { color: var(--accent); }
+.site-footer .legal { margin: 12px 0 0; font-size: 11px; color: #6b6b6b; max-width: 70ch; }
 
 /* Linux modal */
 .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 20; align-items: center; justify-content: center; padding: 20px; }

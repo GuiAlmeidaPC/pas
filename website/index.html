@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PAS — Practical Analytics Studio</title>
-  <meta name="description" content="The data-wrangling power of SAS, open and offline. Run the DATA step and PROC SQL natively on your desktop — no server, no license." />
+  <meta name="description" content="PAS (Practical Analytics Studio) is a fast, native desktop studio for data wrangling — run DATA step and PROC SQL programs offline, powered by DuckDB and Apache Arrow. No server, no subscription." />
   <link rel="icon" href="assets/favicon.png" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -20,9 +20,9 @@
     <section class="hero" id="download">
       <div class="hero-copy">
         <p class="hero-kicker">Meet <span class="cy">PAS</span></p>
-        <h1>The data-wrangling power of <span class="cy">SAS</span>,<br>open &amp; offline.</h1>
-        <p class="lede">DATA step + PROC SQL that run unmodified on your desktop — backed by
-          DuckDB &amp; Apache Arrow. No server, no license.</p>
+        <h1>Powerful data wrangling,<br><span class="cy">native</span> &amp; offline.</h1>
+        <p class="lede">Run DATA step and PROC SQL programs right on your desktop — backed by
+          DuckDB &amp; Apache Arrow. No server, no subscription, no cloud.</p>
         <div class="downloads">
           <a class="dlbtn primary" data-dl-primary href="https://github.com/GuiAlmeidaPC/pas/releases/latest">
             <span class="dl-os">⬇</span>
@@ -47,13 +47,13 @@
       <h2>Everything you need to wrangle data</h2>
       <div class="fgrid">
         <article class="fcard"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg></div><h3>DATA step &amp; PROC SQL</h3>
-          <p>SAS semantics close enough that common scripts run unmodified.</p></article>
+          <p>A familiar DATA step and PROC SQL model for transforming and querying your data.</p></article>
         <article class="fcard"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><h3>DuckDB-powered</h3>
           <p>SQL executes on a highly optimized engine with zero-copy Arrow transfer.</p></article>
         <article class="fcard"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/></svg></div><h3>Million-row viewer</h3>
           <p>Paginated virtual scrolling handles huge tables smoothly.</p></article>
         <article class="fcard"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22.61 16.95A5 5 0 0 0 18 10h-1.26a8 8 0 0 0-7.05-6M5 5a8 8 0 0 0 4 15h9a5 5 0 0 0 1.7-.3"/><line x1="1" y1="1" x2="23" y2="23"/></svg></div><h3>Offline &amp; native</h3>
-          <p>A single redistributable binary. No server, no license, no cloud.</p></article>
+          <p>A single redistributable binary. No server, no subscription, no cloud.</p></article>
         <article class="fcard"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1"/><path d="M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1"/></svg></div><h3>Macro language</h3>
           <p><code>%macro</code>, <code>%if</code>/<code>%do</code>, macro functions and <code>&amp;</code>/<code>%</code> substitution.</p></article>
         <article class="fcard"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div><h3>Cross-platform</h3>
@@ -64,24 +64,28 @@
     <!-- HOW IT WORKS -->
     <section class="how">
       <p class="eyebrow">How it works</p>
-      <h2>A familiar Enterprise Guide–style IDE</h2>
+      <h2>A familiar, full-featured analytics IDE</h2>
       <figure class="window wide">
         <figcaption class="titlebar"><span class="dot red"></span><span class="dot amber"></span><span class="dot green"></span> PAS</figcaption>
         <img src="assets/screenshots/ide-full.svg" alt="The PAS IDE: library and project browsers, code editor, log pane, and output viewer" />
       </figure>
-      <p class="how-caption">Editor with SAS syntax highlighting, a real-time log pane, a paginated
+      <p class="how-caption">Editor with syntax highlighting, a real-time log pane, a paginated
         output viewer, and library/project browsers — all streaming rows through the DATA step
         without holding everything in memory.</p>
     </section>
   </main>
 
   <footer class="site-footer">
-    <span>PAS — MIT licensed</span>
-    <nav>
-      <a href="https://github.com/GuiAlmeidaPC/pas/releases">Releases</a>
-      <a href="https://github.com/GuiAlmeidaPC/pas/blob/main/CHANGELOG.md">Changelog</a>
-      <a href="https://github.com/GuiAlmeidaPC/pas/releases/latest">SHA256SUMS</a>
-    </nav>
+    <div class="footer-row">
+      <span>PAS — MIT licensed</span>
+      <nav>
+        <a href="https://github.com/GuiAlmeidaPC/pas/releases">Releases</a>
+        <a href="https://github.com/GuiAlmeidaPC/pas/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/GuiAlmeidaPC/pas/releases/latest">SHA256SUMS</a>
+      </nav>
+    </div>
+    <p class="legal">PAS is an independent, open-source project, not affiliated with or endorsed by
+      any other company. All third-party trademarks are the property of their respective owners.</p>
   </footer>
 
   <!-- LINUX FORMAT MODAL -->
