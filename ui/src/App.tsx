@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor, { OnMount } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
 
 import { LibraryTree } from "./LibraryTree";
 import { ProjectTree } from "./ProjectTree";
@@ -11,146 +10,33 @@ import { EditorTabs } from "./Tabs";
 import { StatusBar } from "./StatusBar";
 import { MenuBar, type MenuDef } from "./MenuBar";
 import { Modal } from "./Modal";
-import { registerPasLanguage } from "./pasLang";
 import { AIChatPanel } from "./AIChatPanel";
 import { applyPatch, type EditFileSnapshot, type ProposedEdit, type ResolvedEdit } from "./ai/editProtocol";
 import { DiffReviewModal } from "./ai/DiffReviewModal";
+import { createEditorMount, type AiTrigger } from "./editorSetup";
+import { buildMenus } from "./menus";
+import { LogView, OutputView } from "./panes";
 import {
   DEFAULT_UNSAVED_PROGRAM_PATH,
+  buildProjectConfig,
   createUnsavedProjectWorkspace,
   defaultAgentPanelOpen,
   isProjectOpen,
+  mergeProgramPaths,
 } from "./projectWorkspace";
+import { STARTER_PROGRAM } from "./starterProgram";
+import { makeTab, basename, type Tab } from "./tabState";
+import { useRunner } from "./useRunner";
+import { useZoom } from "./useZoom";
+import { buildWorkspaceContext, useSchemaContext } from "./workspaceContext";
 import type {
-  ColumnInfo,
-  DatasetInfo,
   DatasetRef,
-  EngineEvent,
-  LogLine,
   Library,
   ProjectConfig,
-  ResultBlock,
-  SubmitEventPayload,
   TabConfig,
 } from "./types";
 
-
-const STARTER_PROGRAM = `/* ==================================================================== */
-/* PAS (Practical Analytics Studio) — Welcome & Interactive Guide       */
-/* ==================================================================== */
-/* Press F3 or Cmd+Enter to execute the selected code or the whole file. */
-/* Press F4 to cancel execution. Logs and datasets populate below.      */
-
-/* STEP 1: Assigning Libraries (LIBNAME) */
-/* The WORK library is always present as a temporary in-memory database. */
-/* You can map folders or database files to custom libraries like this:   */
-/*                                                                        */
-/*   libname mydb  duckdb "path/to/my_database.duckdb";                   */
-/*   libname files dir    "path/to/csv_and_parquet_folder" format=csv;    */
-/*                                                                        */
-/* Once mapped, you can refer to tables as 'mydb.tablename' or            */
-/* read/write CSV/Parquet files directly as datasets!                     */
-
-/* STEP 2: Basic PROC SQL (Data Generation) */
-proc sql;
-    create table raw_employees as
-        select 'Jane Doe' as name, 'Sales' as dept, 4500 as salary union all
-        select 'John Smith',       'IT',    6200 union all
-        select 'Grace Hopper',     'IT',    8500 union all
-        select 'Alan Turing',      'Sales', 5200;
-quit;
-
-/* STEP 3: Basic DATA Step (Filtering and Derived Columns) */
-data high_earners;
-    set raw_employees;
-    /* Basic arithmetic and string concatenation */
-    bonus = salary * 0.10;
-    total_comp = salary + bonus;
-    
-    /* Conditional logic */
-    if total_comp > 6000 then status = "High Comp";
-    else status = "Standard";
-run;
-
-/* STEP 4: Advanced DATA Step (Accumulators, BY-Group Processing, FIRST/LAST) */
-proc sort data=high_earners out=sorted_employees;
-    by dept descending total_comp;
-run;
-
-data dept_summaries;
-    set sorted_employees;
-    by dept;
-    
-    /* Keep a running total for each department using RETAIN */
-    retain dept_total_comp 0;
-    if first.dept then dept_total_comp = 0;
-    
-    dept_total_comp = dept_total_comp + total_comp;
-    
-    /* Only output the final consolidated row per department */
-    if last.dept;
-run;
-
-/* STEP 5: Macro Variables, Functions, & Definitions (Advanced Metaprogramming) */
-%macro evaluate_bonuses(title_text, multiplier=0.15);
-    %put NOTE: --- Executing macro %upcase(evaluate_bonuses) ---;
-    %put NOTE: Title: &title_text;
-    %put NOTE: Multiplier parameter value is: &multiplier;
-    
-    data macro_results;
-        set raw_employees;
-        /* Using macro parameters inside program statements */
-        new_bonus = salary * &multiplier;
-        label = "%upcase(&title_text) RESULTS";
-    run;
-%mend evaluate_bonuses;
-
-/* Invoke the macro with custom positional and keyword parameters */
-%evaluate_bonuses(Q2 Compensation Evaluation, multiplier=0.18);
-
-/* STEP 6: Dynamic Macro Binding with CALL SYMPUTX */
-data _null_;
-    set raw_employees;
-    if name = 'Grace Hopper' then do;
-        /* Dynamically write to a macro variable at runtime */
-        call symputx('top_employee', name);
-    end;
-run;
-
-/* Print the dynamically bound value to the log pane */
-%put NOTE: Top employee resolved dynamically via SYMPUTX: "&top_employee";
-`;
-
 const INITIAL_WORKSPACE = createUnsavedProjectWorkspace(STARTER_PROGRAM);
-
-interface Tab {
-  id: string;
-  path: string | null;
-  title: string;
-  content: string;
-  saved_content: string; // baseline for dirty detection
-}
-
-type Pane = "log" | "output" | "dataset";
-
-function makeTab(opts: { id?: string; path?: string | null; title?: string; content: string }): Tab {
-  const id =
-    opts.id ?? (typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `tab-${Date.now()}-${Math.random()}`);
-  return {
-    id,
-    path: opts.path ?? null,
-    title: opts.title ?? "untitled.pas",
-    content: opts.content,
-    saved_content: opts.content,
-  };
-}
-
-function basename(p: string): string {
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1] || p;
-}
 
 export default function App() {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
@@ -165,11 +51,23 @@ export default function App() {
     }),
   ]);
   const [activeId, setActiveId] = useState<string>(() => tabs[0].id);
-  const [log, setLog] = useState<LogLine[]>([]);
-  const [outputs, setOutputs] = useState<ResultBlock[]>([]);
-  const [pane, setPane] = useState<Pane>("log");
-  const [running, setRunning] = useState(false);
-  const [refreshToken, setRefreshToken] = useState(0);
+  const {
+    log,
+    setLog,
+    outputs,
+    pane,
+    setPane,
+    running,
+    setRunning,
+    refreshToken,
+    bumpRefresh,
+    currentSubmissionRef,
+    submit,
+    cancel,
+    runProject,
+    clearLog,
+    clearOutputs,
+  } = useRunner(editorRef, monacoRef);
   const [activeDataset, setActiveDataset] = useState<DatasetRef | null>(null);
   const [sidebarW, setSidebarW] = useState(240);
   const [bottomH, setBottomH] = useState<number | null>(null);
@@ -184,11 +82,7 @@ export default function App() {
   const [libCount, setLibCount] = useState(1);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
-  const [zoomPercent, setZoomPercent] = useState<number>(() => {
-    const saved = typeof localStorage !== "undefined" ? localStorage.getItem("pas.zoom") : null;
-    const parsed = saved ? parseInt(saved, 10) : NaN;
-    return Number.isFinite(parsed) && parsed >= 50 && parsed <= 300 ? parsed : 100;
-  });
+  const { zoomPercent, setZoomPercent } = useZoom();
 
   const [showAIPanel, setShowAIPanel] = useState<boolean>(() => {
     return defaultAgentPanelOpen(typeof localStorage !== "undefined" ? localStorage : null);
@@ -203,59 +97,15 @@ export default function App() {
     }
   });
   const [activeSelection, setActiveSelection] = useState("");
-  const [aiTrigger, setAiTrigger] = useState<{ prompt: string; timestamp: number } | null>(null);
+  const [aiTrigger, setAiTrigger] = useState<AiTrigger | null>(null);
   const [diffReview, setDiffReview] = useState<
     | { edit: ProposedEdit; resolved: ResolvedEdit }
     | null
   >(null);
   const [appliedEditPaths, setAppliedEditPaths] = useState<Set<string>>(new Set());
 
-  const [schemaContext, setSchemaContext] = useState<string>("");
+  const schemaContext = useSchemaContext(refreshToken);
 
-  useEffect(() => {
-    let active = true;
-    const fetchSchema = async () => {
-      try {
-        const libs = await invoke<Library[]>("list_libraries");
-        const schemas: string[] = [];
-        for (const lib of libs) {
-          if (!active) return;
-          try {
-            const datasets = await invoke<DatasetInfo[]>("list_datasets", { libref: lib.name });
-            if (datasets.length === 0) {
-              schemas.push(`- Library: ${lib.name.toUpperCase()} (${lib.kind})${lib.path ? ` at ${lib.path}` : ""} (empty)`);
-              continue;
-            }
-            schemas.push(`- Library: ${lib.name.toUpperCase()} (${lib.kind})${lib.path ? ` at ${lib.path}` : ""}`);
-            for (const ds of datasets) {
-              if (!active) return;
-              try {
-                const cols = await invoke<ColumnInfo[]>("dataset_schema", { libref: lib.name, name: ds.name });
-                const colStr = cols.map(c => `      - ${c.name}: ${c.ty}`).join("\n");
-                schemas.push(`  - Dataset: ${ds.name} (${ds.rows ?? 0} rows)\n${colStr}`);
-              } catch (e) {
-                schemas.push(`  - Dataset: ${ds.name} (${ds.rows ?? 0} rows) (Error reading columns: ${String(e)})`);
-              }
-            }
-          } catch (e) {
-            schemas.push(`- Library: ${lib.name.toUpperCase()} (${lib.kind}) (Error listing datasets: ${String(e)})`);
-          }
-        }
-        if (active) {
-          setSchemaContext(schemas.join("\n"));
-        }
-      } catch (e) {
-        console.error("Failed to build schema context", e);
-      }
-    };
-    fetchSchema();
-    return () => {
-      active = false;
-    };
-  }, [refreshToken]);
-
-
-  const currentSubmissionRef = useRef<string | null>(null);
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const activeIdRef = useRef(activeId);
@@ -278,116 +128,18 @@ export default function App() {
   const activeTab = tabs.find((t) => t.id === activeId) ?? null;
   const hasProject = isProjectOpen(projectName);
 
-  const workspaceContext = useMemo(() => {
-    let xmlParts: string[] = [];
-
-    // 1. Active file path
-    if (activeTab && activeTab.path) {
-      xmlParts.push(`  <active_file path="${activeTab.path}" />`);
-    } else {
-      xmlParts.push('  <active_file path="untitled.pas" />');
-    }
-
-    // 2. Project structure and file contents
-    if (projectName) {
-      xmlParts.push(`  <active_project name="${projectName}">`);
-      if (projectPrograms.length > 0) {
-        const programXml = projectPrograms.map(p => {
-          const openTab = tabs.find(t => t.path === p.path);
-          const code = openTab ? openTab.content : (p.content || "");
-          // Escape standard XML chars to ensure robust structural parsing by the LLM
-          const escapedCode = code
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-          return `    <file path="${p.path}">\n${escapedCode}\n    </file>`;
-        }).join("\n");
-        xmlParts.push(programXml);
-      }
-      xmlParts.push("  </active_project>");
-    }
-
-    // 3. Database schemas
-    if (schemaContext) {
-      xmlParts.push("  <database_schema>");
-      xmlParts.push(schemaContext.split("\n").map(line => `    ${line}`).join("\n"));
-      xmlParts.push("  </database_schema>");
-    }
-
-    // 4. Execution Diagnostics
-    const diagnostics = log.filter(line => line.level === "error" || line.level === "warning");
-    if (diagnostics.length > 0) {
-      const recentDiag = diagnostics.slice(-10);
-      xmlParts.push("  <execution_diagnostics>");
-      recentDiag.forEach(d => {
-        // Escape content inside diagnostics to prevent malformed XML tags
-        const escapedDiagText = d.text
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
-        xmlParts.push(`    <diagnostic level="${d.level}">${escapedDiagText}</diagnostic>`);
-      });
-      xmlParts.push("  </execution_diagnostics>");
-    }
-
-    return xmlParts.join("\n");
-  }, [activeTab, tabs, projectName, projectPrograms, schemaContext, log]);
-
-
-
-  // Engine events.
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: UnlistenFn | undefined;
-    (async () => {
-      const fn = await listen<SubmitEventPayload>("pas://event", (msg) => {
-        const { submission_id, event } = msg.payload;
-        if (submission_id !== currentSubmissionRef.current) return;
-        applyEvent(event, setLog, setOutputs, setRunning, setPane, () =>
-          setRefreshToken((t) => t + 1),
-        );
-        // Pin parse-error markers on the editor.
-        if (event.kind === "error" && event.source_span) {
-          const monaco = monacoRef.current;
-          const editor = editorRef.current;
-          if (monaco && editor) {
-            const model = editor.getModel();
-            if (model) {
-              monaco.editor.setModelMarkers(model, "pas", [
-                {
-                  startLineNumber: event.source_span.start_line,
-                  startColumn: event.source_span.start_col,
-                  endLineNumber: event.source_span.end_line,
-                  endColumn: event.source_span.end_col,
-                  message: event.text,
-                  severity: monaco.MarkerSeverity.Error,
-                },
-              ]);
-            }
-          }
-        }
-      });
-      if (cancelled) fn();
-      else unlisten = fn;
-    })();
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  // Apply window zoom (VS Code-style Ctrl+= / Ctrl+- / Ctrl+0) and
-  // persist across sessions.
-  useEffect(() => {
-    // The non-standard `zoom` CSS property is honored by WebKit (and
-    // therefore by the Tauri webview on macOS / Linux) and Chromium —
-    // covers every Tauri target. Cast through `any` because the DOM
-    // typings don't declare it.
-    (document.body.style as unknown as Record<string, string>).zoom = `${zoomPercent}%`;
-    try {
-      localStorage.setItem("pas.zoom", String(zoomPercent));
-    } catch { /* ignore — private mode */ }
-  }, [zoomPercent]);
+  const workspaceContext = useMemo(
+    () =>
+      buildWorkspaceContext({
+        activeTab,
+        tabs,
+        projectName,
+        projectPrograms,
+        schemaContext,
+        log,
+      }),
+    [activeTab, tabs, projectName, projectPrograms, schemaContext, log],
+  );
 
   useEffect(() => {
     try {
@@ -401,26 +153,6 @@ export default function App() {
     } catch { /* ignore */ }
   }, [aiPanelW]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const cmd = e.ctrlKey || e.metaKey;
-      if (!cmd) return;
-      // Ctrl+= (also Ctrl+Plus on numeric keypad) zooms in.
-      if (e.key === "=" || e.key === "+") {
-        e.preventDefault();
-        setZoomPercent((z) => Math.min(300, z + 10));
-      } else if (e.key === "-" || e.key === "_") {
-        e.preventDefault();
-        setZoomPercent((z) => Math.max(50, z - 10));
-      } else if (e.key === "0") {
-        e.preventDefault();
-        setZoomPercent(100);
-      }
-    };
-    window.addEventListener("keydown", onKey, { capture: true });
-    return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, []);
-
   // Track library count for status bar.
   useEffect(() => {
     (async () => {
@@ -433,73 +165,10 @@ export default function App() {
     })();
   }, [refreshToken]);
 
-  // ── submission control ──────────────────────────────────────────────
-  const cancel = useCallback(async () => {
-    try { await invoke("cancel"); }
-    catch (e) {
-      setLog((p) => [...p, { level: "error", text: `cancel failed: ${String(e)}` }]);
-    }
-  }, []);
-
-  const submit = useCallback(async () => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const model = editor.getModel();
-    if (!model) return;
-    const selection = editor.getSelection();
-    const program =
-      selection && !selection.isEmpty() ? model.getValueInRange(selection) : model.getValue();
-    if (!program.trim()) return;
-
-    const id = typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `sub-${Date.now()}-${Math.random()}`;
-    currentSubmissionRef.current = id;
-    setLog([]);
-    setOutputs([]);
-    setRunning(true);
-    setPane("log");
-    // Clear any prior error markers before the new submission.
-    {
-      const monaco = monacoRef.current;
-      const editor = editorRef.current;
-      if (monaco && editor) {
-        const model = editor.getModel();
-        if (model) monaco.editor.setModelMarkers(model, "pas", []);
-      }
-    }
-    try {
-      await invoke<string>("submit", { program, submissionId: id });
-    } catch (e) {
-      setLog((p) => [...p, { level: "error", text: `submit failed: ${String(e)}` }]);
-      setRunning(false);
-    }
-  }, []);
-
-  const runProject = useCallback(async () => {
-    if (projectPrograms.length === 0) return;
-
-    const id = crypto.randomUUID();
-    currentSubmissionRef.current = id;
-    setLog([]);
-    setOutputs([]);
-    setRunning(true);
-    setPane("log");
+  const runActiveProject = useCallback(() => {
     setShowBottomPane(true);
-
-    try {
-      await invoke("submit_files", {
-        programs: projectPrograms,
-        submissionId: id,
-      });
-    } catch (e) {
-      setLog((p) => [
-        ...p,
-        { level: "error", text: `run project failed: ${String(e)}` },
-      ]);
-      setRunning(false);
-    }
-  }, [projectPrograms]);
+    void runProject(projectPrograms);
+  }, [runProject, projectPrograms]);
 
   // ── tab management ───────────────────────────────────────────────────
   const newTab = useCallback(() => {
@@ -591,7 +260,7 @@ export default function App() {
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `open: ${String(e)}` }]);
     }
-  }, []);
+  }, [setLog]);
 
   const openFile = useCallback(async () => {
     const path = await invoke<string | null>("pick_pas_file");
@@ -640,7 +309,7 @@ export default function App() {
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `save: ${String(e)}` }]);
     }
-  }, []);
+  }, [setLog]);
 
   const getDefaultSavePath = (title: string, existingPath: string | null) => {
     if (existingPath) return existingPath;
@@ -669,37 +338,19 @@ export default function App() {
     }
     try {
       const libs = await invoke<Library[]>("list_libraries");
-      // Merge currently-open tab paths into the program list so saving
-      // captures any files the user opened without explicitly adding to
-      // the project. Order: existing project programs first, then any
-      // open tabs not already in that list.
       const activeTabs = overrideTabs ?? tabsRef.current;
       const activePrograms = overridePrograms ?? projectProgramsRef.current;
 
       const openTabPaths = activeTabs
         .filter((t) => t.path)
         .map((t) => t.path!);
-      const seen = new Set<string>();
-      const programPaths: string[] = [];
-      for (const p of activePrograms) {
-        if (!seen.has(p.path)) {
-          programPaths.push(p.path);
-          seen.add(p.path);
-        }
-      }
-      for (const p of openTabPaths) {
-        if (!seen.has(p)) {
-          programPaths.push(p);
-          seen.add(p);
-        }
-      }
+      const programPaths = mergeProgramPaths(activePrograms, openTabPaths);
 
       // Fetch content for each program (embedded project feature)
       const programs: TabConfig[] = [];
-      const openTabs = activeTabs;
       for (const pPath of programPaths) {
         let content: string | undefined;
-        const tab = openTabs.find((t) => t.path === pPath);
+        const tab = activeTabs.find((t) => t.path === pPath);
         if (tab) {
           content = tab.content;
         } else {
@@ -712,27 +363,19 @@ export default function App() {
         programs.push({ path: pPath, content });
       }
 
-      const project: ProjectConfig = {
-        version: 1,
-        name: name ?? "project",
-        libnames: libs
-          .filter((l) => l.kind !== "memory")
-          .map((l) => ({
-            name: l.name,
-            kind: l.kind,
-            path: l.path,
-            format: l.format ?? null,
-          })),
+      const project: ProjectConfig = buildProjectConfig({
+        name,
+        libraries: libs,
         programs,
-        open_tabs: openTabPaths.map((p) => ({ path: p })),
-        active_tab: activeTabs.find((t) => t.id === activeIdRef.current)?.path ?? null,
+        openTabPaths,
+        activeTabPath: activeTabs.find((t) => t.id === activeIdRef.current)?.path ?? null,
         layout: {
           sidebar_width: sidebarWRef.current,
           bottom_height: bottomHRef.current,
           bottom_width: bottomWRef.current,
           orientation: layoutOrientationRef.current,
         },
-      };
+      });
       await invoke("save_project", { path, project });
       setProjectPath(path);
       setProjectName(name);
@@ -740,7 +383,7 @@ export default function App() {
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `save project: ${String(e)}` }]);
     }
-  }, []);
+  }, [setLog]);
 
   const saveProject = useCallback(() => performSaveProject(false), [performSaveProject]);
   const saveProjectAs = useCallback(() => performSaveProject(true), [performSaveProject]);
@@ -758,7 +401,7 @@ export default function App() {
       // 2. Open a new clean tab in the editor
       const newTab = makeTab({ path: filename, title: basename(filename), content: code });
       newTab.saved_content = code; // Baseline for dirty check
-      
+
       setTabs((prev) => [...prev, newTab]);
       setActiveId(newTab.id);
 
@@ -778,7 +421,7 @@ export default function App() {
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `Failed to add program to project: ${String(e)}` }]);
     }
-  }, [performSaveProject]);
+  }, [performSaveProject, setLog]);
 
   const readEditFile = useCallback(async (path: string): Promise<EditFileSnapshot> => {
     const openTab = tabsRef.current.find((t) => t.path === path);
@@ -877,7 +520,7 @@ export default function App() {
         throw e;
       }
     },
-    [performSaveProject, readEditFile],
+    [performSaveProject, readEditFile, setLog],
   );
 
   const handleReviewEdit = useCallback(
@@ -967,9 +610,6 @@ export default function App() {
     return true;
   }, []);
 
-  const clearLog = useCallback(() => setLog([]), []);
-  const clearOutputs = useCallback(() => setOutputs([]), []);
-
   // ── project file operations ──────────────────────────────────────────
   const newProject = useCallback(() => {
     setProjectPath(null);
@@ -1019,82 +659,28 @@ export default function App() {
       if (project.layout.orientation) setLayoutOrientation(project.layout.orientation);
       setProjectPath(path);
       setProjectName(project.name);
-      setRefreshToken((t) => t + 1);
+      bumpRefresh();
     } catch (e) {
       setLog((p) => [...p, { level: "error", text: `open project: ${String(e)}` }]);
     }
-  }, []);
-
-
+  }, [bumpRefresh, currentSubmissionRef, setLog, setRunning]);
 
   // ── editor mount ────────────────────────────────────────────────────
-  const handleMount: OnMount = (editor, monaco) => {
-    editorRef.current = editor;
-    monacoRef.current = monaco;
-    registerPasLanguage(monaco);
-    if (editor.getModel()) monaco.editor.setModelLanguage(editor.getModel()!, "pas");
-    editor.onDidChangeCursorPosition((e) =>
-      setCursor({ line: e.position.lineNumber, col: e.position.column }),
-    );
-    editor.onDidChangeCursorSelection((e) => {
-      const model = editor.getModel();
-      if (model) {
-        setActiveSelection(model.getValueInRange(e.selection));
-      } else {
-        setActiveSelection("");
-      }
-    });
-
-    editor.addCommand(monaco.KeyCode.F3, () => submit());
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => submit());
-    editor.addCommand(monaco.KeyCode.F4, () => cancel());
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveActiveTab());
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyN, () => newTab());
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyO, () => openFile());
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyW, () =>
-      closeTab(activeIdRef.current),
-    );
-
-    editor.addAction({
-      id: "ai-explain-code",
-      label: "Agent: Explain Selection",
-      contextMenuGroupId: "1_modification",
-      contextMenuOrder: 1,
-      precondition: "editorHasSelection",
-      run: (ed) => {
-        const selection = ed.getSelection();
-        const model = ed.getModel();
-        if (selection && model) {
-          const text = model.getValueInRange(selection);
-          setShowAIPanel(true);
-          setAiTrigger({
-            prompt: `Explain this code:\n\n\`\`\`pas\n${text}\n\`\`\``,
-            timestamp: Date.now(),
-          });
-        }
-      }
-    });
-
-    editor.addAction({
-      id: "ai-refactor-code",
-      label: "Agent: Refactor/Optimize Selection",
-      contextMenuGroupId: "1_modification",
-      contextMenuOrder: 2,
-      precondition: "editorHasSelection",
-      run: (ed) => {
-        const selection = ed.getSelection();
-        const model = ed.getModel();
-        if (selection && model) {
-          const text = model.getValueInRange(selection);
-          setShowAIPanel(true);
-          setAiTrigger({
-            prompt: `Refactor and optimize this code segment:\n\n\`\`\`pas\n${text}\n\`\`\``,
-            timestamp: Date.now(),
-          });
-        }
-      }
-    });
-  };
+  const handleMount: OnMount = createEditorMount({
+    editorRef,
+    monacoRef,
+    activeIdRef,
+    setCursor,
+    setActiveSelection,
+    submit,
+    cancel,
+    saveActiveTab,
+    newTab,
+    openFile,
+    closeTab,
+    setShowAIPanel,
+    setAiTrigger,
+  });
 
   // Reapply PAS language on tab switch (each model needs registration).
   useEffect(() => {
@@ -1103,7 +689,7 @@ export default function App() {
     if (!monaco || !editor) return;
     const model = editor.getModel();
     if (model) monaco.editor.setModelLanguage(model, "pas");
-    
+
     // Read current selection on tab switch
     const selection = editor.getSelection();
     if (selection && model) {
@@ -1116,7 +702,7 @@ export default function App() {
   const openDataset = useCallback((ds: DatasetRef) => {
     setActiveDataset(ds);
     setPane("dataset");
-  }, []);
+  }, [setPane]);
 
   const tabMeta = useMemo(
     () =>
@@ -1138,150 +724,50 @@ export default function App() {
   const hasLog = log.length > 0;
 
   const menus: MenuDef[] = useMemo(
-    () => [
-      {
-        label: "File",
-        items: [
-          { label: "New Tab", shortcut: "Ctrl+N", onClick: newTab },
-          { label: "Open File…", shortcut: "Ctrl+O", onClick: openFile },
-          { separator: true },
-          { label: "Save", shortcut: "Ctrl+S", onClick: saveActiveTab },
-          { label: "Save As…", onClick: saveActiveTabAs },
-          ...(hasProject
-            ? [{ label: "Save to Standalone PAS File…", onClick: saveActiveTabAs }]
-            : []),
-          { separator: true },
-          {
-            label: "Close Tab",
-            shortcut: "Ctrl+W",
-            onClick: () => closeTab(activeIdRef.current),
+    () =>
+      buildMenus(
+        {
+          newTab,
+          openFile,
+          saveActiveTab,
+          saveActiveTabAs,
+          closeActiveTab: () => closeTab(activeIdRef.current),
+          newProject,
+          openProject,
+          saveProject,
+          saveProjectAs,
+          addProgramToProject,
+          runEditorAction,
+          setZoomPercent,
+          resetZoom: () => setZoomPercent(100),
+          toggleBottomPane: () => setShowBottomPane((s) => !s),
+          toggleLayoutOrientation: () =>
+            setLayoutOrientation((prev) => (prev === "vertical" ? "horizontal" : "vertical")),
+          toggleAIPanel: () => setShowAIPanel((s) => !s),
+          showPane: (p) => {
+            setPane(p);
+            setShowBottomPane(true);
           },
-        ],
-      },
-      {
-        label: "Project",
-        items: [
-          { label: "New Project", onClick: newProject },
-          { label: "Open Project…", onClick: openProject },
-          { label: "Save Project", onClick: saveProject },
-          { label: "Save Project As…", onClick: saveProjectAs },
-          { separator: true },
-          { label: "Add Program to Project…", onClick: addProgramToProject },
-        ],
-      },
-      {
-        label: "Edit",
-        items: [
-          {
-            label: "Undo",
-            shortcut: "Ctrl+Z",
-            onClick: () => runEditorAction("undo"),
-          },
-          {
-            label: "Redo",
-            shortcut: "Ctrl+Shift+Z",
-            onClick: () => runEditorAction("redo"),
-          },
-          { separator: true },
-          {
-            label: "Find",
-            shortcut: "Ctrl+F",
-            onClick: () => runEditorAction("actions.find"),
-          },
-          {
-            label: "Replace",
-            shortcut: "Ctrl+H",
-            onClick: () =>
-              runEditorAction("editor.action.startFindReplaceAction"),
-          },
-          { separator: true },
-          {
-            label: "Select All",
-            shortcut: "Ctrl+A",
-            onClick: () => runEditorAction("editor.action.selectAll"),
-          },
-        ],
-      },
-      {
-        label: "View",
-        items: [
-          {
-            label: "Zoom In",
-            shortcut: "Ctrl+=",
-            onClick: () => setZoomPercent((z) => Math.min(300, z + 10)),
-          },
-          {
-            label: "Zoom Out",
-            shortcut: "Ctrl+-",
-            onClick: () => setZoomPercent((z) => Math.max(50, z - 10)),
-          },
-          {
-            label: "Reset Zoom",
-            shortcut: "Ctrl+0",
-            onClick: () => setZoomPercent(100),
-          },
-          { separator: true },
-          {
-            label: showBottomPane ? "Hide Bottom Panel" : "Show Bottom Panel",
-            onClick: () => setShowBottomPane((s) => !s),
-          },
-          {
-            label: layoutOrientation === "vertical" ? "Split Side-by-Side" : "Split Stacked",
-            onClick: () => setLayoutOrientation((prev) => prev === "vertical" ? "horizontal" : "vertical"),
-          },
-          { separator: true },
-          {
-            label: showAIPanel ? "Hide Agent" : "Show Agent",
-            onClick: () => setShowAIPanel((s) => !s),
-          },
-          { separator: true },
-          { label: "Show Log", onClick: () => { setPane("log"); setShowBottomPane(true); } },
-          {
-            label: "Show Output",
-            onClick: () => { setPane("output"); setShowBottomPane(true); },
-            disabled: !hasOutput,
-          },
-          {
-            label: "Show Dataset",
-            onClick: () => { setPane("dataset"); setShowBottomPane(true); },
-            disabled: !activeDataset,
-          },
-        ],
-      },
-      {
-        label: "Run",
-        items: [
-          {
-            label: running ? "Running…" : "Submit",
-            shortcut: "F3",
-            onClick: submit,
-            disabled: running,
-          },
-          {
-            label: "Run Project",
-            onClick: runProject,
-            disabled: running || projectPrograms.length === 0,
-          },
-          {
-            label: "Cancel",
-            shortcut: "F4",
-            onClick: cancel,
-            disabled: !running,
-          },
-          { separator: true },
-          { label: "Clear Log", onClick: clearLog, disabled: !hasLog },
-          { label: "Clear Output", onClick: clearOutputs, disabled: !hasOutput },
-        ],
-      },
-      {
-        label: "Help",
-        items: [
-          { label: "Keyboard Shortcuts…", onClick: () => setShowShortcuts(true) },
-          { separator: true },
-          { label: "About PAS…", onClick: () => setShowAbout(true) },
-        ],
-      },
-    ],
+          submit,
+          runProject: runActiveProject,
+          cancel,
+          clearLog,
+          clearOutputs,
+          showShortcuts: () => setShowShortcuts(true),
+          showAbout: () => setShowAbout(true),
+        },
+        {
+          hasProject,
+          hasOutput,
+          hasLog,
+          activeDataset,
+          running,
+          projectProgramCount: projectPrograms.length,
+          showBottomPane,
+          showAIPanel,
+          layoutOrientation,
+        },
+      ),
     [
       newTab,
       openFile,
@@ -1294,17 +780,20 @@ export default function App() {
       saveProjectAs,
       addProgramToProject,
       runEditorAction,
+      setZoomPercent,
+      setPane,
       hasOutput,
       hasLog,
       activeDataset,
       running,
       submit,
-      runProject,
+      runActiveProject,
       cancel,
       clearLog,
       clearOutputs,
       showBottomPane,
       showAIPanel,
+      layoutOrientation,
       hasProject,
       projectPrograms,
     ],
@@ -1436,7 +925,7 @@ export default function App() {
               onRemoveProgram={removeProgramFromProject}
               onMoveProgram={moveProgram}
               onReorderPrograms={reorderPrograms}
-              onRunProject={runProject}
+              onRunProject={runActiveProject}
               running={running}
             />
           </div>
@@ -1669,101 +1158,6 @@ export default function App() {
           onClose={() => setDiffReview(null)}
         />
       )}
-    </div>
-  );
-}
-
-function applyEvent(
-  event: EngineEvent,
-  setLog: React.Dispatch<React.SetStateAction<LogLine[]>>,
-  setOutputs: React.Dispatch<React.SetStateAction<ResultBlock[]>>,
-  setRunning: React.Dispatch<React.SetStateAction<boolean>>,
-  setPane: React.Dispatch<React.SetStateAction<Pane>>,
-  bumpRefresh: () => void,
-) {
-  switch (event.kind) {
-    case "source":
-      setLog((p) => [...p, { level: "source", text: event.text }]);
-      break;
-    case "note":
-      setLog((p) => [...p, { level: "note", text: `NOTE: ${event.text}` }]);
-      break;
-    case "warning":
-      setLog((p) => [...p, { level: "warning", text: `WARNING: ${event.text}` }]);
-      break;
-    case "error":
-      setLog((p) => [...p, { level: "error", text: `ERROR: ${event.text}` }]);
-      break;
-    case "output":
-      setOutputs((p) => [...p, event.block]);
-      setPane("output");
-      break;
-    case "done":
-      setRunning(false);
-      bumpRefresh();
-      break;
-  }
-}
-
-function LogView({ lines }: { lines: LogLine[] }) {
-  if (lines.length === 0) {
-    return <div className="empty">Submit a program with F3 to see log output here.</div>;
-  }
-  return (
-    <pre className="log">
-      {lines.map((line, i) => (
-        <div key={i} className={`log-line log-${line.level}`}>
-          {line.text}
-        </div>
-      ))}
-    </pre>
-  );
-}
-
-function OutputView({ blocks }: { blocks: ResultBlock[] }) {
-  if (blocks.length === 0) return <div className="empty">No output yet.</div>;
-  return (
-    <div className="output">
-      {blocks.map((block, i) => (
-        <BlockTable key={i} block={block} index={i} />
-      ))}
-    </div>
-  );
-}
-
-function BlockTable({ block, index }: { block: ResultBlock; index: number }) {
-  return (
-    <div className="block">
-      {block.title && <div className="block-title">{block.title}</div>}
-      <div className="block-header">
-        Result #{index + 1} — {block.rows.length} row(s)
-        {block.truncated ? " (truncated)" : ""}
-      </div>
-      <div className="grid-scroll">
-        <table className="grid">
-          <thead>
-            <tr>
-              {block.columns.map((c) => (
-                <th key={c.name}>
-                  <div className="col-name">{c.name}</div>
-                  <div className="col-type">{c.ty}</div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {block.rows.map((row, ri) => (
-              <tr key={ri}>
-                {row.map((cell, ci) => (
-                  <td key={ci} className={cell === null ? "null" : ""}>
-                    {cell === null ? "·" : String(cell)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }
