@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cancelling a run can no longer be silently undone by a submission queued
   behind it: the cancel flag is only reset once the new run actually owns the
   engine connection.
+- Abandoning the ChatGPT sign-in (closing the browser tab without completing
+  login) no longer leaves the callback listener — and port 1455 — stuck
+  forever; the login now reliably times out after 5 minutes.
 
 ## [0.2.0] - 2026-06-05
 
