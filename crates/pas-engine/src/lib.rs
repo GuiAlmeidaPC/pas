@@ -90,6 +90,49 @@ mod tests {
     }
 
     #[test]
+    fn submit_with_delivers_events_while_the_run_is_in_progress() {
+        // The callback must receive each block's events as the run advances,
+        // not a buffered dump after the whole program finishes. Proof:
+        // cancelling from inside the callback (after the first statement's
+        // output) must prevent the second statement from running.
+        let s = Session::new_in_memory().unwrap();
+        let mut events: Vec<Event> = Vec::new();
+        s.submit_with("select 1 as a; select 2 as b;", |e| {
+            if matches!(e, Event::Output { .. }) {
+                s.request_cancel();
+            }
+            events.push(e);
+        });
+        let outputs = events
+            .iter()
+            .filter(|e| matches!(e, Event::Output { .. }))
+            .count();
+        assert_eq!(
+            outputs, 1,
+            "cancel from the event callback must stop the next statement, got: {:?}",
+            events
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Warning { text } if text.contains("cancelled"))),
+            "expected a cancellation warning, got: {:?}",
+            events
+        );
+        assert!(matches!(events.last(), Some(Event::Done)));
+    }
+
+    #[test]
+    fn submit_collects_the_same_events_as_submit_with() {
+        let s = Session::new_in_memory().unwrap();
+        let prog = "create table t as select 1 as x; select * from t;";
+        let collected = s.submit(prog);
+        let mut streamed = Vec::new();
+        s.submit_with(prog, |e| streamed.push(e));
+        assert_eq!(format!("{:?}", collected), format!("{:?}", streamed));
+    }
+
+    #[test]
     fn runs_proc_sql_block() {
         let s = Session::new_in_memory().unwrap();
         let evs = s.submit(

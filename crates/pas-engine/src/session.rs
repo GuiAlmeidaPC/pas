@@ -118,33 +118,45 @@ impl Session {
     }
 
     /// Run an entire program, returning all events.
+    ///
+    /// Convenience wrapper over [`Session::submit_with`] that buffers every
+    /// event; interactive callers should prefer `submit_with` so the log can
+    /// update while the program is still running.
     pub fn submit(&self, program: &str) -> Vec<Event> {
+        let mut events = Vec::new();
+        self.submit_with(program, |e| events.push(e));
+        events
+    }
+
+    /// Run an entire program, delivering events to `on_event` as each block
+    /// finishes executing — not buffered until the end of the run. The final
+    /// event is always [`Event::Done`].
+    pub fn submit_with<F: FnMut(Event)>(&self, program: &str, mut on_event: F) {
         self.cancel.store(false, Ordering::SeqCst);
         let cleaned = strip_comments(program);
-        let mut events = Vec::new();
 
         let blocks = match split_blocks_checked(&cleaned) {
             Ok(blocks) => blocks,
             Err(err) => {
-                events.push(split_error_event(program, err));
-                events.push(Event::Done);
-                return events;
+                on_event(split_error_event(program, err));
+                on_event(Event::Done);
+                return;
             }
         };
         tracing::debug!(block_count = blocks.len(), "program split into blocks");
 
         if blocks.is_empty() {
-            events.push(Event::Note {
+            on_event(Event::Note {
                 text: "No statements found.".into(),
             });
-            events.push(Event::Done);
-            return events;
+            on_event(Event::Done);
+            return;
         }
 
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         for block in blocks {
             if self.cancel.load(Ordering::SeqCst) {
-                events.push(Event::Warning {
+                on_event(Event::Warning {
                     text: "Execution cancelled by user.".into(),
                 });
                 break;
@@ -171,7 +183,7 @@ impl Session {
                 "macro preprocessing complete",
             );
             for put_text in macro_result.puts {
-                events.push(Event::Note { text: put_text });
+                on_event(Event::Note { text: put_text });
             }
             // A DataStep with empty expansion is still treated as a parse
             // error (matches pre-refactor behavior); for the other kinds an
@@ -195,36 +207,36 @@ impl Session {
                         datalines,
                         body_src_offset,
                     };
-                    self.dispatch_block_guarded(&conn, synthetic, program, &mut events);
+                    self.dispatch_block_streamed(&conn, synthetic, program, &mut on_event);
                 }
                 Block::ProcSqlStmt { src_offset, .. } => {
                     let synthetic = Block::ProcSqlStmt {
                         text: macro_result.expanded.trim().to_string(),
                         src_offset,
                     };
-                    self.dispatch_block_guarded(&conn, synthetic, program, &mut events);
+                    self.dispatch_block_streamed(&conn, synthetic, program, &mut on_event);
                 }
                 Block::Statement { .. } => {
                     let sub_blocks = match split_blocks_checked(&macro_result.expanded) {
                         Ok(blocks) => blocks,
                         Err(err) => {
-                            events.push(split_error_event(&macro_result.expanded, err));
+                            on_event(split_error_event(&macro_result.expanded, err));
                             continue;
                         }
                     };
                     tracing::debug!(sub_blocks = ?sub_blocks, "expanded statement split");
                     for sub_block in sub_blocks {
                         if self.cancel.load(Ordering::SeqCst) {
-                            events.push(Event::Warning {
+                            on_event(Event::Warning {
                                 text: "Execution cancelled by user.".into(),
                             });
                             break;
                         }
-                        self.dispatch_block_guarded(
+                        self.dispatch_block_streamed(
                             &conn,
                             sub_block,
                             &macro_result.expanded,
-                            &mut events,
+                            &mut on_event,
                         );
                     }
                 }
@@ -234,23 +246,23 @@ impl Session {
                     let sub_blocks = match split_blocks_checked(&macro_result.expanded) {
                         Ok(blocks) => blocks,
                         Err(err) => {
-                            events.push(split_error_event(&macro_result.expanded, err));
+                            on_event(split_error_event(&macro_result.expanded, err));
                             continue;
                         }
                     };
                     for sub_block in sub_blocks {
                         if self.cancel.load(Ordering::SeqCst) {
-                            events.push(Event::Warning {
+                            on_event(Event::Warning {
                                 text: "Execution cancelled by user.".into(),
                             });
                             break;
                         }
                         if matches!(sub_block, Block::Proc { .. }) {
-                            self.dispatch_block_guarded(
+                            self.dispatch_block_streamed(
                                 &conn,
                                 sub_block,
                                 &macro_result.expanded,
-                                &mut events,
+                                &mut on_event,
                             );
                         }
                     }
@@ -258,8 +270,24 @@ impl Session {
             }
         }
 
-        events.push(Event::Done);
-        events
+        on_event(Event::Done);
+    }
+
+    /// Run one block through the guarded dispatcher and forward its events to
+    /// the streaming callback. The block runners accumulate into a `Vec`, so
+    /// delivery granularity is one dispatched block.
+    fn dispatch_block_streamed<F: FnMut(Event)>(
+        &self,
+        conn: &Connection,
+        block: Block,
+        program_for_spans: &str,
+        on_event: &mut F,
+    ) {
+        let mut events = Vec::new();
+        self.dispatch_block_guarded(conn, block, program_for_spans, &mut events);
+        for event in events {
+            on_event(event);
+        }
     }
 
     /// Execute one block, converting any internal panic into an Error event.
