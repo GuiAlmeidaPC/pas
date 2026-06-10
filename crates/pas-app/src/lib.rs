@@ -147,9 +147,10 @@ async fn submit(
     let id_for_panic = submission_id.clone();
 
     // Run synchronously off the UI thread. DuckDB calls are blocking.
+    // Events stream to the UI as each block finishes so the log updates
+    // while the program is still running.
     let handle = tokio::task::spawn_blocking(move || {
-        let events = session.submit(&program);
-        for event in events {
+        session.submit_with(&program, |event| {
             let _ = app.emit(
                 "pas://event",
                 SubmitEventPayload {
@@ -157,7 +158,7 @@ async fn submit(
                     event,
                 },
             );
-        }
+        });
     });
 
     // Safety net: the engine already converts per-statement panics into Error
@@ -264,9 +265,8 @@ async fn submit_files(
                 }
             };
 
-            let events = session.submit(&content);
             let mut has_error = false;
-            for event in events {
+            session.submit_with(&content, |event| {
                 if matches!(event, Event::Error { .. }) {
                     has_error = true;
                 }
@@ -281,7 +281,7 @@ async fn submit_files(
                         },
                     );
                 }
-            }
+            });
 
             if has_error {
                 let _ = app.emit(
@@ -675,8 +675,7 @@ fn apply_project_libnames(
     let id = submission_id.clone();
     let session = state.session.clone();
     tokio::task::spawn_blocking(move || {
-        let events = session.submit(&prog);
-        for event in events {
+        session.submit_with(&prog, |event| {
             let _ = app.emit(
                 "pas://event",
                 SubmitEventPayload {
@@ -684,7 +683,7 @@ fn apply_project_libnames(
                     event,
                 },
             );
-        }
+        });
     });
     Ok(submission_id)
 }

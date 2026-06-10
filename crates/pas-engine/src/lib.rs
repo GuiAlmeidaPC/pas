@@ -90,6 +90,85 @@ mod tests {
     }
 
     #[test]
+    fn submit_with_delivers_events_while_the_run_is_in_progress() {
+        // The callback must receive each block's events as the run advances,
+        // not a buffered dump after the whole program finishes. Proof:
+        // cancelling from inside the callback (after the first statement's
+        // output) must prevent the second statement from running.
+        let s = Session::new_in_memory().unwrap();
+        let mut events: Vec<Event> = Vec::new();
+        s.submit_with("select 1 as a; select 2 as b;", |e| {
+            if matches!(e, Event::Output { .. }) {
+                s.request_cancel();
+            }
+            events.push(e);
+        });
+        let outputs = events
+            .iter()
+            .filter(|e| matches!(e, Event::Output { .. }))
+            .count();
+        assert_eq!(
+            outputs, 1,
+            "cancel from the event callback must stop the next statement, got: {:?}",
+            events
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Warning { text } if text.contains("cancelled"))),
+            "expected a cancellation warning, got: {:?}",
+            events
+        );
+        assert!(matches!(events.last(), Some(Event::Done)));
+    }
+
+    #[test]
+    fn queued_submission_does_not_clear_a_pending_cancel() {
+        // Race: run A is executing (holds the write connection), the user
+        // cancels it, and run B is submitted before A observes the flag.
+        // B must not reset the cancel flag while it is still queued behind
+        // the connection lock, or A would keep running.
+        use std::sync::atomic::Ordering;
+        let s = std::sync::Arc::new(Session::new_in_memory().unwrap());
+
+        // Simulate run A holding the engine's write connection.
+        let guard = s.conn.lock().unwrap();
+
+        // The user cancels run A.
+        s.request_cancel();
+
+        // Run B is submitted and blocks on the connection lock.
+        let s2 = s.clone();
+        let handle = std::thread::spawn(move || s2.submit("select 1 as x;"));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert!(
+            s.cancel.load(Ordering::SeqCst),
+            "a queued submission must not clear a cancel aimed at the in-flight run"
+        );
+
+        // Once A releases the connection, B runs normally.
+        drop(guard);
+        let events = handle.join().unwrap();
+        assert!(matches!(events.last(), Some(Event::Done)), "{:?}", events);
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Output { .. })),
+            "the queued run must execute normally once the lock frees: {:?}",
+            events
+        );
+    }
+
+    #[test]
+    fn submit_collects_the_same_events_as_submit_with() {
+        let s = Session::new_in_memory().unwrap();
+        let prog = "create table t as select 1 as x; select * from t;";
+        let collected = s.submit(prog);
+        let mut streamed = Vec::new();
+        s.submit_with(prog, |e| streamed.push(e));
+        assert_eq!(format!("{:?}", collected), format!("{:?}", streamed));
+    }
+
+    #[test]
     fn runs_proc_sql_block() {
         let s = Session::new_in_memory().unwrap();
         let evs = s.submit(

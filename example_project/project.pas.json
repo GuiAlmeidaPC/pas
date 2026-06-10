@@ -1,40 +1,24 @@
 {
   "version": 1,
-  "name": "project",
+  "name": "PAS Examples",
   "libnames": [],
   "programs": [
     {
-      "path": "qualquer_bobagem.pas",
-      "content": "/* qualquer bobagem */"
+      "path": "00_test.pas"
     },
     {
-      "path": "/home/gui/projects/pas/example_project/01_setup.pas",
-      "content": "/* 01_setup.pas */\nproc sql;\n    create table raw_data as\n    select 'Apple' as item, 10 as qty, 0.5 as price union all\n    select 'Banana', 20, 0.2 union all\n    select 'Cherry', 15, 1.0;\nquit;\n\nproc sql; select * from raw_data; quit;\n"
+      "path": "macro_demo.pas"
     },
     {
-      "path": "/home/gui/projects/pas/example_project/02_transform.pas",
-      "content": "/* 02_transform.pas */\ndata processed_data;\n    set raw_data;\n    total_value = qty * price;\nrun;\n\nproc sql; select * from processed_data; quit;\n"
-    },
-    {
-      "path": "/home/gui/projects/pas/example_project/03_summary.pas",
-      "content": "/* 03_summary.pas */\nproc sql;\n    create table final_summary as\n    select \n        count(*) as total_items,\n        sum(qty) as total_qty,\n        sum(total_value) as grand_total\n    from processed_data;\nquit;\n\nproc sql; select * from final_summary; quit;\n"
+      "path": "test_data_joins_operations.pas"
     }
   ],
   "open_tabs": [
     {
-      "path": "/home/gui/projects/pas/example_project/01_setup.pas"
-    },
-    {
-      "path": "/home/gui/projects/pas/example_project/02_transform.pas"
-    },
-    {
-      "path": "/home/gui/projects/pas/example_project/03_summary.pas"
-    },
-    {
-      "path": "qualquer_bobagem.pas"
+      "path": "test_data_joins_operations.pas"
     }
   ],
-  "active_tab": "qualquer_bobagem.pas",
+  "active_tab": "test_data_joins_operations.pas",
   "layout": {
     "sidebar_width": 240,
     "bottom_height": 180

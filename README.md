@@ -1,13 +1,13 @@
 # PAS (Practical Analytics Studio)
 
-**PAS** is a cross-platform desktop application that provides a full-featured analytics IDE for authoring and running a PAS language, specifically focusing on the **DATA step** and **PROC SQL**.
+**PAS** is a cross-platform desktop application that provides a full-featured analytics IDE for the PAS language — a data-wrangling language compatible with the familiar **DATA step** and **PROC SQL** idioms of legacy analytics environments (see [`SPEC.md`](SPEC.md) for the exact subset).
 
 This project provides an offline, native experience for executing common data manipulation tasks without requiring an external analytics server.
 
 ## Features
 
 - **Familiar IDE**: Includes a code editor, log pane, paginated output viewer, and library/project browsers.
-- **DATA Step & PROC SQL**: Emulates PAS semantics closely enough that common data-wrangling scripts run unmodified.
+- **DATA Step & PROC SQL**: Matches legacy DATA step and PROC SQL semantics closely enough that common data-wrangling scripts run unmodified.
 - **High Performance**: 
   - Streams rows through the DATA step without holding everything in memory.
   - Backed by **DuckDB** for highly optimized SQL execution.

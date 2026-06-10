@@ -226,14 +226,43 @@ fn parse_callback_query(path: &str) -> (Option<String>, Option<String>) {
 fn wait_for_code(expected_state: &str) -> Result<String, String> {
     let listener = TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
         .map_err(|e| format!("port {CALLBACK_PORT} unavailable: {e}"))?;
-    let deadline = SystemTime::now() + Duration::from_secs(300);
-    for stream in listener.incoming() {
-        if SystemTime::now() > deadline {
+    wait_for_code_on(listener, expected_state, Duration::from_secs(300))
+}
+
+/// Accept loop behind `wait_for_code`. The listener is polled nonblocking so
+/// the timeout fires even if the browser never connects — an abandoned login
+/// must not leak the thread (and the callback port) forever.
+fn wait_for_code_on(
+    listener: TcpListener,
+    expected_state: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("callback listener: {e}"))?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if std::time::Instant::now() >= deadline {
             return Err("login timed out".into());
         }
-        let mut stream = stream.map_err(|e| e.to_string())?;
+        let mut stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        // A connected-but-silent client must not hang the wait past the
+        // deadline either.
+        stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let _ = stream.set_read_timeout(Some(remaining.max(Duration::from_millis(1))));
         let mut buf = [0u8; 4096];
-        let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+        let n = match stream.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
         let req = String::from_utf8_lossy(&buf[..n]);
         let path = req
             .lines()
@@ -257,7 +286,6 @@ fn wait_for_code(expected_state: &str) -> Result<String, String> {
         }
         return code.ok_or_else(|| "callback missing code".into());
     }
-    Err("callback server closed".into())
 }
 
 async fn tokens_from_response(res: reqwest::Response) -> Result<StoredTokens, String> {
@@ -597,6 +625,42 @@ mod tests {
         };
         let blob = encrypt_tokens(&key, &tokens).unwrap();
         assert!(decrypt_tokens(&other, &blob).is_err());
+    }
+
+    #[test]
+    fn callback_wait_times_out_with_no_traffic() {
+        // Regression: the deadline used to be checked only after a connection
+        // arrived, so an abandoned login leaked the thread (and the port)
+        // forever. With no traffic at all, the wait must still time out.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let started = std::time::Instant::now();
+        let res = wait_for_code_on(listener, "st", Duration::from_millis(200));
+        assert!(
+            res.as_ref().is_err_and(|e| e.contains("timed out")),
+            "expected timeout error, got: {:?}",
+            res
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout must fire promptly, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn callback_wait_returns_code_from_redirect() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(b"GET /auth/callback?code=abc&state=st HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf);
+        });
+        let code = wait_for_code_on(listener, "st", Duration::from_secs(5)).unwrap();
+        assert_eq!(code, "abc");
+        client.join().unwrap();
     }
 
     #[test]

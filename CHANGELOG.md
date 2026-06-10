@@ -8,9 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The log and output panes now update while a program is running: the engine
+  streams events to the UI as each statement finishes instead of buffering
+  everything until the end of the run.
 - Replaced remaining brand-specific copy and legacy script references with
   PAS-neutral wording and `.pas` program files across the app, docs, examples,
   tests, and website assets.
+
+### Fixed
+- Cancelling a run can no longer be silently undone by a submission queued
+  behind it: the cancel flag is only reset once the new run actually owns the
+  engine connection.
+- Abandoning the ChatGPT sign-in (closing the browser tab without completing
+  login) no longer leaves the callback listener — and port 1455 — stuck
+  forever; the login now reliably times out after 5 minutes.
 
 ## [0.2.0] - 2026-06-05
 

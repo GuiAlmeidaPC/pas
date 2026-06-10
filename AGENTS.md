@@ -26,7 +26,7 @@ React/TypeScript frontend, DuckDB + Apache Arrow under the hood.
 # Rust (from repo root)
 cargo fmt --all --check
 cargo clippy --workspace -- -D warnings
-cargo test -p pas-engine
+cargo test --workspace
 
 # Frontend (from ui/)
 pnpm install --frozen-lockfile
