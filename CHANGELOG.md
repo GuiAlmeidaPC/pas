@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PAS-neutral wording and `.pas` program files across the app, docs, examples,
   tests, and website assets.
 
+### Fixed
+- Cancelling a run can no longer be silently undone by a submission queued
+  behind it: the cancel flag is only reset once the new run actually owns the
+  engine connection.
+
 ## [0.2.0] - 2026-06-05
 
 ### Changed

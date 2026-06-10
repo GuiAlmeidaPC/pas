@@ -132,7 +132,6 @@ impl Session {
     /// finishes executing — not buffered until the end of the run. The final
     /// event is always [`Event::Done`].
     pub fn submit_with<F: FnMut(Event)>(&self, program: &str, mut on_event: F) {
-        self.cancel.store(false, Ordering::SeqCst);
         let cleaned = strip_comments(program);
 
         let blocks = match split_blocks_checked(&cleaned) {
@@ -154,6 +153,10 @@ impl Session {
         }
 
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // Reset the cancel flag only after this run owns the connection: a
+        // submission queued behind an in-flight run must not clear a cancel
+        // aimed at that run (see queued_submission_does_not_clear_a_pending_cancel).
+        self.cancel.store(false, Ordering::SeqCst);
         for block in blocks {
             if self.cancel.load(Ordering::SeqCst) {
                 on_event(Event::Warning {
