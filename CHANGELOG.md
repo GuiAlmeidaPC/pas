@@ -64,8 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dataset-listing I/O and query errors are no longer silently discarded.
 - Very large `substr` lengths can no longer overflow, and dataset identifiers
   are consistently escaped before being embedded in generated SQL.
-- Updated transitive `quick-xml` and `quinn-proto` dependencies to patched
-  releases for the June 2026 denial-of-service advisories.
+- Updated transitive `quick-xml`, `quinn-proto`, `form-data`, and `postcss`
+  dependencies to patched releases for June/July 2026 security advisories.
 - Corrected the documented workspace layout, language description, metadata
   support, and date-informat divergences.
 - Cancelling a run can no longer be silently undone by a submission queued
