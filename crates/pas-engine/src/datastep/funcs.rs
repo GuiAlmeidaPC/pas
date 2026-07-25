@@ -109,6 +109,15 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             let s = arg_str(args, 0)?;
             Ok(RtValue::Str(s.trim_start().to_string()))
         }
+        "right" => {
+            // SAS RIGHT moves trailing blanks to the front of the fixed-width
+            // field. PAS strings are variable-length, so we preserve the
+            // original byte width by padding the trimmed value on the left.
+            let s = arg_str(args, 0)?;
+            let trimmed = s.trim_end();
+            let pad = s.chars().count().saturating_sub(trimmed.chars().count());
+            Ok(RtValue::Str(format!("{}{}", " ".repeat(pad), trimmed)))
+        }
         "substr" => {
             let s = arg_str(args, 0)?;
             let start = arg_num(args, 1)? as isize;
@@ -365,6 +374,13 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             let n = args.iter().filter(|v| is_missing(v)).count();
             Ok(RtValue::Num(n as f64))
         }
+        "cmiss" => {
+            // CMISS counts missing values across both character and numeric
+            // arguments — same predicate as NMISS, which already treats
+            // blank/empty strings as missing via is_missing.
+            let n = args.iter().filter(|v| is_missing(v)).count();
+            Ok(RtValue::Num(n as f64))
+        }
         "notmissing" => {
             let v = args.first().cloned().unwrap_or_else(RtValue::missing);
             Ok(RtValue::Num(if is_missing(&v) { 0.0 } else { 1.0 }))
@@ -407,11 +423,35 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
                 None => Ok(RtValue::missing()),
             }
         }
+        "ymd" => {
+            // YMD(y, m, d) — same date as MDY(m, d, y) but with year first,
+            // matching the SAS argument order documented in SPEC §5.3.6.
+            use chrono::NaiveDate;
+            let y = arg_num(args, 0)? as i32;
+            let m = arg_num(args, 1)? as u32;
+            let d = arg_num(args, 2)? as u32;
+            match NaiveDate::from_ymd_opt(y, m, d) {
+                Some(date) => Ok(RtValue::Num(
+                    (date - NaiveDate::from_ymd_opt(1960, 1, 1).unwrap()).num_days() as f64,
+                )),
+                None => Ok(RtValue::missing()),
+            }
+        }
         "hms" => {
             let h = arg_num(args, 0)?;
             let m = arg_num(args, 1)?;
             let s = arg_num(args, 2)?;
             Ok(RtValue::Num(h * 3600.0 + m * 60.0 + s))
+        }
+        "dhms" => {
+            // DHMS(date, hour, min, sec) → datetime in seconds since 1960-01-01.
+            // `date` is already a PAS day count; multiply by 86400 and add the
+            // time-of-day seconds.
+            let date = arg_num(args, 0)?;
+            let h = arg_num(args, 1)?;
+            let m = arg_num(args, 2)?;
+            let s = arg_num(args, 3)?;
+            Ok(RtValue::Num(date * 86400.0 + h * 3600.0 + m * 60.0 + s))
         }
         "hour" => Ok(RtValue::Num(
             (arg_num(args, 0)?.rem_euclid(86400.0) / 3600.0).floor(),

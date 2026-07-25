@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- DATA step functions `right` (right-justify a string), `ymd` (year-month-day
+  date builder), `dhms` (date/hour/minute/second datetime builder), and
+  `cmiss` (count of missing values across mixed-type arguments). These close
+  the SPEC §5.3.6 mandatory function set, which previously listed them
+  without an implementation.
+
 ### Changed
 - The log and output panes now update while a program is running: the engine
   streams events to the UI as each statement finishes instead of buffering

@@ -829,6 +829,60 @@ mod tests {
     }
 
     #[test]
+    fn spec_mandatory_string_and_datetime_helpers() {
+        // Covers the SPEC §5.3.6 mandatory functions that were initially
+        // overlooked: right (string right-justify), ymd/dhms (date builders),
+        // and cmiss (missing counter for mixed-type argument lists).
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                /* right-justify: trailing blanks move to the front */
+                r_pad   = right('abc   ');
+                r_none  = right('abc');
+                /* ymd(y,m,d) — 01JAN1960 is PAS day 0 */
+                d_zero  = ymd(1960, 1, 1);
+                d_val   = ymd(2024, 2, 1);
+                /* dhms(date, h, m, s) — date 0 + 01:02:03 = 3723 seconds */
+                dt_val  = dhms(0, 1, 2, 3);
+                /* cmiss over missing values: num_m and char_m are unassigned
+                   (length declared) so they start as missing per the PDV. */
+                length char_m $ 10;
+                cm_num  = cmiss(num_m, 1, 2);
+                cm_char = cmiss(char_m, 'a', '');
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
+        let txt = |n: &str| match &page.rows[0][by(n)] {
+            crate::Value::Text(s) => s.clone(),
+            other => panic!("{}: expected text, got {:?}", n, other),
+        };
+        let num = |n: &str| match &page.rows[0][by(n)] {
+            crate::Value::Float(f) => *f,
+            crate::Value::Int(i) => *i as f64,
+            other => panic!("{}: expected number, got {:?}", n, other),
+        };
+        assert_eq!(txt("r_pad"), "   abc");
+        assert_eq!(txt("r_none"), "abc");
+        assert_eq!(num("d_zero"), 0.0);
+        // 2024-02-01 minus 1960-01-01 = 23,407 days (64 years + 16 leap days
+        // before 2024-02-01 + 31 days Jan→Feb)
+        assert_eq!(num("d_val"), 23_407.0);
+        assert_eq!(num("dt_val"), 3723.0);
+        assert_eq!(num("cm_num"), 1.0);
+        assert_eq!(num("cm_char"), 2.0);
+    }
+
+    #[test]
     fn runtime_call_error_carries_span() {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select 1 as x;");
