@@ -983,6 +983,72 @@ mod tests {
     }
 
     #[test]
+    fn data_step_put_statement() {
+        // SPEC §5.3.2 lists `put <items>;` as a supported statement. The
+        // engine previously only had a `put(value, fmt.)` *function*; the
+        // statement form (write a line to the log) was missing.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                put "x is " x;
+                put x = ;
+                put _all_;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let notes: Vec<String> = evs
+            .iter()
+            .filter_map(|e| match e {
+                Event::Note { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        // `put "x is " x` → "x is 1"
+        assert!(notes.iter().any(|n| n == "x is 1"), "notes: {:?}", notes);
+        // `put x = ` → "x=1"
+        assert!(notes.iter().any(|n| n == "x=1"), "notes: {:?}", notes);
+        // `put _all_` → contains "x=1"
+        assert!(
+            notes.iter().any(|n| n.contains("x=1")),
+            "notes: {:?}",
+            notes
+        );
+    }
+
+    #[test]
+    fn data_step_stop_terminates_early() {
+        // `stop;` should end the DATA step immediately. With a 3-row source
+        // and `stop` on the first iteration, the output table should have
+        // exactly one row.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select * from range(1, 4) t(x);");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                output;
+                stop;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        assert_eq!(page.total_rows, 1);
+    }
+
+    #[test]
     fn unimplemented_function_error_matches_spec_text() {
         // SPEC §5.3.6 fixes the error text as
         // "ERROR: function X is not implemented in PAS v1." — pin it so

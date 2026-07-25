@@ -192,6 +192,33 @@ pub enum Stmt {
         name: String,
         args: Vec<Expr>,
     },
+    /// `put <items>;` — write a line to the log. Items are concatenated
+    /// with no separator: string literals print verbatim, `var =` prints
+    /// `name=value`, `_all_` prints every PDV variable as `name=value`, and
+    /// any other expression prints its value.
+    Put {
+        items: Vec<PutItem>,
+        span: super::lex::Span,
+    },
+    /// `stop;` — terminate the DATA step immediately.
+    Stop,
+    /// `return;` — jump to the top of the implicit loop (emit unless
+    /// `delete`d). In v1 we treat it as a no-op continue since the
+    /// implicit loop already handles emit at iteration end.
+    Return,
+}
+
+/// One item inside a `put` statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PutItem {
+    /// A bare string literal — printed verbatim.
+    Str(String),
+    /// `name =` — printed as `name=<value>`.
+    NamedEq(String),
+    /// `_all_` — every PDV variable printed as `name=value`.
+    All,
+    /// Any other expression — printed as its value.
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq)]

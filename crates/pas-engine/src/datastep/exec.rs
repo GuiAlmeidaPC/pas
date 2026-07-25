@@ -114,6 +114,8 @@ pub struct ResolvedDataStep<'a> {
 pub struct DataStepResult {
     pub outputs: Vec<(TableRef, WriteTarget, u64)>,
     pub rows_in: u64,
+    /// Lines emitted by `put` statements, in order of execution.
+    pub log_lines: Vec<String>,
 }
 
 struct Pdv {
@@ -252,12 +254,20 @@ struct Runtime<'a, 'conn> {
     prev_by: Option<Vec<RtValue>>,
     pending: Option<SourceRow>,
     macro_vars: &'a std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// Lines emitted by `put` statements, in execution order.
+    log_lines: Vec<String>,
+    /// Set by `stop;` — once true, remaining source rows are discarded.
+    stopped: bool,
 }
 
 impl<'a, 'conn> Runtime<'a, 'conn> {
     /// Push one row into the pipeline. Implements a 1-row lookahead so the
     /// processor can see the next row's by-values when computing `last.var`.
     fn feed(&mut self, row: SourceRow) -> Result<(), DataStepError> {
+        if self.stopped {
+            // `stop;` was hit: drain remaining rows without processing.
+            return Ok(());
+        }
         match self.pending.take() {
             None => {
                 self.pending = Some(row);
@@ -274,7 +284,9 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
     /// Flush the last pending row (no lookahead).
     fn finish(&mut self) -> Result<(), DataStepError> {
         if let Some(last) = self.pending.take() {
-            self.process(&last, None)?;
+            if !self.stopped {
+                self.process(&last, None)?;
+            }
         }
         Ok(())
     }
@@ -370,9 +382,15 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
                 &self.ds.outputs,
                 &mut self.appenders,
                 self.macro_vars,
+                &mut self.log_lines,
             )? {
                 StmtFlow::Continue => {}
                 StmtFlow::Delete => {
+                    deleted = true;
+                    break;
+                }
+                StmtFlow::Stop => {
+                    self.stopped = true;
                     deleted = true;
                     break;
                 }
@@ -470,7 +488,7 @@ pub fn run_data_step(
     let writer_specs = create_output_tables(conn, &plan.outputs, &pdv, ds)?;
 
     // 5. Stream rows through the runtime.
-    let (rows_in, counts) = {
+    let (rows_in, counts, log_lines) = {
         let mut appenders: Vec<OutputAppender> = Vec::with_capacity(writer_specs.len());
         for spec in &writer_specs {
             let app = conn.appender_to_db(&spec.name, &spec.schema)?;
@@ -490,11 +508,14 @@ pub fn run_data_step(
             prev_by: None,
             pending: None,
             macro_vars,
+            log_lines: Vec::new(),
+            stopped: false,
         };
         iterate_input(conn, plan, &source_schemas, |row| rt.feed(row))?;
         rt.finish()?;
         let counts: Vec<u64> = rt.appenders.iter().map(|a| a.count).collect();
-        (rt.rows_in, counts)
+        let log_lines = rt.log_lines;
+        (rt.rows_in, counts, log_lines)
         // appenders dropped here → flushed automatically
     };
 
@@ -517,6 +538,7 @@ pub fn run_data_step(
     Ok(DataStepResult {
         outputs: results,
         rows_in,
+        log_lines,
     })
 }
 
@@ -1308,6 +1330,8 @@ fn values_equal(a: &RtValue, b: &RtValue) -> bool {
 enum StmtFlow {
     Continue,
     Delete,
+    /// `stop;` — terminate the DATA step immediately.
+    Stop,
 }
 
 fn exec_stmt<'conn>(
@@ -1317,6 +1341,7 @@ fn exec_stmt<'conn>(
     outs: &[TableRef],
     appenders: &mut [OutputAppender<'conn>],
     macro_vars: &std::sync::Mutex<std::collections::HashMap<String, String>>,
+    log_lines: &mut Vec<String>,
 ) -> Result<StmtFlow, DataStepError> {
     match s {
         Stmt::Assign { target, expr } => {
@@ -1337,9 +1362,11 @@ fn exec_stmt<'conn>(
         } => {
             let v = eval(cond, pdv, arrays)?;
             if v.truthy() {
-                exec_stmt(then_stmt, pdv, arrays, outs, appenders, macro_vars)
+                exec_stmt(
+                    then_stmt, pdv, arrays, outs, appenders, macro_vars, log_lines,
+                )
             } else if let Some(e) = else_stmt {
-                exec_stmt(e, pdv, arrays, outs, appenders, macro_vars)
+                exec_stmt(e, pdv, arrays, outs, appenders, macro_vars, log_lines)
             } else {
                 Ok(StmtFlow::Continue)
             }
@@ -1377,11 +1404,14 @@ fn exec_stmt<'conn>(
             Ok(StmtFlow::Continue)
         }
         Stmt::Delete => Ok(StmtFlow::Delete),
+        Stmt::Stop => Ok(StmtFlow::Stop),
+        Stmt::Return => Ok(StmtFlow::Continue),
         Stmt::Block(stmts) => {
             for s in stmts {
-                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars)? {
+                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars, log_lines)? {
                     StmtFlow::Continue => {}
                     StmtFlow::Delete => return Ok(StmtFlow::Delete),
+                    StmtFlow::Stop => return Ok(StmtFlow::Stop),
                 }
             }
             Ok(StmtFlow::Continue)
@@ -1405,6 +1435,7 @@ fn exec_stmt<'conn>(
                                     outs,
                                     appenders,
                                     macro_vars,
+                                    log_lines,
                                 );
                             }
                         }
@@ -1421,6 +1452,7 @@ fn exec_stmt<'conn>(
                                     outs,
                                     appenders,
                                     macro_vars,
+                                    log_lines,
                                 );
                             }
                         }
@@ -1428,7 +1460,7 @@ fn exec_stmt<'conn>(
                 }
             }
             if let Some(o) = otherwise {
-                return exec_stmt(o, pdv, arrays, outs, appenders, macro_vars);
+                return exec_stmt(o, pdv, arrays, outs, appenders, macro_vars, log_lines);
             }
             Ok(StmtFlow::Continue)
         }
@@ -1462,9 +1494,10 @@ fn exec_stmt<'conn>(
                 }
                 pdv.set(var, RtValue::Num(i));
                 for s in body {
-                    match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars)? {
+                    match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars, log_lines)? {
                         StmtFlow::Continue => {}
                         StmtFlow::Delete => return Ok(StmtFlow::Delete),
+                        StmtFlow::Stop => return Ok(StmtFlow::Stop),
                     }
                 }
                 i += step_v;
@@ -1479,17 +1512,19 @@ fn exec_stmt<'conn>(
                 break Ok(StmtFlow::Continue);
             }
             for s in body {
-                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars)? {
+                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars, log_lines)? {
                     StmtFlow::Continue => {}
                     StmtFlow::Delete => return Ok(StmtFlow::Delete),
+                    StmtFlow::Stop => return Ok(StmtFlow::Stop),
                 }
             }
         },
         Stmt::DoUntil { cond, body } => loop {
             for s in body {
-                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars)? {
+                match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars, log_lines)? {
                     StmtFlow::Continue => {}
                     StmtFlow::Delete => return Ok(StmtFlow::Delete),
+                    StmtFlow::Stop => return Ok(StmtFlow::Stop),
                 }
             }
             let c = eval(cond, pdv, arrays)?
@@ -1530,6 +1565,46 @@ fn exec_stmt<'conn>(
                     name
                 )));
             }
+            Ok(StmtFlow::Continue)
+        }
+        Stmt::Put { items, span: _ } => {
+            let mut line = String::new();
+            for item in items {
+                match item {
+                    PutItem::Str(s) => line.push_str(s),
+                    PutItem::NamedEq(name) => {
+                        let v = pdv.get(name);
+                        line.push_str(name);
+                        line.push('=');
+                        line.push_str(&v.as_str());
+                    }
+                    PutItem::All => {
+                        // Emit every non-automatic PDV variable as name=value,
+                        // space-separated, matching the SAS `_all_` form.
+                        let mut first = true;
+                        for i in 0..pdv.names.len() {
+                            let n = &pdv.names[i];
+                            // Skip first./last. automatic vars — they're
+                            // implementation detail, not user-visible state.
+                            if n.starts_with("first.") || n.starts_with("last.") {
+                                continue;
+                            }
+                            if !first {
+                                line.push(' ');
+                            }
+                            first = false;
+                            line.push_str(n);
+                            line.push('=');
+                            line.push_str(&pdv.vals[i].as_str());
+                        }
+                    }
+                    PutItem::Expr(e) => {
+                        let v = eval(e, pdv, arrays)?;
+                        line.push_str(&v.as_str());
+                    }
+                }
+            }
+            log_lines.push(line);
             Ok(StmtFlow::Continue)
         }
     }

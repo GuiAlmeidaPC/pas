@@ -763,6 +763,46 @@ impl<'a> Parser<'a> {
             self.expect(&Tok::Semi, "delete")?;
             return Ok(Stmt::Delete);
         }
+        if self.eat_keyword("stop") {
+            self.expect(&Tok::Semi, "stop")?;
+            return Ok(Stmt::Stop);
+        }
+        if self.eat_keyword("return") {
+            self.expect(&Tok::Semi, "return")?;
+            return Ok(Stmt::Return);
+        }
+        if self.eat_keyword("put") {
+            let start_span = self.current_span();
+            let mut items = Vec::new();
+            while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+                // `_all_` — emit every PDV variable.
+                if let Tok::Ident(s) = self.peek() {
+                    if s.eq_ignore_ascii_case("_all_") {
+                        self.bump();
+                        items.push(PutItem::All);
+                        continue;
+                    }
+                    // `name =` form (lookahead for Ident followed by Eq).
+                    if matches!(self.toks.get(self.pos + 1).map(|(t, _)| t), Some(Tok::Eq)) {
+                        let name = s.clone();
+                        self.bump(); // ident
+                        self.bump(); // =
+                        items.push(PutItem::NamedEq(name));
+                        continue;
+                    }
+                }
+                if let Tok::Str(s) = self.peek().clone() {
+                    self.bump();
+                    items.push(PutItem::Str(s));
+                    continue;
+                }
+                let e = self.parse_expr()?;
+                items.push(PutItem::Expr(e));
+            }
+            let span = Span::new(start_span.start, self.current_span().end);
+            self.expect(&Tok::Semi, "put")?;
+            return Ok(Stmt::Put { items, span });
+        }
         if self.eat_keyword("select") {
             let switch = if self.eat(&Tok::LParen) {
                 let e = self.parse_expr()?;

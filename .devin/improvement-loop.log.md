@@ -90,3 +90,25 @@ documents the PROC SQL `eqt`/`gtt` forms as "not yet"; the DATA step
 
 ---
 
+## Iteration 4 — Unimplemented-function error text vs SPEC
+
+**Inspection:** SPEC §5.3.6 fixes the error text as
+`ERROR: function X is not implemented in PAS v1.` Grepped the engine:
+`datastep/funcs.rs:546` emitted `"function '{}' is not implemented in
+PAS v0.5"` — a stale internal milestone string leaking into a
+user-visible message. No test asserted the wording, so the drift went
+unnoticed.
+
+**Action:**
+- `funcs.rs`: changed `v0.5` → `v1` to match the SPEC.
+- `lib.rs`: added `unimplemented_function_error_matches_spec_text`
+  regression test that submits a program calling a non-existent
+  function and asserts the error event contains the SPEC text.
+
+**Verification:** `cargo fmt`, `cargo clippy -- -D warnings`, new test
+passes; full suite still green (176 tests).
+
+**Commit:** `cc015ff` on `main`.
+
+---
+

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- DATA step `put <items>;` statement (SPEC §5.3.2), which writes a line to
+  the log. Supports string literals, bare expressions, the `var =` form
+  (`put x = ;`), and `_all_` (every PDV variable as `name=value`). The
+  engine previously only had the `put(value, fmt.)` *function*.
+- DATA step `stop;` and `return;` statements (SPEC §5.3.2). `stop`
+  terminates the DATA step immediately; `return` jumps to the implicit
+  loop top (treated as a continue in v1).
 - DATA step `:` colon-modifier truncated comparisons (`x =: 'abc'`,
   `x gt: 5`, etc.), which SPEC §5.3.5 lists as supported. The comparison
   truncates each operand to the length of the shorter before comparing.

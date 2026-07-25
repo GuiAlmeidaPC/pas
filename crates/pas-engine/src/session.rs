@@ -651,6 +651,11 @@ impl Session {
         match datastep::run_data_step(conn, &plan, &self.cancel, &self.macro_vars) {
             Ok(res) => {
                 self.register_data_step_formats(&ds, &res.outputs);
+                // `put` statement output is emitted before the per-table
+                // NOTEs so the log reads top-to-bottom in execution order.
+                for line in &res.log_lines {
+                    events.push(Event::Note { text: line.clone() });
+                }
                 for (_, target, rows) in &res.outputs {
                     events.push(Event::Note {
                         text: format!(
