@@ -18,7 +18,7 @@ conventions we follow.
 
 - **Rust** (stable; see [`rust-toolchain.toml`](rust-toolchain.toml))
 - **Node.js** 20+
-- **pnpm** 11.3+
+- **pnpm** 10.34.5
 - Tauri's platform build dependencies. On Debian/Ubuntu:
   ```bash
   sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
