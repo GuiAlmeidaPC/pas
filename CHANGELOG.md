@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- DATA step `rename old=new ...;` statement (SPEC §5.3.2), which renames
+  output columns. The PDV keeps the original names so body logic is
+  unaffected; only the output table column names are mapped.
 - DATA step `put <items>;` statement (SPEC §5.3.2), which writes a line to
   the log. Supports string literals, bare expressions, the `var =` form
   (`put x = ;`), and `_all_` (every PDV variable as `name=value`). The

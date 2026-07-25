@@ -551,6 +551,13 @@ fn create_output_tables(
     ds: &DataStep,
 ) -> Result<Vec<WriterSpec>, DataStepError> {
     let cols = pdv_output_columns(pdv, ds);
+    // Appender lookup uses the original PDV name; the table column name
+    // (possibly renamed) is only used at CREATE TABLE time. The order of
+    // `appender_cols` matches `cols`, which matches the table column order.
+    let appender_cols: Vec<(String, bool)> = cols
+        .iter()
+        .map(|(pdv_name, _out_name, is_char)| (pdv_name.clone(), *is_char))
+        .collect();
     let mut out = Vec::with_capacity(targets.len());
     for target in targets {
         let spec = match target {
@@ -559,7 +566,7 @@ fn create_output_tables(
                 WriterSpec {
                     schema: schema.clone(),
                     name: name.clone(),
-                    cols: cols.clone(),
+                    cols: appender_cols.clone(),
                     copy_to: None,
                     target: target.clone(),
                 }
@@ -575,7 +582,7 @@ fn create_output_tables(
                 WriterSpec {
                     schema: "main".into(),
                     name: temp,
-                    cols: cols.clone(),
+                    cols: appender_cols.clone(),
                     copy_to: Some(CopyToFile {
                         path: path.clone(),
                         fmt,
@@ -589,7 +596,9 @@ fn create_output_tables(
     Ok(out)
 }
 
-fn pdv_output_columns(pdv: &Pdv, ds: &DataStep) -> Vec<(String, bool)> {
+fn pdv_output_columns(pdv: &Pdv, ds: &DataStep) -> Vec<(String, String, bool)> {
+    // (pdv_lookup_name, output_column_name, is_char). The output name is
+    // the PDV name unless a `rename old=new` mapping applies.
     pdv.names
         .iter()
         .enumerate()
@@ -609,7 +618,15 @@ fn pdv_output_columns(pdv: &Pdv, ds: &DataStep) -> Vec<(String, bool)> {
             }
             true
         })
-        .map(|(i, n)| (n.clone(), pdv.is_char[i]))
+        .map(|(i, n)| {
+            let out_name = ds
+                .rename
+                .iter()
+                .find(|(old, _)| old.eq_ignore_ascii_case(n))
+                .map(|(_, new)| new.clone())
+                .unwrap_or_else(|| n.clone());
+            (n.clone(), out_name, pdv.is_char[i])
+        })
         .collect()
 }
 
@@ -617,7 +634,7 @@ fn create_table_with_schema(
     conn: &Connection,
     schema: &str,
     name: &str,
-    cols: &[(String, bool)],
+    cols: &[(String, String, bool)],
 ) -> Result<(), DataStepError> {
     let qualified = format!("\"{}\".\"{}\"", schema, name);
     let mut create = format!("CREATE OR REPLACE TABLE {} (", qualified);
@@ -626,7 +643,7 @@ fn create_table_with_schema(
         // never write to. This only happens for empty DATA steps.
         create.push_str("\"__pas_empty\" INTEGER");
     } else {
-        for (i, (n, is_char)) in cols.iter().enumerate() {
+        for (i, (_, n, is_char)) in cols.iter().enumerate() {
             if i > 0 {
                 create.push_str(", ");
             }

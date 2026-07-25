@@ -382,6 +382,46 @@ mod tests {
     }
 
     #[test]
+    fn data_step_rename_statement() {
+        // SPEC §5.3.2 lists `rename old=new ...;` as a supported output-side
+        // statement. The engine previously parsed `keep`/`drop` but not
+        // `rename`, so programs using it failed at parse time.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as a, 2 as b;");
+        let evs = s.submit("data o; set src; rename a=alpha b=beta; run;");
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        let names: Vec<_> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"alpha"), "names: {:?}", names);
+        assert!(names.contains(&"beta"), "names: {:?}", names);
+        assert!(
+            !names.contains(&"a") && !names.contains(&"b"),
+            "names: {:?}",
+            names
+        );
+        // Values should follow the rename: alpha=1, beta=2.
+        let row = &page.rows[0];
+        assert_eq!(row.len(), 2);
+        // Column order matches PDV order, which is source order: alpha, beta.
+        let by_name: std::collections::HashMap<&str, &crate::Value> =
+            names.iter().zip(row.iter()).map(|(n, v)| (*n, v)).collect();
+        match by_name["alpha"] {
+            crate::Value::Float(f) => assert_eq!(*f, 1.0),
+            crate::Value::Int(i) => assert_eq!(*i, 1),
+            other => panic!("alpha should be 1, got {:?}", other),
+        }
+        match by_name["beta"] {
+            crate::Value::Float(f) => assert_eq!(*f, 2.0),
+            crate::Value::Int(i) => assert_eq!(*i, 2),
+            other => panic!("beta should be 2, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn data_step_retain_accumulator() {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select * from (values (1), (2), (3), (4)) as t(x);");

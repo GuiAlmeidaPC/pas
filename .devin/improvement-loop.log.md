@@ -112,3 +112,39 @@ passes; full suite still green (176 tests).
 
 ---
 
+## Iteration 5 — DATA step `put` / `stop` / `return` statements
+
+**Inspection:** SPEC §5.3.2 lists `put <items>;`, `stop;`, `return;` as
+supported statements. Checked `datastep/ast.rs::Stmt` — only Assign,
+IfThen, SubsetIf, Output, Delete, Block, DoLoop, DoWhile, DoUntil,
+Select, Call. No Put/Stop/Return. The `put` *function* existed
+(`put(x, fmt.)`) but not the *statement*. `parse_stmt` had no branch
+for `put`/`stop`/`return`. No divergence entry covered them.
+
+**Action:**
+- `ast.rs`: added `Stmt::Put { items, span }`, `Stmt::Stop`, `Stmt::Return`,
+  plus a `PutItem` enum (Str / NamedEq / All / Expr).
+- `parse.rs::parse_stmt`: parse `put` items until `;` (string literals
+  verbatim, `name =` form via two-token lookahead, `_all_`, else
+  `parse_expr`); parse `stop;` and `return;`.
+- `exec.rs`: added `StmtFlow::Stop`; threaded `&mut Vec<String>`
+  log_lines through `exec_stmt` and every recursive call site
+  (IfThen, Block, Select, DoLoop, DoWhile, DoUntil). `Stmt::Put`
+  builds a line from items and pushes it. `Stmt::Stop` returns
+  `StmtFlow::Stop`, which sets `Runtime::stopped`; `feed` and
+  `finish` short-circuit when stopped so no further rows process.
+- `exec.rs`: added `log_lines` to `Runtime` and `DataStepResult`.
+- `session.rs`: emit `res.log_lines` as `Event::Note` before the
+  per-table NOTEs.
+- `lib.rs`: added `data_step_put_statement` (string, `x =`, `_all_`)
+  and `data_step_stop_terminates_early` (3-row source, expect 1 row)
+  tests.
+- `CHANGELOG.md`: Added entry.
+
+**Verification:** `cargo fmt`, `cargo clippy -- -D warnings`,
+`cargo test --workspace` → 178 passed, 0 failed (+2 new tests).
+
+**Commit:** `6366db4` on `main`.
+
+---
+

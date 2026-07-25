@@ -26,6 +26,9 @@ pub struct DataStep {
     pub where_expr: Option<Expr>,
     pub keep: Option<Vec<String>>,
     pub drop: Option<Vec<String>>,
+    /// `rename old=new ...;` — output-side column renames. Applied to the
+    /// output table column names; the PDV keeps the original names.
+    pub rename: Vec<(String, String)>,
     pub lengths: Vec<LengthDecl>,
     pub retain: Vec<RetainDecl>,
     pub arrays: Vec<ArrayDecl>,

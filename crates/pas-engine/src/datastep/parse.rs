@@ -111,6 +111,7 @@ impl<'a> Parser<'a> {
             where_expr: None,
             keep: None,
             drop: None,
+            rename: Vec::new(),
             lengths: Vec::new(),
             retain: Vec::new(),
             arrays: Vec::new(),
@@ -264,6 +265,35 @@ impl<'a> Parser<'a> {
             let names = self.parse_name_list()?;
             self.expect(&Tok::Semi, "drop")?;
             ds.drop = Some(names);
+            return Ok(());
+        }
+        if self.eat_keyword("rename") {
+            // `rename old1=new1 old2=new2 ...;`
+            loop {
+                let old = match self.bump() {
+                    Tok::Ident(s) => s.to_ascii_lowercase(),
+                    other => {
+                        return Err(
+                            self.err(format!("expected variable name in rename, got {:?}", other))
+                        )
+                    }
+                };
+                self.expect(&Tok::Eq, "rename")?;
+                let new = match self.bump() {
+                    Tok::Ident(s) => s.to_ascii_lowercase(),
+                    other => {
+                        return Err(self.err(format!(
+                            "expected new variable name in rename, got {:?}",
+                            other
+                        )))
+                    }
+                };
+                ds.rename.push((old, new));
+                if matches!(self.peek(), Tok::Semi | Tok::Eof) {
+                    break;
+                }
+            }
+            self.expect(&Tok::Semi, "rename")?;
             return Ok(());
         }
         if self.eat_keyword("length") {
