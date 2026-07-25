@@ -1714,6 +1714,35 @@ fn eval(
             let result = if *negated { !found } else { found };
             RtValue::Num(if result { 1.0 } else { 0.0 })
         }
+        Expr::TruncatedCmp {
+            op,
+            lhs,
+            rhs,
+            span: _span,
+        } => {
+            let l = eval(lhs, pdv, arrays)?;
+            let r = eval(rhs, pdv, arrays)?;
+            // Colon-modifier: compare only the first min(len) characters of
+            // each operand's string form. Numeric operands are stringified
+            // via `as_str` (so `12 =: 1` compares "1" vs "1" → equal).
+            let ls = l.as_str();
+            let rs = r.as_str();
+            let n = ls.chars().count().min(rs.chars().count());
+            let lt: String = ls.chars().take(n).collect();
+            let rt: String = rs.chars().take(n).collect();
+            let cmp = lt.cmp(&rt) as i32;
+            use BinOp::*;
+            let result = match op {
+                Eq => cmp == 0,
+                Ne => cmp != 0,
+                Lt => cmp < 0,
+                Le => cmp <= 0,
+                Gt => cmp > 0,
+                Ge => cmp >= 0,
+                _ => unreachable!("TruncatedCmp with non-comparison op {:?}", op),
+            };
+            RtValue::Num(if result { 1.0 } else { 0.0 })
+        }
     })
 }
 

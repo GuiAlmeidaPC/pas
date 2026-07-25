@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- DATA step `:` colon-modifier truncated comparisons (`x =: 'abc'`,
+  `x gt: 5`, etc.), which SPEC §5.3.5 lists as supported. The comparison
+  truncates each operand to the length of the shorter before comparing.
 - DATA step `in (...)` and `not in (...)` comparison operators, which SPEC
   §5.3.5 lists as supported but were previously not parsed. They work in both
   assignment and subsetting-`if` contexts, with numeric or character lists.

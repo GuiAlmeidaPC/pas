@@ -33,3 +33,60 @@ explicit request; releases are tag-driven).
 
 ---
 
+## Iteration 2 — DATA step `in (...)` / `not in (...)` operator
+
+**Inspection:** SPEC §5.3.5 lists `in (...)` as a supported DATA-step
+comparison form. Checked `datastep/ast.rs` (no `In` variant in `Expr`),
+`datastep/parse.rs::parse_cmp` (only handled `= ne lt le gt ge`), and
+`datastep/exec.rs::eval` (no `In` arm). The only `in` handling in the
+parser was the `in=` dataset option, not the operator. Any program using
+`if x in (1,2,3)` failed at parse time.
+
+**Action:**
+- `ast.rs`: added `Expr::In { lhs, items, negated, span }`.
+- `parse.rs::parse_cmp`: after parsing lhs, detect `in` or `not in`
+  (two-token lookahead for `not`), then parse a parenthesized
+  comma-separated expression list.
+- `exec.rs::eval`: evaluate lhs and each item, compare with the existing
+  `compare` helper; `not in` negates the match.
+- `DIVERGENCE.md` §1.4a: documented the SAS `not in` missing-propagation
+  quirk we don't replicate.
+- `lib.rs`: added `data_step_in_operator` integration test covering
+  numeric, character, negated, and empty-list cases.
+- `CHANGELOG.md`: Added entry.
+
+**Verification:** `cargo fmt`, `cargo clippy -- -D warnings`,
+`cargo test --workspace` → 174 passed, 0 failed (+1 new test).
+
+**Commit:** `f6c825e` on `main`.
+
+---
+
+## Iteration 3 — DATA step `:` colon-modifier truncated comparison
+
+**Inspection:** SPEC §5.3.5 lists "`:` colon-modifier on comparisons
+(truncated char compare)" as supported. Checked `datastep/parse.rs` —
+`Tok::Colon` was only consumed by the `:informat.` modified-list input
+reader, never after a comparison operator. `DIVERGENCE.md` §2.2 only
+documents the PROC SQL `eqt`/`gtt` forms as "not yet"; the DATA step
+`: ` modifier had no divergence entry, so it was a silent SPEC gap.
+
+**Action:**
+- `ast.rs`: added `Expr::TruncatedCmp { op, lhs, rhs, span }`.
+- `parse.rs::parse_cmp`: after consuming a comparison operator, if the
+  next token is `Tok::Colon`, consume it and build `TruncatedCmp`
+  instead of `Binary`. Also renamed the inner `start_span` in the `in`
+  branch to `in_span` to avoid shadowing the new outer `start_span`.
+- `exec.rs::eval`: stringify both operands, truncate each to
+  `min(len)`, compare the truncated strings, apply the comparison op.
+- `lib.rs`: added `data_step_colon_modifier_comparison` test covering
+  `=:`, `gt:`, `ne:` with matching and non-matching cases.
+- `CHANGELOG.md`: Added entry.
+
+**Verification:** `cargo fmt`, `cargo clippy -- -D warnings`,
+`cargo test --workspace` → 175 passed, 0 failed (+1 new test).
+
+**Commit:** pending — will commit with this iteration's changes.
+
+---
+

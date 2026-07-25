@@ -922,6 +922,47 @@ mod tests {
     }
 
     #[test]
+    fn data_step_colon_modifier_comparison() {
+        // SPEC §5.3.5 `:` colon-modifier truncated comparison. `x =: 'abc'`
+        // is true when the first len(rhs) chars of x equal rhs.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                length name $ 10;
+                name = 'abcdef';
+                eq_match   = name =: 'abc';
+                eq_nomatch = name =: 'xyz';
+                gt_yes     = name gt: 'abd';
+                gt_no      = name gt: 'zzz';
+                ne_yes     = name ne: 'abc';
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
+        let num = |n: &str| match &page.rows[0][by(n)] {
+            crate::Value::Float(f) => *f,
+            crate::Value::Int(i) => *i as f64,
+            other => panic!("{}: expected number, got {:?}", n, other),
+        };
+        assert_eq!(num("eq_match"), 1.0);
+        assert_eq!(num("eq_nomatch"), 0.0);
+        // 'abc' vs 'abd' → 'abc' < 'abd' so gt is false
+        assert_eq!(num("gt_yes"), 0.0);
+        // 'abc' vs 'zzz' → 'abc' < 'zzz' so gt is false
+        assert_eq!(num("gt_no"), 0.0);
+        assert_eq!(num("ne_yes"), 0.0);
+    }
+
+    #[test]
     fn runtime_call_error_carries_span() {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select 1 as x;");

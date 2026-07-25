@@ -964,6 +964,7 @@ impl<'a> Parser<'a> {
         }
     }
     fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
+        let start_span = self.current_span();
         let lhs = self.parse_concat()?;
         // `not in (...)` — peek two tokens: the `not` keyword followed by
         // the `in` keyword. A bare `not` here is left for the caller (it
@@ -984,7 +985,7 @@ impl<'a> Parser<'a> {
             false
         };
         if negated || self.at_keyword("in") {
-            let start_span = self.current_span();
+            let in_span = self.current_span();
             self.pos += 1; // consume `in`
             self.expect(&Tok::LParen, "in (...)")?;
             let mut items = Vec::new();
@@ -999,7 +1000,7 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen, "in (...)")?;
             }
             let end_span = self.toks[self.pos.saturating_sub(1)].1;
-            let span = Span::new(start_span.start, end_span.end);
+            let span = Span::new(in_span.start, end_span.end);
             return Ok(Expr::In {
                 lhs: Box::new(lhs),
                 items,
@@ -1018,6 +1019,20 @@ impl<'a> Parser<'a> {
         };
         if let Some(op) = op {
             self.bump();
+            // Colon-modifier truncated comparison: `x =: 'abc'`, `x gt: 5`.
+            if self.eat(&Tok::Colon) {
+                let rhs = self.parse_concat()?;
+                let span = Span::new(
+                    start_span.start,
+                    self.toks[self.pos.saturating_sub(1)].1.end,
+                );
+                return Ok(Expr::TruncatedCmp {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    span,
+                });
+            }
             let rhs = self.parse_concat()?;
             return Ok(Expr::Binary {
                 op,

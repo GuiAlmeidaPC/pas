@@ -243,6 +243,14 @@ pub enum Expr {
         negated: bool,
         span: super::lex::Span,
     },
+    /// `lhs op: rhs` — colon-modifier truncated comparison (SPEC §5.3.5).
+    /// Compares only the first `min(len(lhs_str), len(rhs_str))` characters.
+    TruncatedCmp {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: super::lex::Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
