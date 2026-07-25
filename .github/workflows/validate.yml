@@ -67,6 +67,10 @@ jobs:
         working-directory: ./ui
         run: pnpm test
 
+      - name: Run frontend security smoke tests
+        working-directory: ./ui
+        run: pnpm run test:smoke
+
   security:
     runs-on: ubuntu-latest
 

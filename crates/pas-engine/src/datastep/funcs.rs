@@ -130,11 +130,16 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
                 return Ok(RtValue::Str(String::new()));
             }
             let len = if args.len() >= 3 {
-                arg_num(args, 2)? as usize
+                let requested = arg_num(args, 2)?;
+                if requested.is_finite() && requested > 0.0 {
+                    requested as usize
+                } else {
+                    0
+                }
             } else {
                 chars.len() - start_idx
             };
-            let end = (start_idx + len).min(chars.len());
+            let end = start_idx.saturating_add(len).min(chars.len());
             Ok(RtValue::Str(chars[start_idx..end].iter().collect()))
         }
         "cats" => Ok(RtValue::Str(

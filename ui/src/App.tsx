@@ -356,8 +356,11 @@ export default function App() {
         } else {
           try {
             content = await invoke<string>("read_file", { path: pPath });
-          } catch (e) {
-            console.warn(`Failed to read content to embed for ${pPath}`, e);
+          } catch {
+            setLog((prev) => [
+              ...prev,
+              { level: "warning", text: `Could not embed project program: ${pPath}` },
+            ]);
           }
         }
         programs.push({ path: pPath, content });
@@ -645,8 +648,11 @@ export default function App() {
           const embedded = programs.find((p) => p.path === t.path)?.content;
           const content = embedded ?? (await invoke<string>("read_file", { path: t.path }));
           newTabs.push(makeTab({ path: t.path, title: basename(t.path), content }));
-        } catch (e) {
-          console.error("failed to open project tab", t.path, e);
+        } catch {
+          setLog((prev) => [
+            ...prev,
+            { level: "error", text: `Could not open project program: ${t.path}` },
+          ]);
         }
       }
       if (newTabs.length === 0) newTabs.push(makeTab({ content: "" }));
@@ -1053,16 +1059,20 @@ export default function App() {
               />
 
               <section className="bottom-pane">
-                <div className="tabs">
+                <div className="tabs" role="tablist" aria-label="Results panes">
               <button
                 className={pane === "log" ? "tab active" : "tab"}
                 onClick={() => setPane("log")}
+                role="tab"
+                aria-selected={pane === "log"}
               >
                 Log
               </button>
               <button
                 className={pane === "output" ? "tab active" : "tab"}
                 onClick={() => setPane("output")}
+                role="tab"
+                aria-selected={pane === "output"}
               >
                 Output {outputs.length > 0 ? `(${outputs.length})` : ""}
               </button>
@@ -1070,6 +1080,8 @@ export default function App() {
                 className={pane === "dataset" ? "tab active" : "tab"}
                 onClick={() => setPane("dataset")}
                 disabled={!activeDataset}
+                role="tab"
+                aria-selected={pane === "dataset"}
               >
                 {activeDataset
                   ? `${activeDataset.libref.toUpperCase()}.${activeDataset.name}`

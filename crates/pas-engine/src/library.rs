@@ -54,4 +54,10 @@ pub struct DatasetInfo {
 pub struct ColumnInfo {
     pub name: String,
     pub ty: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub informat: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }

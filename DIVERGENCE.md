@@ -67,7 +67,7 @@ are not divergences — they are not implemented at all and are listed in §1.2 
 | | |
 |---|---|
 | **Reference** | Supports column-range input (`input name $1-10 age 11-13;`), pointer controls (`@col`, `+n`), modified-list input (`name :$20.`), and formatted input with informats. |
-| **PAS** | Supports list input, **modified-list input** (`var :informat.`), **formatted input** via informat width (`var informat.`), and **column-range input** (`var [$] start-end`, 1-based inclusive; a bare `start` reads one column), all driven by a column pointer that advances as fields are read. Informats: `$charW.` (preserves leading blanks), `$w.` (left-aligns), `w.d` numeric, `dateW.` → PAS date serial, and `commaW.d` / `dollarW.d` (strip `$ , ( )`). Unknown informats raise an error. The `format` statement is applied for supported display formats in dataset pages and PROC PRINT (`date9.`, `commaW.d`, `dollarW.d`, `best`/numeric); stored values remain raw numbers/strings for SQL, joins, filters, and calculations. **Not yet:** `@col` / `+n` pointer controls, other informats (time/datetime, `mmddyy`, `yymmdd`, etc.), persisted display-format metadata for directory-backed CSV/Parquet libraries, and applying `informat` / `label` statements. |
+| **PAS** | Supports list input, **modified-list input** (`var :informat.`), **formatted input** via informat width (`var informat.`), and **column-range input** (`var [$] start-end`, 1-based inclusive; a bare `start` reads one column), all driven by a column pointer that advances as fields are read. Input-statement informats: `$charW.`, `$w.`, `w.d`, `dateW.`, and `commaW.d` / `dollarW.d`. The `input()` function additionally supports `mmddyy`, `ddmmyy`, `yymmdd`, `time`, and `datetime`. `format`, `informat`, `label`, and `attrib` metadata are retained for in-memory/DuckDB output datasets, and supported display formats are applied in dataset pages and PROC PRINT. Stored values remain raw for SQL, joins, filters, and calculations. **Not yet:** `@col` / `+n` pointer controls, time/datetime and `mmddyy`/`yymmdd` parsing in the INPUT *statement*, and persisted metadata for directory-backed CSV/Parquet libraries. |
 | **Why** | Informat and column input cover fixed-width and typed legacy files. Explicit `@`/`+n` pointer controls and broader metadata persistence are the remaining pieces. |
 
 ### 1.7 DO loop variants
@@ -78,13 +78,21 @@ are not divergences — they are not implemented at all and are listed in §1.2 
 | **PAS** | Supports `do; ... end;` (block), `do var = a to b [by c]; ... end;` (iterative), `do while(<expr>); ... end;`, and `do until(<expr>); ... end;`. The value-list form (`do i = 1, 3, 5;`) is not yet implemented. |
 | **Why** | The value-list form is rarely used outside index iteration that the indexed form already covers. |
 
+### 1.7a Global OPTIONS compatibility
+
+PAS parses and retains `options` assignments so global statements do not fall
+through to SQL. Most reference-system presentation and logging options do not
+yet alter execution; PAS reports how many options were accepted. `filename`
+filerefs are operational for `infile`, while `footnote` is emitted with query
+and PROC PRINT output.
+
 ### 1.8 PROC step coverage
 
 | | |
 |---|---|
 | **Reference** | Many PROCs: `PROC SORT`, `PROC TRANSPOSE`, `PROC FREQ`, `PROC PRINT`, `PROC MEANS`, `PROC IMPORT`, etc. |
 | **PAS** | `PROC SQL`, `PROC SORT`, `PROC PRINT`, `PROC TRANSPOSE`. Everything else errors with "PROC X is not implemented in PAS". |
-| **Notes** | `PROC SORT` supports `data=`, `out=` (in-place if omitted), `by … descending …`, `nodupkey` (one row per by-key), `noduprecs` (drop exact duplicates). `PROC PRINT` supports `data=`, `obs=`, `var`. `PROC TRANSPOSE` supports `data=`, `out=`, `by`, single-`id`, single-`var` (translated to DuckDB `PIVOT`). |
+| **Notes** | `PROC SORT` supports `data=`, `out=` (in-place if omitted), `by … descending …`, `nodupkey` (one row per by-key), `noduprecs` (drop exact duplicates). `PROC PRINT` supports `data=`, `obs=`, `var`. `PROC TRANSPOSE` supports `data=`, `out=`, `by`, single-`id`, single-`var` (translated to DuckDB `PIVOT`); `prefix=` returns an explicit unsupported-option error. |
 | **Why** | Statistical procs (`MEANS`, `FREQ`, `REG`) remain explicitly out of scope per `SPEC.md` §1.2. |
 
 ---
@@ -185,7 +193,9 @@ change without notice. OAuth tokens are persisted in
 `chatgpt_tokens.enc` (app data dir), AES-256-GCM-encrypted with a key **derived
 from a stable install path** — this is obfuscation against casual inspection,
 **not** strong at-rest protection (anyone with the file and the app binary can
-decrypt). API keys, by contrast, remain in memory only and are never persisted.
+decrypt). API-provider settings and keys use the same scheme in
+`ai_config.enc`. Raw secrets are never returned to the renderer after they are
+saved. OS keychain integration remains the preferred future replacement.
 
 ---
 

@@ -110,8 +110,8 @@ export function AIChatPanel({
     try {
       const s = await invoke<OAuthStatus>("openai_oauth_status");
       setOauthStatus(s);
-    } catch (e) {
-      console.error("Failed to read OAuth status", e);
+    } catch {
+      setOauthStatus({ signedIn: false });
     }
   };
 
@@ -142,8 +142,8 @@ export function AIChatPanel({
           loadCachedModels(backend);
           return;
         }
-      } catch (e) {
-        console.error("Failed to load AI config from backend", e);
+      } catch {
+        // Continue with the public, non-secret cache below.
       }
       const saved = localStorage.getItem("pas.ai_config_public");
       if (saved) {
@@ -151,8 +151,8 @@ export function AIChatPanel({
           const parsed = JSON.parse(saved);
           setConfig({ ...parsed, apiKey: "" });
           loadCachedModels({ ...parsed, apiKey: "" });
-        } catch (e) {
-          console.error("Failed to parse saved AI config", e);
+        } catch {
+          localStorage.removeItem("pas.ai_config_public");
         }
       }
     })();
@@ -176,6 +176,7 @@ export function AIChatPanel({
       model: cfg.model,
       customUrl: cfg.customUrl,
       authMode: cfg.authMode,
+      hasApiKey: cfg.hasApiKey,
     }));
   };
 
@@ -189,9 +190,16 @@ export function AIChatPanel({
         authMode: newConfig.authMode,
       },
     });
-    setConfig(newConfig);
-    persistPublicConfig(newConfig);
-    loadCachedModels(newConfig);
+    const savedConfig = {
+      ...newConfig,
+      apiKey: "",
+      hasApiKey:
+        Boolean(newConfig.apiKey.trim())
+        || (config?.provider === newConfig.provider && Boolean(config.hasApiKey)),
+    };
+    setConfig(savedConfig);
+    persistPublicConfig(savedConfig);
+    loadCachedModels(savedConfig);
     setErrorMsg(null);
   };
 
@@ -264,7 +272,6 @@ export function AIChatPanel({
         updateLastAssistantMessage(prev, (content) => responseText || content),
       );
     } catch (err) {
-      console.error(err);
       setErrorMsg(String(err));
       setMessages((prev) => prev.filter((message) => message.role !== "assistant" || message.content.trim() !== ""));
     } finally {
@@ -631,7 +638,13 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         </div>
       </div>
 
-      <div className="chat-body" ref={listRef}>
+      <div
+        className="chat-body"
+        ref={listRef}
+        role="log"
+        aria-live="polite"
+        aria-label="Agent conversation"
+      >
         {messages.length === 0 && (
           <div className="empty-state">
             <h4>Welcome to the PAS Agent!</h4>
@@ -686,7 +699,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
         )}
 
         {errorMsg && (
-          <div className="chat-error-card">
+          <div className="chat-error-card" role="alert">
             <strong>API Connection Error:</strong>
             <p>{errorMsg}</p>
             <button className="btn-secondary btn-sm" onClick={() => setIsSettingsOpen(true)}>
@@ -705,6 +718,7 @@ ${activeSelection ? `<active_selection>\n${activeSelection}\n</active_selection>
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleInputKeyDown}
           disabled={loading}
+          aria-label="Message to agent"
         />
         <button type="submit" className="btn-primary" disabled={loading || !input.trim()}>
           Send

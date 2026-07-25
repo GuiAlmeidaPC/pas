@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-25
+
 ### Added
+- DATA step automatic variables `_n_` and `_error_`, with the expected
+  per-iteration values and automatic exclusion from output datasets.
+- Input dataset options `keep=`, `drop=`, `rename=`, `where=`, `obs=`, and
+  `firstobs=` for `set`, including composition with `in=`.
+- Operational global `filename` filerefs for `infile`, retained `options`
+  assignments, and `footnote` output notes.
+- Stored column metadata for `informat`, `label`, and `attrib` statements,
+  exposed through dataset schemas and Arrow IPC alongside display formats.
+- A React error boundary with a visible recovery screen, plus keyboard,
+  focus-management, labeling, and live-region accessibility improvements.
+- IPC input validation and AI request limits (two concurrent requests and 20
+  starts per minute), with the desktop security model documented in
+  `SECURITY.md`.
 - DATA step `rename old=new ...;` statement (SPEC §5.3.2), which renames
   output columns. The PDV keeps the original names so body logic is
   unaffected; only the output table column names are mapped.
@@ -17,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine previously only had the `put(value, fmt.)` *function*.
 - DATA step `stop;` and `return;` statements (SPEC §5.3.2). `stop`
   terminates the DATA step immediately; `return` jumps to the implicit
-  loop top (treated as a continue in v1).
+  loop top and applies normal implicit-output rules.
 - DATA step `:` colon-modifier truncated comparisons (`x =: 'abc'`,
   `x gt: 5`, etc.), which SPEC §5.3.5 lists as supported. The comparison
   truncates each operand to the length of the shorter before comparing.
@@ -31,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without an implementation.
 
 ### Changed
+- Saved AI API keys remain backend-only after configuration; the renderer now
+  receives only a `hasApiKey` indicator and can preserve an existing key
+  without reading it back.
+- CI now runs the frontend security smoke suite, and contributor instructions
+  run Rust tests across the full workspace.
 - The log and output panes now update while a program is running: the engine
   streams events to the UI as each statement finishes instead of buffering
   everything until the end of the run.
@@ -39,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests, and website assets.
 
 ### Fixed
+- `return;` now exits nested blocks and starts the next implicit DATA step
+  iteration instead of behaving as a no-op.
+- Dataset-listing I/O and query errors are no longer silently discarded.
+- Very large `substr` lengths can no longer overflow, and dataset identifiers
+  are consistently escaped before being embedded in generated SQL.
+- Corrected the documented workspace layout, language description, metadata
+  support, and date-informat divergences.
 - Cancelling a run can no longer be silently undone by a submission queued
   behind it: the cancel flag is only reset once the new run actually owns the
   engine connection.
@@ -126,6 +153,7 @@ First tagged release.
 - Tag-based release workflow producing Linux (`.AppImage`, `.deb`), Windows
   (`.msi`, `.exe`), and unsigned macOS (`.dmg`) bundles with SHA-256 checksums.
 
-[Unreleased]: https://github.com/GuiAlmeidaPC/pas/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/GuiAlmeidaPC/pas/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/GuiAlmeidaPC/pas/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GuiAlmeidaPC/pas/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/GuiAlmeidaPC/pas/releases/tag/v0.1.0

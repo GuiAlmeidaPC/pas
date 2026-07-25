@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use pas_engine::{ColumnInfo, DatasetInfo, DatasetPage, Event, Library, Session};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
@@ -73,6 +74,51 @@ pub struct AppState {
     ai_config: Mutex<Option<StoredAiConfig>>,
     chatgpt_tokens: Mutex<Option<oauth::StoredTokens>>,
     allowed_paths: Mutex<HashSet<PathBuf>>,
+    ai_rate_limit: Mutex<AiRateLimit>,
+}
+
+#[derive(Debug, Default)]
+struct AiRateLimit {
+    in_flight: usize,
+    started: VecDeque<Instant>,
+}
+
+struct AiPermit<'a> {
+    limiter: &'a Mutex<AiRateLimit>,
+}
+
+impl Drop for AiPermit<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut limiter) = self.limiter.lock() {
+            limiter.in_flight = limiter.in_flight.saturating_sub(1);
+        }
+    }
+}
+
+fn acquire_ai_permit(limiter: &Mutex<AiRateLimit>) -> Result<AiPermit<'_>, String> {
+    const WINDOW: Duration = Duration::from_secs(60);
+    const MAX_REQUESTS_PER_WINDOW: usize = 20;
+    const MAX_IN_FLIGHT: usize = 2;
+
+    let now = Instant::now();
+    let mut state = limiter.lock().map_err(|_| "AI rate-limit lock poisoned")?;
+    while state
+        .started
+        .front()
+        .is_some_and(|started| now.duration_since(*started) >= WINDOW)
+    {
+        state.started.pop_front();
+    }
+    if state.in_flight >= MAX_IN_FLIGHT {
+        return Err("Too many AI requests are already running; try again shortly.".to_string());
+    }
+    if state.started.len() >= MAX_REQUESTS_PER_WINDOW {
+        return Err("AI request limit reached; try again in a minute.".to_string());
+    }
+    state.in_flight += 1;
+    state.started.push_back(now);
+    drop(state);
+    Ok(AiPermit { limiter })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +126,8 @@ pub struct AppState {
 pub struct AiConfigInput {
     pub provider: String,
     pub api_key: String,
+    #[serde(default)]
+    pub has_api_key: bool,
     pub model: String,
     #[serde(default)]
     pub custom_url: Option<String>,
@@ -126,6 +174,35 @@ struct StoredAiConfig {
     model: String,
     custom_url: Option<String>,
     auth_mode: Option<String>,
+}
+
+fn resolve_api_key_update(
+    config: &AiConfigInput,
+    existing: Option<&StoredAiConfig>,
+    is_chatgpt: bool,
+) -> Result<String, String> {
+    if is_chatgpt {
+        return Ok(String::new());
+    }
+    if !config.api_key.trim().is_empty() {
+        return Ok(config.api_key.clone());
+    }
+    existing
+        .filter(|stored| stored.provider == config.provider)
+        .map(|stored| stored.api_key.clone())
+        .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| "API key is required".to_string())
+}
+
+fn redacted_ai_config(stored: &StoredAiConfig) -> AiConfigInput {
+    AiConfigInput {
+        provider: stored.provider.clone(),
+        api_key: String::new(),
+        has_api_key: !stored.api_key.trim().is_empty(),
+        model: stored.model.clone(),
+        custom_url: stored.custom_url.clone(),
+        auth_mode: stored.auth_mode.clone(),
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -324,8 +401,60 @@ fn list_libraries(state: State<'_, AppState>) -> Vec<Library> {
     state.session.list_libraries()
 }
 
+fn validate_libref(libref: &str) -> Result<(), String> {
+    let mut chars = libref.chars();
+    let valid_first = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if !valid_first || libref.len() > 32 || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(
+            "libref must be 1-32 ASCII letters, digits, or underscores and cannot start with a digit"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_object_name(label: &str, name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
+        return Err(format!(
+            "{} must be 1-255 characters and contain no control characters",
+            label
+        ));
+    }
+    Ok(())
+}
+
+fn validate_dataset_request(
+    libref: &str,
+    name: &str,
+    limit: Option<u64>,
+    filters: Option<&std::collections::HashMap<String, String>>,
+) -> Result<(), String> {
+    validate_libref(libref)?;
+    validate_object_name("dataset name", name)?;
+    if let Some(limit) = limit {
+        if !(1..=1000).contains(&limit) {
+            return Err("limit must be between 1 and 1000".to_string());
+        }
+    }
+    if let Some(filters) = filters {
+        if filters.len() > 64 {
+            return Err("at most 64 dataset filters are allowed".to_string());
+        }
+        for (column, value) in filters {
+            validate_object_name("filter column", column)?;
+            if value.len() > 4096 {
+                return Err("filter values must be at most 4096 characters".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn list_datasets(libref: String, state: State<'_, AppState>) -> Result<Vec<DatasetInfo>, String> {
+    validate_libref(&libref)?;
     state
         .session
         .list_datasets(&libref)
@@ -338,6 +467,7 @@ fn dataset_schema(
     name: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<ColumnInfo>, String> {
+    validate_dataset_request(&libref, &name, None, None)?;
     state
         .session
         .dataset_schema(&libref, &name)
@@ -353,6 +483,7 @@ fn dataset_page(
     filters: Option<std::collections::HashMap<String, String>>,
     state: State<'_, AppState>,
 ) -> Result<DatasetPage, String> {
+    validate_dataset_request(&libref, &name, Some(limit), filters.as_ref())?;
     state
         .session
         .dataset_page(&libref, &name, offset, limit, filters.as_ref())
@@ -655,6 +786,12 @@ fn apply_project_libnames(
     // Synthesize PAS libname statements and run them through submit().
     let mut prog = String::new();
     for l in &libnames {
+        validate_libref(&l.name)?;
+        if l.path.len() > 4096 || l.path.chars().any(char::is_control) {
+            return Err(
+                "library paths must be at most 4096 characters with no controls".to_string(),
+            );
+        }
         let path = l.path.replace('\'', "''");
         let kind = match l.kind.as_str() {
             "duckdb" => "duckdb ",
@@ -662,8 +799,10 @@ fn apply_project_libnames(
             "memory" => continue, // WORK is implicit
             other => return Err(format!("unknown libname kind: {}", other)),
         };
-        let fmt = match &l.format {
-            Some(f) => format!(" format={}", f),
+        let fmt = match l.format.as_deref() {
+            Some("parquet") => " format=parquet".to_string(),
+            Some("csv") => " format=csv".to_string(),
+            Some(other) => return Err(format!("unknown directory format: {}", other)),
             None => String::new(),
         };
         prog.push_str(&format!("libname {} {}'{}'{};\n", l.name, kind, path, fmt));
@@ -697,6 +836,7 @@ fn dataset_page_arrow(
     filters: Option<std::collections::HashMap<String, String>>,
     state: State<'_, AppState>,
 ) -> Result<tauri::ipc::Response, String> {
+    validate_dataset_request(&libref, &name, Some(limit), filters.as_ref())?;
     let bytes = state
         .session
         .dataset_page_arrow(&libref, &name, offset, limit, filters.as_ref())
@@ -727,9 +867,13 @@ fn set_ai_config(
 ) -> Result<(), String> {
     validate_ai_provider(&config.provider)?;
     let is_chatgpt = config.provider == "openai" && config.auth_mode.as_deref() == Some("chatgpt");
-    if !is_chatgpt && config.api_key.trim().is_empty() {
-        return Err("API key is required".to_string());
-    }
+    let api_key = {
+        let existing = state
+            .ai_config
+            .lock()
+            .map_err(|_| "AI config lock poisoned")?;
+        resolve_api_key_update(&config, existing.as_ref(), is_chatgpt)?
+    };
     if config.model.trim().is_empty() {
         return Err("model is required".to_string());
     }
@@ -742,7 +886,7 @@ fn set_ai_config(
     }
     let stored = StoredAiConfig {
         provider: config.provider,
-        api_key: config.api_key,
+        api_key,
         model: config.model,
         custom_url: config.custom_url.filter(|u| !u.trim().is_empty()),
         auth_mode: config.auth_mode,
@@ -771,13 +915,7 @@ fn get_ai_config(state: State<'_, AppState>) -> Result<Option<AiConfigInput>, St
         .ai_config
         .lock()
         .map_err(|_| "AI config lock poisoned")?;
-    Ok(guard.as_ref().map(|s| AiConfigInput {
-        provider: s.provider.clone(),
-        api_key: s.api_key.clone(),
-        model: s.model.clone(),
-        custom_url: s.custom_url.clone(),
-        auth_mode: s.auth_mode.clone(),
-    }))
+    Ok(guard.as_ref().map(redacted_ai_config))
 }
 
 fn chatgpt_token_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -919,6 +1057,7 @@ async fn ai_completion(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    let _permit = acquire_ai_permit(&state.ai_rate_limit)?;
     validate_ai_provider(&request.provider)?;
 
     // ChatGPT OAuth path: use the Codex Responses API with the stored token.
@@ -1008,6 +1147,7 @@ async fn ai_completion_stream(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    let _permit = acquire_ai_permit(&state.ai_rate_limit)?;
     let emit_chunk = |text: String| {
         let _ = app.emit(
             "pas://ai-stream",
@@ -1020,7 +1160,7 @@ async fn ai_completion_stream(
         );
     };
 
-    let result = ai_completion_stream_inner(request, &app, state, emit_chunk).await;
+    let result = ai_completion_stream_inner(request, &app, &state, emit_chunk).await;
     match &result {
         Ok(_) => {
             let _ = app.emit(
@@ -1051,7 +1191,7 @@ async fn ai_completion_stream(
 async fn ai_completion_stream_inner<F>(
     request: AiCompletionRequest,
     app: &AppHandle,
-    state: State<'_, AppState>,
+    state: &State<'_, AppState>,
     mut emit_chunk: F,
 ) -> Result<String, String>
 where
@@ -1115,7 +1255,34 @@ where
     }
 
     if stored.provider == "gemini" {
-        let text = ai_completion(request, app.clone(), state).await?;
+        let (url, headers, body) = build_ai_request(
+            &stored.provider,
+            &stored.api_key,
+            model,
+            custom_url,
+            &request.system_prompt,
+            &request.messages,
+        )?;
+        let res = reqwest::Client::new()
+            .post(url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("AI request failed: {}", e))?;
+        let status = res.status();
+        let body = res
+            .text()
+            .await
+            .map_err(|e| format!("AI response read failed: {}", e))?;
+        if !status.is_success() {
+            return Err(format!(
+                "API Error ({}): {}",
+                status.as_u16(),
+                parse_ai_error(&body)
+            ));
+        }
+        let text = parse_ai_response(&stored.provider, &body)?;
         emit_chunk(text.clone());
         return Ok(text);
     }
@@ -1653,6 +1820,7 @@ pub fn run() {
         ai_config: Mutex::new(None),
         chatgpt_tokens: Mutex::new(None),
         allowed_paths: Mutex::new(HashSet::new()),
+        ai_rate_limit: Mutex::new(AiRateLimit::default()),
     };
 
     tauri::Builder::default()
@@ -1717,8 +1885,72 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn validates_dataset_ipc_parameters() {
+        assert!(validate_dataset_request("work", "sales 2026", Some(1000), None).is_ok());
+        assert!(validate_dataset_request("9work", "sales", Some(10), None).is_err());
+        assert!(validate_dataset_request("work", "sales\ncopy", Some(10), None).is_err());
+        assert!(validate_dataset_request("work", "sales", Some(0), None).is_err());
+        assert!(validate_dataset_request("work", "sales", Some(1001), None).is_err());
+
+        let mut filters = HashMap::new();
+        filters.insert("name".to_string(), "x".repeat(4097));
+        assert!(validate_dataset_request("work", "sales", Some(10), Some(&filters)).is_err());
+    }
+
+    #[test]
+    fn validates_librefs_without_rejecting_normal_names() {
+        assert!(validate_libref("work").is_ok());
+        assert!(validate_libref("_temporary_2").is_ok());
+        assert!(validate_libref("").is_err());
+        assert!(validate_libref("work; drop table x").is_err());
+        assert!(validate_libref(&"x".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn limits_ai_request_bursts_and_concurrency() {
+        let limiter = Mutex::new(AiRateLimit::default());
+        let first = acquire_ai_permit(&limiter).unwrap();
+        let second = acquire_ai_permit(&limiter).unwrap();
+        assert!(acquire_ai_permit(&limiter).is_err());
+        drop(first);
+        drop(second);
+
+        for _ in 2..20 {
+            drop(acquire_ai_permit(&limiter).unwrap());
+        }
+        assert!(acquire_ai_permit(&limiter).is_err());
+    }
+
+    #[test]
+    fn saved_ai_keys_are_preserved_but_redacted_from_ipc() {
+        let stored = StoredAiConfig {
+            provider: "openai".to_string(),
+            api_key: "secret-key".to_string(),
+            model: "gpt-test".to_string(),
+            custom_url: None,
+            auth_mode: Some("api_key".to_string()),
+        };
+        let update = AiConfigInput {
+            provider: "openai".to_string(),
+            api_key: String::new(),
+            has_api_key: true,
+            model: "gpt-next".to_string(),
+            custom_url: None,
+            auth_mode: Some("api_key".to_string()),
+        };
+        assert_eq!(
+            resolve_api_key_update(&update, Some(&stored), false).unwrap(),
+            "secret-key"
+        );
+        let redacted = redacted_ai_config(&stored);
+        assert!(redacted.api_key.is_empty());
+        assert!(redacted.has_api_key);
+    }
 
     #[test]
     fn parses_openai_models_and_filters_non_chat() {
@@ -1831,6 +2063,7 @@ mod tests {
             ai_config: Mutex::new(None),
             chatgpt_tokens: Mutex::new(None),
             allowed_paths: Mutex::new(HashSet::new()),
+            ai_rate_limit: Mutex::new(AiRateLimit::default()),
         };
 
         // Case 1: Path inside project root is allowed

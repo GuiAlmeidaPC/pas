@@ -143,10 +143,18 @@ impl Session {
                                     out.push_str(&reader);
                                 }
                                 LibraryKind::Memory => {
-                                    out.push_str(&format!("\"main\".\"{}\"", ds));
+                                    out.push_str(&format!(
+                                        "{}.{}",
+                                        quote_ident("main"),
+                                        quote_ident(ds)
+                                    ));
                                 }
                                 LibraryKind::Duckdb => {
-                                    out.push_str(&format!("\"{}\".\"{}\"", lib.name, ds));
+                                    out.push_str(&format!(
+                                        "{}.{}",
+                                        quote_ident(&lib.name),
+                                        quote_ident(ds)
+                                    ));
                                 }
                             }
                             i = j;

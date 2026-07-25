@@ -18,7 +18,7 @@ export function LibraryTree({ refreshToken, onOpenDataset }: Props) {
       const list = await invoke<Library[]>("list_libraries");
       setLibs(list);
     } catch (e) {
-      console.error("list_libraries failed", e);
+      setErrors((p) => ({ ...p, __libraries: String(e) }));
     }
   }, []);
 
@@ -59,8 +59,9 @@ export function LibraryTree({ refreshToken, onOpenDataset }: Props) {
   };
 
   return (
-    <div className="tree">
+    <div className="tree" role="tree" aria-label="Libraries">
       <div className="tree-header">Libraries</div>
+      {errors.__libraries && <div className="tree-error" role="alert">{errors.__libraries}</div>}
       {libs.length === 0 && <div className="tree-empty">No libraries yet.</div>}
       {libs.map((lib) => {
         const isOpen = expanded.has(lib.name);
@@ -71,6 +72,15 @@ export function LibraryTree({ refreshToken, onOpenDataset }: Props) {
             <div
               className={`tree-row tree-libref ${isOpen ? "open" : ""}`}
               onClick={() => toggle(lib.name)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggle(lib.name);
+                }
+              }}
+              role="treeitem"
+              tabIndex={0}
+              aria-expanded={isOpen}
               title={lib.path || lib.kind}
             >
               <span className="caret">{isOpen ? "▾" : "▸"}</span>
@@ -90,6 +100,14 @@ export function LibraryTree({ refreshToken, onOpenDataset }: Props) {
                     onDoubleClick={() =>
                       onOpenDataset({ libref: lib.name, name: ds.name })
                     }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        onOpenDataset({ libref: lib.name, name: ds.name });
+                      }
+                    }}
+                    role="treeitem"
+                    tabIndex={0}
+                    aria-label={`Open dataset ${ds.name}`}
                     title="Double-click to open"
                   >
                     <span className="dataset-icon">▦</span>

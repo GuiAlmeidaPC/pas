@@ -69,7 +69,7 @@ export function ProjectTree({
   };
 
   return (
-    <div className="tree" onClick={() => setContextFor(null)}>
+    <div className="tree" role="tree" aria-label="Project programs" onClick={() => setContextFor(null)}>
       <div className="tree-header">
         <span>Project</span>
         <div className="tree-actions">
@@ -81,6 +81,7 @@ export function ProjectTree({
             }}
             disabled={running || programs.length === 0}
             title="Run all programs in order (Process Flow)"
+            aria-label="Run project"
           >
             ▶
           </button>
@@ -91,12 +92,13 @@ export function ProjectTree({
               onAddProgram();
             }}
             title="Add an existing .pas file to the project"
+            aria-label="Add program"
           >
             +
           </button>
         </div>
       </div>
-      <div className="tree-row tree-libref open">
+      <div className="tree-row tree-libref open" role="treeitem" aria-expanded="true">
         <span className="caret">▾</span>
         <span className="libname">{projectName ?? "(unsaved project)"}</span>
       </div>
@@ -137,10 +139,21 @@ export function ProjectTree({
               }}
               onDrop={(e) => handleDrop(e, i)}
               onDoubleClick={() => onOpenProgram(p.path, p.content)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  onOpenProgram(p.path, p.content);
+                } else if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+                  e.preventDefault();
+                  setContextFor(p.path);
+                }
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setContextFor(p.path);
               }}
+              role="treeitem"
+              tabIndex={0}
+              aria-label={`Open program ${basename(p.path)}`}
               title={p.path}
             >
               <span className="dataset-icon">{isOpen ? "●" : "○"}</span>

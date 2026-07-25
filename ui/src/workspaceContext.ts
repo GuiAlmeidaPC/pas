@@ -42,8 +42,8 @@ export function useSchemaContext(refreshToken: number): string {
         if (active) {
           setSchemaContext(schemas.join("\n"));
         }
-      } catch (e) {
-        console.error("Failed to build schema context", e);
+      } catch {
+        if (active) setSchemaContext("");
       }
     };
     fetchSchema();

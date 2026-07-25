@@ -32,5 +32,31 @@ export function Splitter({ direction, onResize }: Props) {
     [direction, onResize],
   );
 
-  return <div className={`splitter splitter-${direction}`} onMouseDown={onMouseDown} />;
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      const delta =
+        e.key === "ArrowLeft" || e.key === "ArrowUp"
+          ? -10
+          : e.key === "ArrowRight" || e.key === "ArrowDown"
+            ? 10
+            : 0;
+      if (delta !== 0) {
+        e.preventDefault();
+        onResize(delta);
+      }
+    },
+    [onResize],
+  );
+
+  return (
+    <div
+      className={`splitter splitter-${direction}`}
+      onMouseDown={onMouseDown}
+      onKeyDown={onKeyDown}
+      role="separator"
+      tabIndex={0}
+      aria-label={`Resize ${direction === "horizontal" ? "columns" : "rows"}`}
+      aria-orientation={direction === "horizontal" ? "vertical" : "horizontal"}
+    />
+  );
 }

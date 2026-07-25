@@ -64,7 +64,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn tokens(self) -> Result<Vec<Tok>, String> {
         Ok(self
             .tokens_with_spans()?

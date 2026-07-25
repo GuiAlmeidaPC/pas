@@ -19,14 +19,12 @@ use super::parse::{parse_name_list, parse_options, split_body};
 use super::parse_table_ref;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct TransposeSpec {
     pub data_in: TableRef,
     pub data_out: TableRef,
     pub by_vars: Vec<String>,
     pub id_var: String,
     pub value_var: String,
-    pub prefix: Option<String>,
 }
 
 pub fn parse(body: &str) -> Result<TransposeSpec, String> {
@@ -40,7 +38,9 @@ pub fn parse(body: &str) -> Result<TransposeSpec, String> {
         Some(s) => parse_table_ref(s).ok_or_else(|| "invalid out=".to_string())?,
         None => return Err("PROC TRANSPOSE requires out=<dataset>".into()),
     };
-    let prefix = opts.get("prefix").and_then(|v| v.clone());
+    if opts.contains_key("prefix") {
+        return Err("PROC TRANSPOSE prefix= is not supported".to_string());
+    }
 
     let mut by_vars: Vec<String> = Vec::new();
     let mut id_var: Option<String> = None;
@@ -71,7 +71,6 @@ pub fn parse(body: &str) -> Result<TransposeSpec, String> {
         by_vars,
         id_var,
         value_var,
-        prefix,
     })
 }
 

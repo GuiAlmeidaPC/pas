@@ -27,6 +27,15 @@ fn parse_title_value(raw: &str) -> String {
     s.to_string()
 }
 
+fn valid_pas_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && value.len() <= 32
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn split_error_event(program: &str, err: SplitError) -> Event {
     match err {
         SplitError::UnterminatedDatalines { start_offset } => {
@@ -65,7 +74,12 @@ pub struct Session {
     pub(crate) macro_vars: Mutex<HashMap<String, String>>,
     pub(crate) macro_defs: Mutex<HashMap<String, crate::macros::MacroDef>>,
     pub(crate) dataset_formats: Mutex<HashMap<String, HashMap<String, String>>>,
+    pub(crate) dataset_informats: Mutex<HashMap<String, HashMap<String, String>>>,
+    pub(crate) dataset_labels: Mutex<HashMap<String, HashMap<String, String>>>,
     pub(crate) title: Mutex<Option<String>>,
+    pub(crate) footnote: Mutex<Option<String>>,
+    pub(crate) filenames: Mutex<HashMap<String, String>>,
+    pub(crate) options: Mutex<HashMap<String, String>>,
 }
 
 impl Session {
@@ -93,7 +107,12 @@ impl Session {
             macro_vars: Mutex::new(HashMap::new()),
             macro_defs: Mutex::new(HashMap::new()),
             dataset_formats: Mutex::new(HashMap::new()),
+            dataset_informats: Mutex::new(HashMap::new()),
+            dataset_labels: Mutex::new(HashMap::new()),
             title: Mutex::new(None),
+            footnote: Mutex::new(None),
+            filenames: Mutex::new(HashMap::new()),
+            options: Mutex::new(HashMap::new()),
         })
     }
 
@@ -342,6 +361,18 @@ impl Session {
                     events.extend(handled);
                     return;
                 }
+                if let Some(handled) = self.try_footnote(&text) {
+                    events.extend(handled);
+                    return;
+                }
+                if let Some(handled) = self.try_filename(&text) {
+                    events.extend(handled);
+                    return;
+                }
+                if let Some(handled) = self.try_options(&text) {
+                    events.extend(handled);
+                    return;
+                }
                 self.run_sql_with_rewrites(conn, &text, src_offset, program_for_spans, events);
             }
             Block::ProcSqlStmt { text, src_offset } => {
@@ -410,8 +441,103 @@ impl Session {
         Some(vec![Event::Note { text }])
     }
 
+    fn try_footnote(&self, stmt: &str) -> Option<Vec<Event>> {
+        let trimmed = stmt.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower != "footnote" && !lower.starts_with("footnote ") {
+            return None;
+        }
+        let value = trimmed
+            .get(8..)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(parse_title_value);
+        *self.footnote.lock().unwrap_or_else(|e| e.into_inner()) = value.clone();
+        Some(vec![Event::Note {
+            text: match value {
+                Some(footnote) => format!("Footnote set to \"{}\".", footnote),
+                None => "Footnote cleared.".to_string(),
+            },
+        }])
+    }
+
+    fn try_filename(&self, stmt: &str) -> Option<Vec<Event>> {
+        let trimmed = stmt.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower != "filename" && !lower.starts_with("filename ") {
+            return None;
+        }
+        let tail = trimmed.get(8..).unwrap_or("").trim();
+        let mut parts = tail.splitn(2, char::is_whitespace);
+        let fileref = parts.next().unwrap_or("");
+        if !valid_pas_identifier(fileref) {
+            return Some(vec![Event::Error {
+                text: "FILENAME requires a valid fileref".to_string(),
+                source_span: None,
+            }]);
+        }
+        let path = parts.next().unwrap_or("").trim();
+        let mut filenames = self.filenames.lock().unwrap_or_else(|e| e.into_inner());
+        if path.is_empty() {
+            filenames.remove(&fileref.to_ascii_lowercase());
+            return Some(vec![Event::Note {
+                text: format!("Fileref {} cleared.", fileref.to_ascii_uppercase()),
+            }]);
+        }
+        let path = parse_title_value(path);
+        filenames.insert(fileref.to_ascii_lowercase(), path.clone());
+        Some(vec![Event::Note {
+            text: format!(
+                "Fileref {} assigned to {}.",
+                fileref.to_ascii_uppercase(),
+                path
+            ),
+        }])
+    }
+
+    fn try_options(&self, stmt: &str) -> Option<Vec<Event>> {
+        let trimmed = stmt.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower != "options" && !lower.starts_with("options ") {
+            return None;
+        }
+        let tail = trimmed.get(7..).unwrap_or("").trim();
+        if tail.is_empty() {
+            let count = self.options.lock().unwrap_or_else(|e| e.into_inner()).len();
+            return Some(vec![Event::Note {
+                text: format!("{} option(s) are set.", count),
+            }]);
+        }
+        let mut options = self.options.lock().unwrap_or_else(|e| e.into_inner());
+        let mut changed = 0usize;
+        for item in tail.split(|c: char| c.is_whitespace() || c == ',') {
+            if item.is_empty() {
+                continue;
+            }
+            let (name, value) = item.split_once('=').unwrap_or((item, "true"));
+            if !valid_pas_identifier(name) {
+                return Some(vec![Event::Error {
+                    text: format!("invalid option name '{}'", name),
+                    source_span: None,
+                }]);
+            }
+            options.insert(name.to_ascii_lowercase(), value.to_string());
+            changed += 1;
+        }
+        Some(vec![Event::Note {
+            text: format!("OPTIONS statement set {} option(s).", changed),
+        }])
+    }
+
     fn active_title(&self) -> Option<String> {
         self.title.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn active_footnote(&self) -> Option<String> {
+        self.footnote
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn run_sql_with_rewrites(
@@ -460,6 +586,11 @@ impl Session {
                         text: format!("Statement returned {} row(s){}.", block.rows.len(), suffix),
                     });
                     events.push(Event::Output { block });
+                    if let Some(footnote) = self.active_footnote() {
+                        events.push(Event::Note {
+                            text: format!("Footnote: {}", footnote),
+                        });
+                    }
                 }
             }
             Ok(StmtResult::Affected(n)) => events.push(Event::Note {
@@ -526,12 +657,18 @@ impl Session {
             StmtResult::Rows(block) => {
                 let mut block = self.apply_dataset_formats(&lib, &spec.data.name, block);
                 block.title = self.active_title();
-                Ok(vec![
+                let mut events = vec![
                     Event::Note {
                         text: format!("PROC PRINT showing {} row(s).", block.rows.len()),
                     },
                     Event::Output { block },
-                ])
+                ];
+                if let Some(footnote) = self.active_footnote() {
+                    events.push(Event::Note {
+                        text: format!("Footnote: {}", footnote),
+                    });
+                }
+                Ok(events)
             }
             _ => Ok(vec![]),
         }
@@ -561,7 +698,7 @@ impl Session {
         program: &str,
         events: &mut Vec<Event>,
     ) {
-        let ds = match datastep::parse::parse_data_step_with_datalines(body, datalines) {
+        let mut ds = match datastep::parse::parse_data_step_with_datalines(body, datalines) {
             Ok(ds) => ds,
             Err(e) => {
                 let abs_start = body_src_offset + e.span.start;
@@ -580,6 +717,26 @@ impl Session {
                 return;
             }
         };
+        if let Some(infile) = ds.infile.as_mut() {
+            if infile.is_fileref {
+                let fileref = infile.path.to_ascii_lowercase();
+                let Some(path) = self
+                    .filenames
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&fileref)
+                    .cloned()
+                else {
+                    events.push(Event::Error {
+                        text: format!("fileref '{}' is not assigned", infile.path),
+                        source_span: None,
+                    });
+                    return;
+                };
+                infile.path = path;
+                infile.is_fileref = false;
+            }
+        }
         // Resolve input FROM-expressions.
         let input = match ds.input.as_ref() {
             None => None,
@@ -590,6 +747,12 @@ impl Session {
                         Ok(datastep::exec::ResolvedSource {
                             from: self.resolve_read(t)?,
                             in_var: t.in_var.clone(),
+                            keep: t.keep.clone(),
+                            drop: t.drop.clone(),
+                            rename: t.rename.clone(),
+                            where_expr: t.where_expr.clone(),
+                            obs: t.obs,
+                            firstobs: t.firstobs,
                         })
                     })
                     .collect::<Result<Vec<_>, EngineError>>()
@@ -611,6 +774,12 @@ impl Session {
                         Ok(datastep::exec::ResolvedSource {
                             from: self.resolve_read(t)?,
                             in_var: t.in_var.clone(),
+                            keep: t.keep.clone(),
+                            drop: t.drop.clone(),
+                            rename: t.rename.clone(),
+                            where_expr: t.where_expr.clone(),
+                            obs: t.obs,
+                            firstobs: t.firstobs,
                         })
                     })
                     .collect::<Result<Vec<_>, EngineError>>()
@@ -650,7 +819,7 @@ impl Session {
 
         match datastep::run_data_step(conn, &plan, &self.cancel, &self.macro_vars) {
             Ok(res) => {
-                self.register_data_step_formats(&ds, &res.outputs);
+                self.register_data_step_metadata(&ds, &res.outputs);
                 // `put` statement output is emitted before the per-table
                 // NOTEs so the log reads top-to-bottom in execution order.
                 for line in &res.log_lines {
@@ -699,12 +868,24 @@ impl Session {
     /// FROM expression DuckDB should use.
     pub(crate) fn resolve_read(&self, t: &datastep::ast::TableRef) -> Result<String, EngineError> {
         match &t.libref {
-            None => Ok(format!("\"main\".\"{}\"", t.name)),
+            None => Ok(format!(
+                "{}.{}",
+                crate::quote_ident("main"),
+                crate::quote_ident(&t.name)
+            )),
             Some(l) => {
                 let lib = self.lookup_library(l)?;
                 match lib.kind {
-                    LibraryKind::Memory => Ok(format!("\"main\".\"{}\"", t.name)),
-                    LibraryKind::Duckdb => Ok(format!("\"{}\".\"{}\"", lib.name, t.name)),
+                    LibraryKind::Memory => Ok(format!(
+                        "{}.{}",
+                        crate::quote_ident("main"),
+                        crate::quote_ident(&t.name)
+                    )),
+                    LibraryKind::Duckdb => Ok(format!(
+                        "{}.{}",
+                        crate::quote_ident(&lib.name),
+                        crate::quote_ident(&t.name)
+                    )),
                     LibraryKind::Dir => Ok(dir_reader_expr(&lib, &t.name)),
                 }
             }
@@ -761,34 +942,62 @@ impl Session {
             .ok_or_else(|| EngineError::Other(format!("library '{}' not assigned", libref)))
     }
 
-    fn register_data_step_formats(
+    fn register_data_step_metadata(
         &self,
         ds: &datastep::ast::DataStep,
         outputs: &[(datastep::ast::TableRef, datastep::exec::WriteTarget, u64)],
     ) {
+        let output_name = |name: &str| {
+            ds.rename
+                .iter()
+                .find(|(old, _)| old.eq_ignore_ascii_case(name))
+                .map(|(_, new)| new.to_ascii_lowercase())
+                .unwrap_or_else(|| name.to_ascii_lowercase())
+        };
         let formats: HashMap<String, String> = ds
             .formats
             .iter()
-            .map(|f| (f.name.to_ascii_lowercase(), f.format.clone()))
+            .map(|f| (output_name(&f.name), f.format.clone()))
             .collect();
-        let mut registry = self
-            .dataset_formats
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        for (_, target, _) in outputs {
-            if let datastep::exec::WriteTarget::DuckDb { schema, name } = target {
-                let key = dataset_format_key(schema, name);
-                if formats.is_empty() {
-                    registry.remove(&key);
-                } else {
-                    registry.insert(key, formats.clone());
-                }
-            }
-        }
+        let informats: HashMap<String, String> = ds
+            .informats
+            .iter()
+            .map(|f| (output_name(&f.name), f.format.clone()))
+            .collect();
+        let labels: HashMap<String, String> = ds
+            .labels
+            .iter()
+            .map(|label| (output_name(&label.name), label.label.clone()))
+            .collect();
+        store_data_step_metadata(&self.dataset_formats, outputs, &formats);
+        store_data_step_metadata(&self.dataset_informats, outputs, &informats);
+        store_data_step_metadata(&self.dataset_labels, outputs, &labels);
     }
 
     pub(crate) fn formats_for_dataset(&self, schema: &str, name: &str) -> HashMap<String, String> {
         self.dataset_formats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&dataset_format_key(schema, name))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn informats_for_dataset(
+        &self,
+        schema: &str,
+        name: &str,
+    ) -> HashMap<String, String> {
+        self.dataset_informats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&dataset_format_key(schema, name))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn labels_for_dataset(&self, schema: &str, name: &str) -> HashMap<String, String> {
+        self.dataset_labels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&dataset_format_key(schema, name))
@@ -853,4 +1062,22 @@ pub(crate) fn dataset_format_key(schema: &str, name: &str) -> String {
         schema.to_ascii_lowercase(),
         name.to_ascii_lowercase()
     )
+}
+
+fn store_data_step_metadata(
+    registry: &Mutex<HashMap<String, HashMap<String, String>>>,
+    outputs: &[(datastep::ast::TableRef, datastep::exec::WriteTarget, u64)],
+    metadata: &HashMap<String, String>,
+) {
+    let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
+    for (_, target, _) in outputs {
+        if let datastep::exec::WriteTarget::DuckDb { schema, name } = target {
+            let key = dataset_format_key(schema, name);
+            if metadata.is_empty() {
+                registry.remove(&key);
+            } else {
+                registry.insert(key, metadata.clone());
+            }
+        }
+    }
 }

@@ -25,6 +25,20 @@ impl Session {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query([])?;
         let col_count = rows.as_ref().map(|s| s.column_count()).unwrap_or(0);
+        let metadata_schema = match lib.kind {
+            LibraryKind::Memory => Some("main"),
+            LibraryKind::Duckdb => Some(lib.name.as_str()),
+            LibraryKind::Dir => None,
+        };
+        let formats = metadata_schema
+            .map(|schema| self.formats_for_dataset(schema, name))
+            .unwrap_or_default();
+        let informats = metadata_schema
+            .map(|schema| self.informats_for_dataset(schema, name))
+            .unwrap_or_default();
+        let labels = metadata_schema
+            .map(|schema| self.labels_for_dataset(schema, name))
+            .unwrap_or_default();
         let cols = (0..col_count)
             .map(|i| {
                 let name = rows
@@ -36,7 +50,14 @@ impl Session {
                     .as_ref()
                     .map(|s| format!("{:?}", s.column_type(i)).to_lowercase())
                     .unwrap_or_else(|| "?".to_string());
-                ColumnInfo { name, ty }
+                let key = name.to_ascii_lowercase();
+                ColumnInfo {
+                    name,
+                    ty,
+                    format: formats.get(&key).cloned(),
+                    informat: informats.get(&key).cloned(),
+                    label: labels.get(&key).cloned(),
+                }
             })
             .collect();
         Ok(cols)
@@ -88,6 +109,16 @@ impl Session {
             LibraryKind::Duckdb => self.formats_for_dataset(&lib.name, name),
             LibraryKind::Dir => HashMap::new(),
         };
+        let informats = match lib.kind {
+            LibraryKind::Memory => self.informats_for_dataset("main", name),
+            LibraryKind::Duckdb => self.informats_for_dataset(&lib.name, name),
+            LibraryKind::Dir => HashMap::new(),
+        };
+        let labels = match lib.kind {
+            LibraryKind::Memory => self.labels_for_dataset("main", name),
+            LibraryKind::Duckdb => self.labels_for_dataset(&lib.name, name),
+            LibraryKind::Dir => HashMap::new(),
+        };
         let fields: Vec<_> = base_schema
             .fields()
             .iter()
@@ -96,6 +127,16 @@ impl Session {
                 if let Some(format) = formats.get(&field.name().to_ascii_lowercase()) {
                     let mut field_md = field.metadata().clone();
                     field_md.insert("pas_format".to_string(), format.clone());
+                    field.set_metadata(field_md);
+                }
+                if let Some(informat) = informats.get(&field.name().to_ascii_lowercase()) {
+                    let mut field_md = field.metadata().clone();
+                    field_md.insert("pas_informat".to_string(), informat.clone());
+                    field.set_metadata(field_md);
+                }
+                if let Some(label) = labels.get(&field.name().to_ascii_lowercase()) {
+                    let mut field_md = field.metadata().clone();
+                    field_md.insert("pas_label".to_string(), label.clone());
                     field.set_metadata(field_md);
                 }
                 field
@@ -178,8 +219,7 @@ pub(crate) fn list_schema_tables(
     let mut stmt = conn.prepare(sql)?;
     let names: Vec<String> = stmt
         .query_map([schema], |r| r.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<_, _>>()?;
     Ok(names
         .into_iter()
         .map(|name| DatasetInfo {
@@ -196,7 +236,9 @@ pub(crate) fn list_dir_datasets(lib: &Library) -> Result<Vec<DatasetInfo>, Engin
     let dir =
         std::fs::read_dir(&lib.path).map_err(|e| EngineError::Other(format!("read_dir: {}", e)))?;
     let mut out = Vec::new();
-    for entry in dir.flatten() {
+    for entry in dir {
+        let entry =
+            entry.map_err(|e| EngineError::Other(format!("read directory entry: {}", e)))?;
         let p = entry.path();
         if p.extension()
             .and_then(|e| e.to_str())

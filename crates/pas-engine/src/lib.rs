@@ -1,4 +1,4 @@
-//! PAS engine — v0.2.
+//! PAS engine — v0.3.
 //!
 //! Adds `libname` support (DUCKDB attach + DIR), library/dataset listing
 //! commands, and paginated dataset reads.
@@ -51,6 +51,23 @@ mod tests {
         let evs = s.submit("select 1 as a, 'hi' as b;");
         assert!(matches!(evs.last(), Some(Event::Done)));
         assert!(evs.iter().any(|e| matches!(e, Event::Output { .. })));
+    }
+
+    #[test]
+    fn proc_sql_between_is_preserved_for_duckdb() {
+        let s = Session::new_in_memory().unwrap();
+        let evs =
+            s.submit("proc sql; select x from range(1, 6) t(x) where x between 2 and 4; quit;");
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let rows = evs.iter().find_map(|event| match event {
+            Event::Output { block } => Some(block.rows.len()),
+            _ => None,
+        });
+        assert_eq!(rows, Some(3));
     }
 
     #[test]
@@ -1086,6 +1103,212 @@ mod tests {
         );
         let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
         assert_eq!(page.total_rows, 1);
+    }
+
+    #[test]
+    fn data_step_return_starts_the_next_implicit_iteration() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select * from range(1, 4) t(x);");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                y = 10;
+                if x = 2 then return;
+                y = 20;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        assert_eq!(page.total_rows, 3);
+        let y = page.columns.iter().position(|c| c.name == "y").unwrap();
+        assert_eq!(page.rows[0][y], Value::Float(20.0));
+        assert_eq!(page.rows[1][y], Value::Float(10.0));
+        assert_eq!(page.rows[2][y], Value::Float(20.0));
+    }
+
+    #[test]
+    fn data_step_return_propagates_out_of_nested_do_blocks() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                total = 0;
+                do i = 1 to 3;
+                    if i = 2 then do;
+                        return;
+                    end;
+                    total = total + i;
+                end;
+                reached = 1;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        let total = page.columns.iter().position(|c| c.name == "total").unwrap();
+        let reached = page
+            .columns
+            .iter()
+            .position(|c| c.name == "reached")
+            .unwrap();
+        assert_eq!(page.rows[0][total], Value::Float(1.0));
+        assert_eq!(page.rows[0][reached], Value::Null);
+    }
+
+    #[test]
+    fn data_step_automatic_variables_are_available_but_not_written() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select * from range(1, 4) t(x);");
+        let evs = s.submit("data o; set src; iteration = _n_; error_flag = _error_; run;");
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"_n_"));
+        assert!(!names.contains(&"_error_"));
+        let iteration = names.iter().position(|name| *name == "iteration").unwrap();
+        let error_flag = names.iter().position(|name| *name == "error_flag").unwrap();
+        assert_eq!(page.rows[0][iteration], Value::Float(1.0));
+        assert_eq!(page.rows[1][iteration], Value::Float(2.0));
+        assert_eq!(page.rows[2][iteration], Value::Float(3.0));
+        assert!(page
+            .rows
+            .iter()
+            .all(|row| row[error_flag] == Value::Float(0.0)));
+    }
+
+    #[test]
+    fn set_dataset_options_filter_and_shape_the_input() {
+        let s = Session::new_in_memory().unwrap();
+        s.submit(
+            "create table src as select x as a, x * 10 as b, 'hidden' as c \
+             from range(1, 6) t(x);",
+        );
+        let evs = s.submit(
+            r#"
+            data o;
+                set src(
+                    firstobs=2
+                    obs=4
+                    where=(a ne 3)
+                    keep=(a b)
+                    drop=b
+                    rename=(a=renamed)
+                    in=selected
+                );
+                copied_flag = selected;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        assert_eq!(page.total_rows, 2);
+        let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"renamed"));
+        assert!(names.contains(&"selected"));
+        assert!(names.contains(&"copied_flag"));
+        assert!(!names.contains(&"a"));
+        assert!(!names.contains(&"b"));
+        assert!(!names.contains(&"c"));
+        let renamed = names.iter().position(|name| *name == "renamed").unwrap();
+        assert_eq!(page.rows[0][renamed], Value::Float(2.0));
+        assert_eq!(page.rows[1][renamed], Value::Float(4.0));
+    }
+
+    #[test]
+    fn informat_label_and_attrib_are_stored_as_column_metadata() {
+        let s = Session::new_in_memory().unwrap();
+        let evs = s.submit(
+            r#"
+            data metadata;
+                attrib amount length=8 format=comma12.2 informat=comma12.2 label="Invoice amount";
+                attrib customer length=$20 label="Customer name";
+                amount = 1234.5;
+                customer = "Example";
+                rename amount=total;
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let schema = s.dataset_schema("work", "metadata").unwrap();
+        let total = schema.iter().find(|column| column.name == "total").unwrap();
+        assert_eq!(total.format.as_deref(), Some("comma12.2"));
+        assert_eq!(total.informat.as_deref(), Some("comma12.2"));
+        assert_eq!(total.label.as_deref(), Some("Invoice amount"));
+        let customer = schema
+            .iter()
+            .find(|column| column.name == "customer")
+            .unwrap();
+        assert_eq!(customer.label.as_deref(), Some("Customer name"));
+    }
+
+    #[test]
+    fn global_filename_options_and_footnote_statements_are_dispatched() {
+        let s = Session::new_in_memory().unwrap();
+        let path = std::env::temp_dir().join(format!("pas-filename-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "10\n20\n").unwrap();
+        let program = format!(
+            r#"
+            filename rows '{}';
+            options notes source;
+            footnote "Generated by PAS";
+            data imported;
+                infile rows;
+                input value;
+            run;
+            proc print data=imported;
+            run;
+            "#,
+            path.display()
+        );
+        let evs = s.submit(&program);
+        std::fs::remove_file(&path).ok();
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "imported", 0, 10, None).unwrap();
+        assert_eq!(page.total_rows, 2);
+        assert!(evs.iter().any(
+            |event| matches!(event, Event::Note { text } if text == "Footnote: Generated by PAS")
+        ));
+    }
+
+    #[test]
+    fn substr_with_huge_length_does_not_overflow() {
+        let s = Session::new_in_memory().unwrap();
+        let evs = s.submit("data o; value = substr('abc', 1, 1e300); run;");
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        assert_eq!(page.rows[0][0], Value::Text("abc".to_string()));
     }
 
     #[test]

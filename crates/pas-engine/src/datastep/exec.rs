@@ -97,6 +97,12 @@ impl WriteTarget {
 pub struct ResolvedSource {
     pub from: String,
     pub in_var: Option<String>,
+    pub keep: Option<Vec<String>>,
+    pub drop: Option<Vec<String>>,
+    pub rename: Vec<(String, String)>,
+    pub where_expr: Option<Expr>,
+    pub obs: Option<u64>,
+    pub firstobs: u64,
 }
 
 pub enum ResolvedInput {
@@ -335,6 +341,8 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
                 self.pdv.vals[i] = coerce_to(self.pdv.is_char[i], val.clone());
             }
         }
+        self.pdv.set("_n_", RtValue::Num(self.rows_in as f64));
+        self.pdv.set("_error_", RtValue::Num(0.0));
 
         // first./last. for by vars.
         if !self.ds.by.is_empty() {
@@ -385,6 +393,7 @@ impl<'a, 'conn> Runtime<'a, 'conn> {
                 &mut self.log_lines,
             )? {
                 StmtFlow::Continue => {}
+                StmtFlow::Return => break,
                 StmtFlow::Delete => {
                     deleted = true;
                     break;
@@ -444,6 +453,8 @@ pub fn run_data_step(
             pdv.vals[i] = RtValue::Num(init);
         }
     }
+    pdv.ensure("_n_", false);
+    pdv.ensure("_error_", false);
     if !ds.by.is_empty() {
         for v in &ds.by {
             let i_first = pdv.ensure(&format!("first.{}", v), false);
@@ -467,10 +478,19 @@ pub fn run_data_step(
 
     // 2. Discover source schemas via DESCRIBE (cheap, no row scan).
     let source_schemas = discover_source_schemas(conn, &plan.input)?;
-    for schema in &source_schemas {
-        for (name, is_char) in schema {
-            let i = pdv.ensure(name, *is_char);
-            pdv.from_source[i] = true;
+    if let Some(sources) = input_sources(&plan.input) {
+        for (source, schema) in sources.iter().zip(&source_schemas) {
+            for (name, is_char) in apply_source_schema_options(schema, source) {
+                let i = pdv.ensure(&name, is_char);
+                pdv.from_source[i] = true;
+            }
+        }
+    } else {
+        for schema in &source_schemas {
+            for (name, is_char) in schema {
+                let i = pdv.ensure(name, *is_char);
+                pdv.from_source[i] = true;
+            }
         }
     }
 
@@ -603,7 +623,11 @@ fn pdv_output_columns(pdv: &Pdv, ds: &DataStep) -> Vec<(String, String, bool)> {
         .iter()
         .enumerate()
         .filter(|(_, n)| {
-            if n.starts_with("first.") || n.starts_with("last.") {
+            if n.starts_with("first.")
+                || n.starts_with("last.")
+                || n.eq_ignore_ascii_case("_n_")
+                || n.eq_ignore_ascii_case("_error_")
+            {
                 return false;
             }
             if let Some(keep) = &ds.keep {
@@ -704,6 +728,103 @@ fn is_char_type(name: &str) -> bool {
         || upper.contains("BLOB")
 }
 
+fn apply_source_schema_options(
+    schema: &[(String, bool)],
+    source: &ResolvedSource,
+) -> Vec<(String, bool)> {
+    schema
+        .iter()
+        .filter(|(name, _)| {
+            source
+                .keep
+                .as_ref()
+                .is_none_or(|keep| keep.iter().any(|item| item.eq_ignore_ascii_case(name)))
+                && source
+                    .drop
+                    .as_ref()
+                    .is_none_or(|drop| !drop.iter().any(|item| item.eq_ignore_ascii_case(name)))
+        })
+        .map(|(name, is_char)| {
+            let output_name = source
+                .rename
+                .iter()
+                .find(|(old, _)| old.eq_ignore_ascii_case(name))
+                .map(|(_, new)| new.to_ascii_lowercase())
+                .unwrap_or_else(|| name.to_ascii_lowercase());
+            (output_name, *is_char)
+        })
+        .collect()
+}
+
+fn apply_source_row_options(
+    mut row: SourceRow,
+    source: &ResolvedSource,
+    schema: &[(String, bool)],
+) -> Result<Option<SourceRow>, DataStepError> {
+    if let Some(where_expr) = &source.where_expr {
+        let mut pdv = Pdv::new();
+        for (name, is_char) in schema {
+            pdv.ensure(name, *is_char);
+        }
+        for (name, value) in &row {
+            pdv.set(name, value.clone());
+        }
+        if !eval(where_expr, &pdv, &HashMap::new())?.truthy() {
+            return Ok(None);
+        }
+    }
+
+    if let Some(keep) = &source.keep {
+        row.retain(|name, _| keep.iter().any(|item| item.eq_ignore_ascii_case(name)));
+    }
+    if let Some(drop) = &source.drop {
+        row.retain(|name, _| !drop.iter().any(|item| item.eq_ignore_ascii_case(name)));
+    }
+    for (old, new) in &source.rename {
+        if let Some(value) = row.remove(&old.to_ascii_lowercase()) {
+            row.insert(new.to_ascii_lowercase(), value);
+        }
+    }
+    Ok(Some(row))
+}
+
+fn source_select_sql(source: &ResolvedSource, by: &[String]) -> String {
+    let mut sql = format!("SELECT * FROM {}", source.from);
+    let offset = source.firstobs.saturating_sub(1);
+    if let Some(obs) = source.obs {
+        let limit = if obs < source.firstobs {
+            0
+        } else {
+            obs - source.firstobs + 1
+        };
+        sql.push_str(&format!(" LIMIT {}", limit));
+    }
+    if offset > 0 {
+        sql.push_str(&format!(" OFFSET {}", offset));
+    }
+
+    if !by.is_empty() {
+        let order_cols: Vec<String> = by
+            .iter()
+            .map(|name| {
+                let source_name = source
+                    .rename
+                    .iter()
+                    .find(|(_, new)| new.eq_ignore_ascii_case(name))
+                    .map(|(old, _)| old.as_str())
+                    .unwrap_or(name);
+                crate::quote_ident(source_name)
+            })
+            .collect();
+        sql = format!(
+            "SELECT * FROM ({}) AS pas_set_input ORDER BY {}",
+            sql,
+            order_cols.join(", ")
+        );
+    }
+    sql
+}
+
 /// Pump rows through `visit` for the configured input. The DuckDB
 /// statement / Rows iterator lives only inside this function, so its
 /// lifetime never escapes.
@@ -772,24 +893,12 @@ fn stream_set_source<F>(
 where
     F: FnMut(SourceRow) -> Result<(), DataStepError>,
 {
-    let order_sql = if by.is_empty() {
-        String::new()
-    } else {
-        let cols: Vec<String> = by.iter().map(|v| crate::quote_ident(v)).collect();
-        format!(" ORDER BY {}", cols.join(", "))
-    };
-    let sql = format!("SELECT * FROM {}{}", source.from, order_sql);
+    let sql = source_select_sql(source, by);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
     let col_count = rows.as_ref().map(|s| s.column_count()).unwrap_or(0);
     while let Some(row) = rows.next()? {
         let mut src_row = SourceRow::with_capacity(col_count + all_in_vars.len());
-        for name in all_in_vars {
-            src_row.insert(name.to_ascii_lowercase(), RtValue::Num(0.0));
-        }
-        if let Some(name) = &source.in_var {
-            src_row.insert(name.to_ascii_lowercase(), RtValue::Num(1.0));
-        }
         for i in 0..col_count {
             let v: DV = row.get(i)?;
             let name = schema
@@ -797,6 +906,15 @@ where
                 .map(|(n, _)| n.clone())
                 .unwrap_or_else(|| format!("col{}", i));
             src_row.insert(name, rt_from_duckdb(v));
+        }
+        let Some(mut src_row) = apply_source_row_options(src_row, source, schema)? else {
+            continue;
+        };
+        for name in all_in_vars {
+            src_row.insert(name.to_ascii_lowercase(), RtValue::Num(0.0));
+        }
+        if let Some(name) = &source.in_var {
+            src_row.insert(name.to_ascii_lowercase(), RtValue::Num(1.0));
         }
         visit(src_row)?;
     }
@@ -1346,6 +1464,8 @@ fn values_equal(a: &RtValue, b: &RtValue) -> bool {
 
 enum StmtFlow {
     Continue,
+    /// `return;` — finish the current implicit DATA-step iteration.
+    Return,
     Delete,
     /// `stop;` — terminate the DATA step immediately.
     Stop,
@@ -1422,11 +1542,12 @@ fn exec_stmt<'conn>(
         }
         Stmt::Delete => Ok(StmtFlow::Delete),
         Stmt::Stop => Ok(StmtFlow::Stop),
-        Stmt::Return => Ok(StmtFlow::Continue),
+        Stmt::Return => Ok(StmtFlow::Return),
         Stmt::Block(stmts) => {
             for s in stmts {
                 match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars, log_lines)? {
                     StmtFlow::Continue => {}
+                    StmtFlow::Return => return Ok(StmtFlow::Return),
                     StmtFlow::Delete => return Ok(StmtFlow::Delete),
                     StmtFlow::Stop => return Ok(StmtFlow::Stop),
                 }
@@ -1513,6 +1634,7 @@ fn exec_stmt<'conn>(
                 for s in body {
                     match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars, log_lines)? {
                         StmtFlow::Continue => {}
+                        StmtFlow::Return => return Ok(StmtFlow::Return),
                         StmtFlow::Delete => return Ok(StmtFlow::Delete),
                         StmtFlow::Stop => return Ok(StmtFlow::Stop),
                     }
@@ -1531,6 +1653,7 @@ fn exec_stmt<'conn>(
             for s in body {
                 match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars, log_lines)? {
                     StmtFlow::Continue => {}
+                    StmtFlow::Return => return Ok(StmtFlow::Return),
                     StmtFlow::Delete => return Ok(StmtFlow::Delete),
                     StmtFlow::Stop => return Ok(StmtFlow::Stop),
                 }
@@ -1540,6 +1663,7 @@ fn exec_stmt<'conn>(
             for s in body {
                 match exec_stmt(s, pdv, arrays, outs, appenders, macro_vars, log_lines)? {
                     StmtFlow::Continue => {}
+                    StmtFlow::Return => return Ok(StmtFlow::Return),
                     StmtFlow::Delete => return Ok(StmtFlow::Delete),
                     StmtFlow::Stop => return Ok(StmtFlow::Stop),
                 }
@@ -1739,7 +1863,7 @@ fn eval(
             let r = eval(rhs, pdv, arrays)?;
             match op {
                 Concat => RtValue::Str(format!("{}{}", l.as_str(), r.as_str())),
-                Add | Sub | Mul | Div | Pow | Mod => {
+                Add | Sub | Mul | Div | Pow => {
                     let (a, b) = match (l.as_num(), r.as_num()) {
                         (Some(a), Some(b)) => (a, b),
                         _ => return Ok(RtValue::missing()),
@@ -1756,13 +1880,6 @@ fn eval(
                             }
                         }
                         Pow => a.powf(b),
-                        Mod => {
-                            if b == 0.0 {
-                                f64::NAN
-                            } else {
-                                a - (a / b).trunc() * b
-                            }
-                        }
                         _ => unreachable!(),
                     };
                     RtValue::Num(n)

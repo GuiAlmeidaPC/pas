@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 export interface AIConfig {
   provider: "openai" | "anthropic" | "gemini" | "deepseek" | "openrouter";
   apiKey: string;
+  hasApiKey?: boolean;
   model: string;
   customUrl?: string;
   /** "api_key" (default) | "chatgpt". Only meaningful for the openai provider. */
@@ -186,6 +187,8 @@ export function AISettingsModal({
   };
 
   const isChatgpt = provider === "openai" && authMode === "chatgpt";
+  const hasSavedKey =
+    Boolean(initialConfig?.hasApiKey) && initialConfig?.provider === provider;
   const defaultModels = availableModels(provider, authMode);
   const visibleModels = isChatgpt
     ? defaultModels
@@ -267,13 +270,17 @@ export function AISettingsModal({
               <input
                 id="ai-apikey"
                 type="password"
-                placeholder={`Enter your ${provider.toUpperCase()} API key`}
+                placeholder={
+                  hasSavedKey
+                    ? "Saved key (leave blank to keep it)"
+                    : `Enter your ${provider.toUpperCase()} API key`
+                }
                 value={apiKey}
                 onChange={(e) => {
                   resetFetchedModels();
                   setApiKey(e.target.value);
                 }}
-                required
+                required={!hasSavedKey}
               />
             </div>
           )}
@@ -317,7 +324,7 @@ export function AISettingsModal({
                 <button
                   type="button"
                   className="btn-secondary btn-sm"
-                  disabled={fetchingModels || !apiKey.trim() || !onFetchModels}
+                  disabled={fetchingModels || (!apiKey.trim() && !hasSavedKey) || !onFetchModels}
                   onClick={handleFetchModels}
                 >
                   {fetchingModels ? "Fetching…" : "Fetch Models"}

@@ -44,7 +44,7 @@ them locally before pushing:
 # Rust
 cargo fmt --all --check
 cargo clippy --workspace -- -D warnings
-cargo test -p pas-engine
+cargo test --workspace
 
 # Frontend (from ui/)
 pnpm run build      # type-checks via tsc, then builds

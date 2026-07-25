@@ -20,12 +20,24 @@ pub fn parse_table_ref(s: &str) -> Option<TableRef> {
             libref: Some(l.to_ascii_lowercase()),
             name: n.to_ascii_lowercase(),
             in_var: None,
+            keep: None,
+            drop: None,
+            rename: Vec::new(),
+            where_expr: None,
+            obs: None,
+            firstobs: 1,
         })
     } else {
         Some(TableRef {
             libref: None,
             name: s.to_ascii_lowercase(),
             in_var: None,
+            keep: None,
+            drop: None,
+            rename: Vec::new(),
+            where_expr: None,
+            obs: None,
+            firstobs: 1,
         })
     }
 }

@@ -53,6 +53,9 @@ export interface DatasetInfo {
 export interface ColumnInfo {
   name: string;
   ty: string;
+  format?: string;
+  informat?: string;
+  label?: string;
 }
 
 export interface DatasetPage {

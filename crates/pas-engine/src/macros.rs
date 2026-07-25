@@ -10,7 +10,7 @@
 //! - `%do; ... %end;` blocks.
 //! - `%do var = start %to end %by step; ... %end;` iterative loops.
 //! - `%do %while(condition); ... %end;` and `%do %until(condition); ... %end;` loops.
-//! - Built-in functions: `%eval`, `%sysevalf`, `%upcase`, `%lowcase`, `%substr`, `%length`, `%index`, `%scan`, `%str`, `%quote`.
+//! - Built-in functions: `%eval`, `%sysevalf`, `%upcase`, `%lowcase`, `%substr`, `%length`, `%index`, `%scan`, `%str`, `%quote`, `%bquote`, `%superq`.
 //! - Lexical environment scopes stack.
 //! - Automatic system variables like `&sysdate`, `&systime`, `&sysday`, etc.
 
@@ -1546,15 +1546,16 @@ impl<'a> Context<'a> {
                             .unwrap_or(1);
                         let length = evaluated_args.get(2).and_then(|s| s.parse::<usize>().ok());
 
-                        if pos == 0 || pos > text.len() {
+                        let chars: Vec<char> = text.chars().collect();
+                        if pos == 0 || pos > chars.len() {
                             return Ok(String::new());
                         }
                         let start = pos - 1;
                         if let Some(len) = length {
-                            let end = (start + len).min(text.len());
-                            Ok(text[start..end].to_string())
+                            let end = start.saturating_add(len).min(chars.len());
+                            Ok(chars[start..end].iter().collect())
                         } else {
-                            Ok(text[start..].to_string())
+                            Ok(chars[start..].iter().collect())
                         }
                     }
                     "index" => {
@@ -1588,8 +1589,12 @@ impl<'a> Context<'a> {
                             Ok(words[n - 1].to_string())
                         }
                     }
-                    "str" | "quote" | "bquote" | "superq" => {
+                    "str" | "quote" | "bquote" => {
                         Ok(evaluated_args.get(0).cloned().unwrap_or_default())
+                    }
+                    "superq" => {
+                        let name = evaluated_args.get(0).map(String::as_str).unwrap_or("");
+                        Ok(self.env.get(name).unwrap_or_default())
                     }
                     _ => Err(format!("Unknown built-in function %{}", name)),
                 }
@@ -1718,6 +1723,22 @@ mod tests {
         assert!(out.expanded.contains("sub = bcd"));
         assert!(out.expanded.contains("idx = 3"));
         assert!(out.expanded.contains("sc = b"));
+    }
+
+    #[test]
+    fn macro_quoting_functions_mask_rescanning() {
+        let mut vars = HashMap::from([
+            ("secret".into(), "&unresolved".into()),
+            ("punctuation".into(), "a,b".into()),
+        ]);
+        let mut defs = HashMap::new();
+        let out = preprocess(
+            "protected = %superq(secret); quoted = %bquote(&punctuation);",
+            &mut vars,
+            &mut defs,
+        );
+        assert!(out.expanded.contains("protected = &unresolved"));
+        assert!(out.expanded.contains("quoted = a,b"));
     }
 
     #[test]

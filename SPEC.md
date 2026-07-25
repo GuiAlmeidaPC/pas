@@ -35,31 +35,27 @@ v1 ships with: PROC SQL, DATA step core (see §5), libraries against DuckDB and 
 | Shell | **Tauri 2.x** | Small binary, native webview, Rust-native IPC |
 | Frontend | **React 18 + TypeScript + Vite** | Mature ecosystem for the editor + table widgets |
 | Editor | **Monaco** | Selection API, custom tokenizer, F3 keybinding |
-| Table viewer | **TanStack Virtual** + custom grid | Row virtualization for million-row paging |
+| Table viewer | **Apache Arrow IPC** + custom grid | Server-side filtering and bounded 200-row pages |
 | Engine | **Rust** (workspace crate `pas-engine`) | Same process as Tauri backend, no IPC overhead |
 | Storage / SQL | **DuckDB** (via `duckdb` crate) | Columnar, embedded, ANSI SQL ≈ PROC SQL |
 | In-memory format | **Apache Arrow** (`arrow-rs`) | Zero-copy batches between engine, DuckDB, and UI |
 | Parser | Hand-written recursive-descent + Pratt for expressions | PAS grammar is too irregular for generators |
 | Build | Cargo workspace + pnpm | Standard |
-| Tests | `cargo test`, `insta` for snapshot, Playwright for UI smoke | — |
+| Tests | `cargo test`, JSON golden programs, Vitest, Node security smoke tests | — |
 
 ### 2.1 Workspace Layout
 ```
 pas/
 ├─ Cargo.toml                  # workspace
 ├─ crates/
-│  ├─ pas-lex/                 # lexer
-│  ├─ pas-parse/               # parser, AST
-│  ├─ pas-ast/                 # AST types shared by parse + interp
-│  ├─ pas-engine/              # interpreter, DATA step executor, formats
-│  ├─ pas-sql/                 # PROC SQL → DuckDB rewriter
-│  ├─ pas-io/                  # readers/writers: csv, parquet
-│  └─ pas-app/                 # Tauri binary + commands
+│  ├─ pas-engine/              # lexer, parser, interpreter, SQL rewrite, I/O
+│  └─ pas-app/                 # Tauri binary, IPC, filesystem, AI integrations
 ├─ ui/                         # React app (Vite)
 │  ├─ src/
 │  └─ package.json
-├─ examples/                   # sample .pas programs
 ├─ tests/                      # integration tests, golden programs
+├─ website/                    # project website deployed with GitHub Pages
+├─ docs/                       # design notes and implementation plans
 └─ SPEC.md
 ```
 
@@ -170,7 +166,9 @@ Events use Tauri's event system; payloads are JSON for log/control, binary (Arro
 
 ## 5. Language Specification
 
-PAS implements a subset of the PAS language called **PAS**. Where behavior differs from documented compatibility semantics, this document is authoritative.
+PAS defines a focused analytics language inspired by established DATA step and
+PROC SQL conventions. Where behavior differs from those compatibility
+semantics, this document is authoritative.
 
 ### 5.1 Lexical
 - Statements terminated by `;`. Whitespace-insensitive except inside strings and datalines.

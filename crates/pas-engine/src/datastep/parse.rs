@@ -17,7 +17,7 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn parse_data_step(src: &str) -> Result<DataStep, ParseError> {
     parse_data_step_with_datalines(src, Vec::new())
 }
@@ -47,6 +47,9 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     fn peek(&self) -> &Tok {
         &self.toks[self.pos].0
+    }
+    fn peek_next(&self) -> Option<&Tok> {
+        self.toks.get(self.pos + 1).map(|(tok, _)| tok)
     }
     fn current_span(&self) -> Span {
         self.toks[self.pos].1
@@ -102,6 +105,11 @@ impl<'a> Parser<'a> {
             )));
         }
         let outputs = self.parse_table_list()?;
+        if outputs.iter().any(TableRef::has_input_options) {
+            return Err(
+                self.err("input dataset options are not supported on DATA output datasets".into())
+            );
+        }
         self.expect(&Tok::Semi, "data header")?;
 
         let mut ds = DataStep {
@@ -116,6 +124,8 @@ impl<'a> Parser<'a> {
             retain: Vec::new(),
             arrays: Vec::new(),
             formats: Vec::new(),
+            informats: Vec::new(),
+            labels: Vec::new(),
             input_vars: Vec::new(),
             datalines: Vec::new(),
             infile: None,
@@ -160,6 +170,12 @@ impl<'a> Parser<'a> {
             (None, first)
         };
         let mut in_var = None;
+        let mut keep = None;
+        let mut drop = None;
+        let mut rename = Vec::new();
+        let mut where_expr = None;
+        let mut obs = None;
+        let mut firstobs = 1;
         if self.eat(&Tok::LParen) {
             loop {
                 if self.eat(&Tok::RParen) {
@@ -189,11 +205,42 @@ impl<'a> Parser<'a> {
                             return Err(self.err("duplicate in= dataset option".into()));
                         }
                     }
-                    other => {
-                        return Err(
-                            self.err(format!("dataset option '{}' is not supported yet", other))
-                        )
+                    "keep" => {
+                        if keep.replace(self.parse_dataset_option_names()?).is_some() {
+                            return Err(self.err("duplicate keep= dataset option".into()));
+                        }
                     }
+                    "drop" => {
+                        if drop.replace(self.parse_dataset_option_names()?).is_some() {
+                            return Err(self.err("duplicate drop= dataset option".into()));
+                        }
+                    }
+                    "rename" => {
+                        if !rename.is_empty() {
+                            return Err(self.err("duplicate rename= dataset option".into()));
+                        }
+                        rename = self.parse_dataset_renames()?;
+                    }
+                    "where" => {
+                        if where_expr.is_some() {
+                            return Err(self.err("duplicate where= dataset option".into()));
+                        }
+                        let wrapped = self.eat(&Tok::LParen);
+                        where_expr = Some(self.parse_expr()?);
+                        if wrapped {
+                            self.expect(&Tok::RParen, "where= dataset option")?;
+                        }
+                    }
+                    "obs" => {
+                        if obs.is_some() {
+                            return Err(self.err("duplicate obs= dataset option".into()));
+                        }
+                        obs = Some(self.parse_positive_integer("obs")?);
+                    }
+                    "firstobs" => {
+                        firstobs = self.parse_positive_integer("firstobs")?;
+                    }
+                    other => return Err(self.err(format!("unknown dataset option '{}'", other))),
                 }
             }
         }
@@ -201,7 +248,109 @@ impl<'a> Parser<'a> {
             libref,
             name,
             in_var,
+            keep,
+            drop,
+            rename,
+            where_expr,
+            obs,
+            firstobs,
         })
+    }
+
+    fn at_dataset_option(&self) -> bool {
+        matches!(
+            (self.peek(), self.peek_next()),
+            (
+                Tok::Ident(name),
+                Some(Tok::Eq)
+            ) if matches!(
+                name.as_str(),
+                "in" | "keep" | "drop" | "rename" | "where" | "obs" | "firstobs"
+            )
+        )
+    }
+
+    fn parse_dataset_option_names(&mut self) -> Result<Vec<String>, ParseError> {
+        let wrapped = self.eat(&Tok::LParen);
+        let mut names = Vec::new();
+        loop {
+            while self.eat(&Tok::Comma) {}
+            if (wrapped && matches!(self.peek(), Tok::RParen))
+                || (!wrapped && (matches!(self.peek(), Tok::RParen) || self.at_dataset_option()))
+            {
+                break;
+            }
+            match self.bump() {
+                Tok::Ident(name) => names.push(name),
+                other => {
+                    return Err(self.err(format!(
+                        "expected variable name in dataset option, got {:?}",
+                        other
+                    )))
+                }
+            }
+        }
+        if wrapped {
+            self.expect(&Tok::RParen, "dataset option")?;
+        }
+        if names.is_empty() {
+            return Err(self.err("dataset option requires at least one variable".into()));
+        }
+        Ok(names)
+    }
+
+    fn parse_dataset_renames(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+        let wrapped = self.eat(&Tok::LParen);
+        let mut renames = Vec::new();
+        loop {
+            while self.eat(&Tok::Comma) {}
+            if (wrapped && matches!(self.peek(), Tok::RParen))
+                || (!wrapped
+                    && !renames.is_empty()
+                    && (matches!(self.peek(), Tok::RParen) || self.at_dataset_option()))
+            {
+                break;
+            }
+            let old = match self.bump() {
+                Tok::Ident(name) => name,
+                other => {
+                    return Err(self.err(format!(
+                        "expected old variable name in rename=, got {:?}",
+                        other
+                    )))
+                }
+            };
+            self.expect(&Tok::Eq, "rename= dataset option")?;
+            let new = match self.bump() {
+                Tok::Ident(name) => name,
+                other => {
+                    return Err(self.err(format!(
+                        "expected new variable name in rename=, got {:?}",
+                        other
+                    )))
+                }
+            };
+            renames.push((old, new));
+        }
+        if wrapped {
+            self.expect(&Tok::RParen, "rename= dataset option")?;
+        }
+        if renames.is_empty() {
+            return Err(self.err("rename= requires at least one old=new pair".into()));
+        }
+        Ok(renames)
+    }
+
+    fn parse_positive_integer(&mut self, option: &str) -> Result<u64, ParseError> {
+        match self.bump() {
+            Tok::Number(value) if value.is_finite() && value >= 1.0 && value.fract() == 0.0 => {
+                Ok(value as u64)
+            }
+            other => Err(self.err(format!(
+                "{}= requires a positive integer, got {:?}",
+                option, other
+            ))),
+        }
     }
 
     fn parse_top_stmt(&mut self, ds: &mut DataStep) -> Result<(), ParseError> {
@@ -227,6 +376,12 @@ impl<'a> Parser<'a> {
                 sources.push(self.parse_table_ref()?);
             }
             self.expect(&Tok::Semi, "merge")?;
+            if sources.iter().any(TableRef::has_set_only_options) {
+                return Err(self.err(
+                    "keep=/drop=/rename=/where=/obs=/firstobs= are supported on SET inputs only"
+                        .into(),
+                ));
+            }
             if ds.input.is_some() {
                 return Err(ParseError {
                     message: "multiple set/merge statements in one data step are not supported"
@@ -338,12 +493,21 @@ impl<'a> Parser<'a> {
             ds.formats.extend(formats);
             return Ok(());
         }
-        // `informat` / `label` are accepted as no-ops for compatibility.
-        if self.eat_keyword("informat") || self.eat_keyword("label") {
-            while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
-                self.bump();
-            }
-            self.expect(&Tok::Semi, "informat/label")?;
+        if self.eat_keyword("informat") {
+            let informats = self.parse_format_decls()?;
+            self.expect(&Tok::Semi, "informat")?;
+            ds.informats.extend(informats);
+            return Ok(());
+        }
+        if self.eat_keyword("label") {
+            let labels = self.parse_label_decls()?;
+            self.expect(&Tok::Semi, "label")?;
+            ds.labels.extend(labels);
+            return Ok(());
+        }
+        if self.eat_keyword("attrib") {
+            self.parse_attrib_decls(ds)?;
+            self.expect(&Tok::Semi, "attrib")?;
             return Ok(());
         }
 
@@ -472,12 +636,134 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
+    fn parse_label_decls(&mut self) -> Result<Vec<LabelDecl>, ParseError> {
+        let mut out = Vec::new();
+        while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+            while self.eat(&Tok::Comma) {}
+            let name = match self.bump() {
+                Tok::Ident(name) => name,
+                other => {
+                    return Err(
+                        self.err(format!("expected variable name in label, got {:?}", other))
+                    )
+                }
+            };
+            self.expect(&Tok::Eq, "label")?;
+            let label = match self.bump() {
+                Tok::Str(label) => label,
+                other => {
+                    return Err(self.err(format!("expected quoted label text, got {:?}", other)))
+                }
+            };
+            out.push(LabelDecl { name, label });
+        }
+        Ok(out)
+    }
+
+    fn at_attrib_option(&self) -> bool {
+        matches!(
+            (self.peek(), self.peek_next()),
+            (Tok::Ident(name), Some(Tok::Eq))
+                if matches!(name.as_str(), "length" | "label" | "format" | "informat")
+        )
+    }
+
+    fn parse_attrib_decls(&mut self, ds: &mut DataStep) -> Result<(), ParseError> {
+        while !matches!(self.peek(), Tok::Semi | Tok::Eof) {
+            while self.eat(&Tok::Comma) {}
+            let name = match self.bump() {
+                Tok::Ident(name) => name,
+                other => {
+                    return Err(
+                        self.err(format!("expected variable name in attrib, got {:?}", other))
+                    )
+                }
+            };
+            let mut saw_option = false;
+            while self.at_attrib_option() {
+                saw_option = true;
+                let option = match self.bump() {
+                    Tok::Ident(option) => option,
+                    _ => unreachable!(),
+                };
+                self.expect(&Tok::Eq, "attrib option")?;
+                match option.as_str() {
+                    "length" => {
+                        let is_char = self.eat(&Tok::Dollar);
+                        let width = match self.bump() {
+                            Tok::Number(width)
+                                if width.is_finite() && width >= 1.0 && width.fract() == 0.0 =>
+                            {
+                                width as u32
+                            }
+                            other => {
+                                return Err(self.err(format!(
+                                    "attrib length= requires a positive integer, got {:?}",
+                                    other
+                                )))
+                            }
+                        };
+                        ds.lengths.push(LengthDecl {
+                            name: name.clone(),
+                            is_char,
+                            width,
+                        });
+                    }
+                    "label" => {
+                        let label = match self.bump() {
+                            Tok::Str(label) => label,
+                            other => {
+                                return Err(self.err(format!(
+                                    "attrib label= requires quoted text, got {:?}",
+                                    other
+                                )))
+                            }
+                        };
+                        ds.labels.push(LabelDecl {
+                            name: name.clone(),
+                            label,
+                        });
+                    }
+                    "format" | "informat" => {
+                        let run = self.raw_run_at_current();
+                        if run.is_empty() || !run.contains('.') {
+                            return Err(self.err(format!(
+                                "attrib {}= requires a format ending in '.'",
+                                option
+                            )));
+                        }
+                        let value = run.to_string();
+                        self.advance_past(run);
+                        let decl = FormatDecl {
+                            name: name.clone(),
+                            format: value,
+                        };
+                        if option == "format" {
+                            ds.formats.push(decl);
+                        } else {
+                            ds.informats.push(decl);
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            if !saw_option {
+                return Err(self.err(format!(
+                    "attrib variable '{}' requires at least one attribute",
+                    name
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn parse_infile_spec(&mut self) -> Result<InfileSpec, ParseError> {
-        let raw_path = match self.bump() {
-            Tok::Str(s) => s,
+        let (raw_path, is_fileref) = match self.bump() {
+            Tok::Str(s) => (s, false),
+            Tok::Ident(s) => (s, true),
             other => {
                 return Err(self.err(format!(
-                    "expected quoted path after infile, got {:?}",
+                    "expected quoted path or fileref after infile, got {:?}",
                     other
                 )))
             }
@@ -489,6 +775,7 @@ impl<'a> Parser<'a> {
         };
         let mut spec = InfileSpec {
             path,
+            is_fileref,
             dlm: None,
             dsd: false,
             firstobs: 1,

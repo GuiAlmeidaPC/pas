@@ -5,7 +5,7 @@ export function LogView({ lines }: { lines: LogLine[] }) {
     return <div className="empty">Submit a program with F3 to see log output here.</div>;
   }
   return (
-    <pre className="log">
+    <pre className="log" aria-live="polite" aria-label="Program log">
       {lines.map((line, i) => (
         <div key={i} className={`log-line log-${line.level}`}>
           {line.text}
@@ -18,7 +18,7 @@ export function LogView({ lines }: { lines: LogLine[] }) {
 export function OutputView({ blocks }: { blocks: ResultBlock[] }) {
   if (blocks.length === 0) return <div className="empty">No output yet.</div>;
   return (
-    <div className="output">
+    <div className="output" aria-live="polite" aria-label="Program output">
       {blocks.map((block, i) => (
         <BlockTable key={i} block={block} index={i} />
       ))}

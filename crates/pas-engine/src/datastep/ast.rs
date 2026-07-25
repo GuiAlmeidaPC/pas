@@ -6,6 +6,13 @@ pub struct TableRef {
     pub name: String,
     /// `in=flag` dataset option on SET/MERGE inputs.
     pub in_var: Option<String>,
+    /// Input-side dataset options. These are populated for SET sources.
+    pub keep: Option<Vec<String>>,
+    pub drop: Option<Vec<String>>,
+    pub rename: Vec<(String, String)>,
+    pub where_expr: Option<Expr>,
+    pub obs: Option<u64>,
+    pub firstobs: u64,
 }
 
 impl TableRef {
@@ -14,6 +21,25 @@ impl TableRef {
             Some(l) => format!("{}.{}", l, self.name),
             None => self.name.clone(),
         }
+    }
+
+    pub fn has_input_options(&self) -> bool {
+        self.in_var.is_some()
+            || self.keep.is_some()
+            || self.drop.is_some()
+            || !self.rename.is_empty()
+            || self.where_expr.is_some()
+            || self.obs.is_some()
+            || self.firstobs != 1
+    }
+
+    pub fn has_set_only_options(&self) -> bool {
+        self.keep.is_some()
+            || self.drop.is_some()
+            || !self.rename.is_empty()
+            || self.where_expr.is_some()
+            || self.obs.is_some()
+            || self.firstobs != 1
     }
 }
 
@@ -34,6 +60,10 @@ pub struct DataStep {
     pub arrays: Vec<ArrayDecl>,
     /// `format var-list format.;` display formats retained for UI/output.
     pub formats: Vec<FormatDecl>,
+    /// `informat var-list informat.;` input metadata retained with output.
+    pub informats: Vec<FormatDecl>,
+    /// `label var="text";` labels retained with output metadata.
+    pub labels: Vec<LabelDecl>,
     /// Free-form `input <name> [$] ...;` definitions.
     pub input_vars: Vec<InputVar>,
     /// Inline data attached to a `datalines;` block. Filled in by the
@@ -47,6 +77,8 @@ pub struct DataStep {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InfileSpec {
     pub path: String,
+    /// True when `path` is a fileref assigned by a global FILENAME statement.
+    pub is_fileref: bool,
     /// `None` means whitespace splitting.
     pub dlm: Option<String>,
     /// `dsd` — delimiter-sensitive: missing values between consecutive
@@ -146,6 +178,12 @@ pub struct FormatDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct LabelDecl {
+    pub name: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Assign {
         target: AssignTarget,
@@ -205,9 +243,8 @@ pub enum Stmt {
     },
     /// `stop;` — terminate the DATA step immediately.
     Stop,
-    /// `return;` — jump to the top of the implicit loop (emit unless
-    /// `delete`d). In v1 we treat it as a no-op continue since the
-    /// implicit loop already handles emit at iteration end.
+    /// `return;` — jump to the top of the implicit loop, applying the
+    /// normal implicit-output rules for the current observation.
     Return,
 }
 
@@ -289,7 +326,6 @@ pub enum UnaryOp {
     Not,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
     Add,
@@ -297,7 +333,6 @@ pub enum BinOp {
     Mul,
     Div,
     Pow,
-    Mod,
     Concat,
     Eq,
     Ne,

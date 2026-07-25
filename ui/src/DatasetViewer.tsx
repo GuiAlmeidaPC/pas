@@ -11,7 +11,13 @@ interface Props {
 }
 
 interface PageView {
-  columns: { name: string; ty: string; format?: string }[];
+  columns: {
+    name: string;
+    ty: string;
+    format?: string;
+    informat?: string;
+    label?: string;
+  }[];
   rows: unknown[][];
   totalRows: number;
 }
@@ -75,8 +81,8 @@ export function DatasetViewer({ ds }: Props) {
     setFilters((p) => ({ ...p, [col]: v }));
   const clearFilters = () => setFilters({});
 
-  if (err) return <div className="empty">Error: {err}</div>;
-  if (!page) return <div className="empty">{loading ? "Loading…" : ""}</div>;
+  if (err) return <div className="empty" role="alert">Error: {err}</div>;
+  if (!page) return <div className="empty" role="status">{loading ? "Loading…" : ""}</div>;
 
   const total = page.totalRows;
   const last = Math.max(0, total - 1);
@@ -86,7 +92,7 @@ export function DatasetViewer({ ds }: Props) {
   const hasFilters = Object.keys(activeFilters).length > 0;
 
   return (
-    <div className="ds-viewer">
+    <div className="ds-viewer" aria-busy={loading}>
       <div className="ds-toolbar">
         <span className="ds-name">
           {ds.libref.toUpperCase()}.{ds.name}
@@ -95,25 +101,40 @@ export function DatasetViewer({ ds }: Props) {
           rows {total > 0 ? offset + 1 : 0}–{shownEnd} of {total}
         </span>
         <div className="spacer" />
-        <button onClick={() => load(0, activeFilters)} disabled={!canPrev || loading}>
+        <button
+          onClick={() => load(0, activeFilters)}
+          disabled={!canPrev || loading}
+          aria-label="First page"
+        >
           ⏮
         </button>
         <button
           onClick={() => load(Math.max(0, offset - PAGE_SIZE), activeFilters)}
           disabled={!canPrev || loading}
+          aria-label="Previous page"
         >
           ◀
         </button>
-        <button onClick={() => load(offset + PAGE_SIZE, activeFilters)} disabled={!canNext || loading}>
+        <button
+          onClick={() => load(offset + PAGE_SIZE, activeFilters)}
+          disabled={!canNext || loading}
+          aria-label="Next page"
+        >
           ▶
         </button>
         <button
           onClick={() => load(Math.max(0, Math.floor(last / PAGE_SIZE) * PAGE_SIZE), activeFilters)}
           disabled={!canNext || loading}
+          aria-label="Last page"
         >
           ⏭
         </button>
-        <button onClick={() => load(offset, activeFilters)} disabled={loading} title="Refresh">
+        <button
+          onClick={() => load(offset, activeFilters)}
+          disabled={loading}
+          title="Refresh"
+          aria-label="Refresh dataset"
+        >
           ↻
         </button>
         {hasFilters && (
@@ -124,13 +145,19 @@ export function DatasetViewer({ ds }: Props) {
       </div>
       <div className="grid-scroll ds-grid-scroll">
         <table className="grid">
+          <caption className="sr-only">
+            Dataset contents
+          </caption>
           <thead>
             <tr>
               <th className="rownum">#</th>
               {page.columns.map((c) => (
-                <th key={c.name}>
+                <th key={c.name} title={c.label}>
                   <div className="col-name">{c.name}</div>
-                  <div className="col-type">{c.ty}</div>
+                  <div className="col-type">
+                    {c.ty}
+                    {c.label ? ` — ${c.label}` : ""}
+                  </div>
                 </th>
               ))}
             </tr>
@@ -143,6 +170,7 @@ export function DatasetViewer({ ds }: Props) {
                     type="text"
                     value={filters[c.name] ?? ""}
                     placeholder="filter…"
+                    aria-label={`Filter ${c.name}`}
                     onChange={(e) => setFilter(c.name, e.target.value)}
                   />
                 </th>
@@ -176,6 +204,8 @@ function decodePage(buf: ArrayBuffer): PageView {
     name: f.name,
     ty: typeLabel(f.typeId),
     format: f.metadata?.get("pas_format") ?? undefined,
+    informat: f.metadata?.get("pas_informat") ?? undefined,
+    label: f.metadata?.get("pas_label") ?? undefined,
   }));
 
   const rowCount = table.numRows;
