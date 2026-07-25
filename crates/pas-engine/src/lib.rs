@@ -983,6 +983,29 @@ mod tests {
     }
 
     #[test]
+    fn unimplemented_function_error_matches_spec_text() {
+        // SPEC §5.3.6 fixes the error text as
+        // "ERROR: function X is not implemented in PAS v1." — pin it so
+        // future refactors don't silently drift back to a stale version
+        // string.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let evs = s.submit("data o; set src; y = nope_nope_nope(x); run;");
+        let msg = evs
+            .iter()
+            .find_map(|e| match e {
+                Event::Error { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("expected an error event");
+        assert!(
+            msg.contains("function 'nope_nope_nope' is not implemented in PAS v1"),
+            "expected SPEC error text, got: {}",
+            msg
+        );
+    }
+
+    #[test]
     fn runtime_array_out_of_range_carries_span() {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select 1 as x;");

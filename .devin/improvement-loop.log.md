@@ -86,7 +86,7 @@ documents the PROC SQL `eqt`/`gtt` forms as "not yet"; the DATA step
 **Verification:** `cargo fmt`, `cargo clippy -- -D warnings`,
 `cargo test --workspace` → 175 passed, 0 failed (+1 new test).
 
-**Commit:** pending — will commit with this iteration's changes.
+**Commit:** `d527ab0` on `main`.
 
 ---
 

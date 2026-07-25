@@ -542,10 +542,7 @@ pub fn call(name: &str, args: &[RtValue]) -> Result<RtValue, String> {
             input_value(&s, &spec)
         }
 
-        other => Err(format!(
-            "function '{}' is not implemented in PAS v0.5",
-            other
-        )),
+        other => Err(format!("function '{}' is not implemented in PAS v1", other)),
     }
 }
 
