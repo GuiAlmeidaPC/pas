@@ -235,6 +235,14 @@ pub enum Expr {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    /// `lhs in (e1, e2, …)` (and `lhs not in (...)` when `negated`).
+    /// `span` covers the whole `in (...)` / `not in (...)` expression.
+    In {
+        lhs: Box<Expr>,
+        items: Vec<Expr>,
+        negated: bool,
+        span: super::lex::Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

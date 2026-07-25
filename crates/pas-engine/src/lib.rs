@@ -883,6 +883,45 @@ mod tests {
     }
 
     #[test]
+    fn data_step_in_operator() {
+        // SPEC §5.3.5 lists `in (...)` (and `not in`) as a supported
+        // comparison form for the DATA step. Exercises both numeric and
+        // character lists, plus the negated form.
+        let s = Session::new_in_memory().unwrap();
+        s.submit("create table src as select 1 as x;");
+        let evs = s.submit(
+            r#"
+            data o;
+                set src;
+                in_num   = x in (1, 2, 3);
+                notin_num = x not in (4, 5, 6);
+                in_str   = 'b' in ('a', 'b', 'c');
+                notin_str = 'z' not in ('a', 'b', 'c');
+                in_empty = x in ();
+            run;
+            "#,
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{:?}",
+            evs
+        );
+        let page = s.dataset_page("work", "o", 0, 10, None).unwrap();
+        let by = |n: &str| page.columns.iter().position(|c| c.name == n).unwrap();
+        let num = |n: &str| match &page.rows[0][by(n)] {
+            crate::Value::Float(f) => *f,
+            crate::Value::Int(i) => *i as f64,
+            other => panic!("{}: expected number, got {:?}", n, other),
+        };
+        assert_eq!(num("in_num"), 1.0);
+        assert_eq!(num("notin_num"), 1.0);
+        assert_eq!(num("in_str"), 1.0);
+        assert_eq!(num("notin_str"), 1.0);
+        // An empty list matches nothing.
+        assert_eq!(num("in_empty"), 0.0);
+    }
+
+    #[test]
     fn runtime_call_error_carries_span() {
         let s = Session::new_in_memory().unwrap();
         s.submit("create table src as select 1 as x;");

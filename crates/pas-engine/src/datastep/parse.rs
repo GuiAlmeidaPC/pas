@@ -965,6 +965,48 @@ impl<'a> Parser<'a> {
     }
     fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
         let lhs = self.parse_concat()?;
+        // `not in (...)` — peek two tokens: the `not` keyword followed by
+        // the `in` keyword. A bare `not` here is left for the caller (it
+        // belongs to a higher-precedence unary context).
+        let negated = if self.at_keyword("not") {
+            if self
+                .toks
+                .get(self.pos + 1)
+                .map(|(t, _)| matches!(t, Tok::Ident(s) if s == "in"))
+                == Some(true)
+            {
+                self.pos += 1; // consume `not`
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if negated || self.at_keyword("in") {
+            let start_span = self.current_span();
+            self.pos += 1; // consume `in`
+            self.expect(&Tok::LParen, "in (...)")?;
+            let mut items = Vec::new();
+            if !self.eat(&Tok::RParen) {
+                loop {
+                    items.push(self.parse_expr()?);
+                    if self.eat(&Tok::Comma) {
+                        continue;
+                    }
+                    break;
+                }
+                self.expect(&Tok::RParen, "in (...)")?;
+            }
+            let end_span = self.toks[self.pos.saturating_sub(1)].1;
+            let span = Span::new(start_span.start, end_span.end);
+            return Ok(Expr::In {
+                lhs: Box::new(lhs),
+                items,
+                negated,
+                span,
+            });
+        }
         let op = match self.peek() {
             Tok::Eq => Some(BinOp::Eq),
             Tok::NotEq => Some(BinOp::Ne),

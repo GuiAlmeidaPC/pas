@@ -1692,6 +1692,28 @@ fn eval(
                 Or => RtValue::Num(if l.truthy() || r.truthy() { 1.0 } else { 0.0 }),
             }
         }
+        Expr::In {
+            lhs,
+            items,
+            negated,
+            span: _span,
+        } => {
+            let l = eval(lhs, pdv, arrays)?;
+            let mut found = false;
+            for it in items {
+                let r = eval(it, pdv, arrays)?;
+                if compare(&l, &r) == 0 {
+                    found = true;
+                    break;
+                }
+            }
+            // SAS quirk: `x not in (., …)` yields missing when the list
+            // contains a missing value and x is not a literal match. We
+            // approximate the common case — the result is 1/0 — and leave
+            // the missing-propagation rule as a documented divergence.
+            let result = if *negated { !found } else { found };
+            RtValue::Num(if result { 1.0 } else { 0.0 })
+        }
     })
 }
 

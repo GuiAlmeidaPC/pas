@@ -46,6 +46,14 @@ are not divergences — they are not implemented at all and are listed in §1.2 
 | **PAS** | Only the standard numeric missing (NaN). Special missing values are not parsed and not represented. |
 | **Why** | Listed as an open question in `SPEC.md` §16. |
 
+### 1.4a `not in` missing-value propagation
+
+| | |
+|---|---|
+| **Reference** | `x not in (a, b, .)` returns missing (`.`) — not 0 or 1 — when the list contains a missing value and `x` does not literally match a present item. |
+| **PAS** | `x not in (...)` returns 1 whenever `x` matches no item, even if the list contains a missing value. The `in` form already returns 0/1. |
+| **Why** | The missing-propagation rule is rarely relied upon in wrangling code and complicates the result type; revisit if a real program depends on it. |
+
 ### 1.5 Variable lengths are advisory
 
 | | |

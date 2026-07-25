@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- DATA step `in (...)` and `not in (...)` comparison operators, which SPEC
+  §5.3.5 lists as supported but were previously not parsed. They work in both
+  assignment and subsetting-`if` contexts, with numeric or character lists.
 - DATA step functions `right` (right-justify a string), `ymd` (year-month-day
   date builder), `dhms` (date/hour/minute/second datetime builder), and
   `cmiss` (count of missing values across mixed-type arguments). These close
